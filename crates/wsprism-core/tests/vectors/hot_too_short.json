@@ -1,0 +1,10 @@
+{
+  "description": "Frame shorter than minimum header",
+  "frame": {
+    "encoding": "base64",
+    "data": "AQEB"
+  },
+  "expect_error": {
+    "code": "BAD_REQUEST"
+  }
+}

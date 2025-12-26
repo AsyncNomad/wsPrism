@@ -1,0 +1,15 @@
+{
+  "description": "Basic hot frame with seq (no payload)",
+  "frame": {
+    "encoding": "base64",
+    "data": "AQEBAdIEAAA="
+  },
+  "expect": {
+    "v": 1,
+    "svc_id": 1,
+    "opcode": 1,
+    "flags": 1,
+    "seq": 1234,
+    "payload_len": 0
+  }
+}

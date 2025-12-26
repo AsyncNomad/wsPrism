@@ -1,0 +1,10 @@
+{
+  "description": "Seq flag set but u32 missing",
+  "frame": {
+    "encoding": "base64",
+    "data": "AQEBAQ=="
+  },
+  "expect_error": {
+    "code": "BAD_REQUEST"
+  }
+}
