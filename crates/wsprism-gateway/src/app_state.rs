@@ -1,14 +1,15 @@
 //! Shared application state for wsPrism Gateway.
 //!
-//! Sprint 1: keep this intentionally small.
-//! - Config is loaded in main and stored here
-//! - Ticket validation is a tiny stub (replace with infra store in Sprint 2/3)
-//!
-//! Everything is `Arc`-friendly and cloneable.
+//! Sprint 2:
+//! - Build per-tenant compiled policy runtimes at startup for fast lookup.
+//! - Keep auth stub (ticket -> user_id).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::config::GatewayConfig;
+use wsprism_core::error::{Result, WsPrismError};
+
+use crate::{config::GatewayConfig, policy};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -16,13 +17,27 @@ pub struct AppState {
 }
 
 struct AppStateInner {
-    pub cfg: GatewayConfig,
+    cfg: GatewayConfig,
+    tenant_policy: HashMap<String, Arc<policy::TenantPolicyRuntime>>,
 }
 
 impl AppState {
     pub fn new(cfg: GatewayConfig) -> Self {
+        let mut tenant_policy = HashMap::new();
+        for t in &cfg.tenants {
+            // Policy defaults are strict; config must provide allowlists.
+            let runtime = policy::TenantPolicyRuntime::new(
+                t.id.clone(),
+                t.limits.max_frame_bytes,
+                &t.policy,
+            )
+            .expect("tenant policy compile failed");
+
+            tenant_policy.insert(t.id.clone(), Arc::new(runtime));
+        }
+
         Self {
-            inner: Arc::new(AppStateInner { cfg }),
+            inner: Arc::new(AppStateInner { cfg, tenant_policy }),
         }
     }
 
@@ -30,15 +45,12 @@ impl AppState {
         &self.inner.cfg
     }
 
-    /// Sprint 1 auth: a minimal, deterministic ticket resolver.
-    ///
-    /// - ticket=="dev" => user_id "user:dev"
-    /// - otherwise => AuthFailed
-    ///
-    /// Replace with a real TicketStore (DashMap/Redis) later.
-    pub fn resolve_ticket(&self, ticket: &str) -> wsprism_core::Result<String> {
-        use wsprism_core::error::WsPrismError;
+    pub fn tenant_policy(&self, tenant_id: &str) -> Option<Arc<policy::TenantPolicyRuntime>> {
+        self.inner.tenant_policy.get(tenant_id).cloned()
+    }
 
+    /// Sprint 1/2 auth: a minimal deterministic ticket resolver.
+    pub fn resolve_ticket(&self, ticket: &str) -> Result<String> {
         match ticket {
             "dev" => Ok("user:dev".to_string()),
             _ => Err(WsPrismError::AuthFailed),

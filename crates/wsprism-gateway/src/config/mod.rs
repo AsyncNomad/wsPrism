@@ -1,12 +1,12 @@
 //! Gateway config loader (strict parsing).
 
-mod schema;
+pub mod schema;
 
 use std::fs;
 
 use wsprism_core::error::{Result, WsPrismError};
 
-pub use schema::GatewayConfig;
+pub use schema::{GatewayConfig, TenantConfig, TenantLimits, TenantPolicy};
 
 pub fn load_from_file(path: &str) -> Result<GatewayConfig> {
     let s = fs::read_to_string(path)

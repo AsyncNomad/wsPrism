@@ -4,6 +4,15 @@ gateway:
   ping_interval_ms: 20000
   idle_timeout_ms: 60000
 tenants:
-  - id: "acme"
+  - id: acme
     limits:
       max_frame_bytes: 4096
+    policy:
+      rate_limit_rps: 200
+      rate_limit_burst: 400
+      ext_allowlist:
+        - "room:join"
+        - "room:leave"
+      hot_allowlist:
+        - "1:*"
+
