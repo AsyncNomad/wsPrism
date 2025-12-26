@@ -1,0 +1,15 @@
+{
+  "description": "Frame with payload, no seq",
+  "frame": {
+    "encoding": "base64",
+    "data": "AQECAGFiY2Q="
+  },
+  "expect": {
+    "v": 1,
+    "svc_id": 1,
+    "opcode": 2,
+    "flags": 0,
+    "seq": null,
+    "payload_len": 4
+  }
+}

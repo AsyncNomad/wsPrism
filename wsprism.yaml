@@ -1,0 +1,7 @@
+version: 1
+gateway:
+  listen: "0.0.0.0:8080"
+tenants:
+  - id: "acme"
+    limits:
+      max_frame_bytes: 4096

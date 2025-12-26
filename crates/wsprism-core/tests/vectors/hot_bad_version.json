@@ -1,0 +1,10 @@
+{
+  "description": "Hot frame with unsupported version",
+  "frame": {
+    "encoding": "base64",
+    "data": "AgEBAA=="
+  },
+  "expect_error": {
+    "code": "UNSUPPORTED_VERSION"
+  }
+}

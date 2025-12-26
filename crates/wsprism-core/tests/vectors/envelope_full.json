@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "svc": "chat",
+  "type": "send",
+  "flags": 7,
+  "seq": 123,
+  "room": "party:1",
+  "data": {
+    "text": "hi"
+  }
+}

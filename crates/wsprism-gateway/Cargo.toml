@@ -1,0 +1,14 @@
+[package]
+name = "wsprism-gateway"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wsprism-core = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_yaml = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+bytes = { workspace = true }
