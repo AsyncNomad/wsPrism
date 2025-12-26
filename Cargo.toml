@@ -22,3 +22,6 @@ wsprism-core = { path = "crates/wsprism-core" }
 
 axum = { version = "0.7", features = ["ws"] }
 futures-util = "0.3"
+
+dashmap = "5"
+async-trait = "0.1"

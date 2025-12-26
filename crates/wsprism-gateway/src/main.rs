@@ -23,7 +23,7 @@ async fn main() {
         .parse()
         .expect("gateway.listen must be a valid SocketAddr");
 
-    let state = app_state::AppState::new(cfg);
+    let state = app_state::AppState::new(cfg).expect("failed to build app state");
     let app = router::build_router(state);
 
     tracing::info!(%listen, "wsprism-gateway starting");

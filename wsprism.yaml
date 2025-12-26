@@ -1,18 +1,26 @@
 version: 1
+
 gateway:
   listen: "0.0.0.0:8080"
-  ping_interval_ms: 20000
-  idle_timeout_ms: 60000
+  ping_interval_ms: 5000
+  idle_timeout_ms: 10000
+
 tenants:
   - id: acme
     limits:
-      max_frame_bytes: 4096
+      max_frame_bytes: 65536
+
     policy:
-      rate_limit_rps: 200
-      rate_limit_burst: 400
+      rate_limit_rps: 1000
+      rate_limit_burst: 2000
+
+      # allowlist는 "문자열 배열" 형태
       ext_allowlist:
         - "room:join"
         - "room:leave"
-      hot_allowlist:
-        - "1:*"
+        - "chat:send"
+        - "chat:message"
 
+      # hot_allowlist도 일단 동일하게 문자열로(스키마가 string을 기대하는 상태라 가정)
+      hot_allowlist:
+        - "1:1"

@@ -1,15 +1,20 @@
-//! WebSocket handler (Sprint 2).
+//! WebSocket handler (Sprint 3).
 //!
 //! Responsibilities:
 //! - Upgrade HTTP -> WS
 //! - Extract tenant/ticket from query string
-//! - Resolve TenantContext (tenant policy runtime + session meta)
+//! - Resolve tenant policy + auth(ticket -> user_id)
 //! - Lifecycle: ping/pong + idle timeout
-//! - Decode-once then apply policy (cheap) then update session-local active_room
+//! - Decode-once -> Policy(cheap) -> session-local active_room update
+//! - Sprint 3 wiring:
+//!   - Register outbound sender into RealtimeCore SessionRegistry
+//!   - Update Presence on join/leave
+//!   - Dispatch Text/Hot messages to services via Dispatcher
 //!
-//! Sprint 2 scope:
-//! - PolicyEngine: len limit, allowlist, tenant rate limit
-//! - Active Room: join/leave in Ext Lane, Hot Lane routes to active_room only (no room in binary frame)
+//! Notes:
+//! - Hot Lane(binary)는 active_room 1개만 라우팅 (room id 없음).
+//! - Transport는 "room join/leave"만 최소한으로 처리(세션 로컬 active_room + presence).
+//!   나머지는 Dispatcher/Service로 넘김 (Sprint 4~에서 room service로 이동 가능)
 
 use axum::{
     extract::{ws::Message, ws::WebSocket, ws::WebSocketUpgrade, Query, State},
@@ -27,6 +32,11 @@ use crate::app_state::AppState;
 use crate::policy::engine::PolicyDecision;
 use crate::transport::codec::{decode, Inbound};
 
+// Sprint 3
+use crate::dispatch::Dispatcher;
+use crate::realtime::core::Connection;
+use crate::realtime::{RealtimeCore, RealtimeCtx};
+
 // --------------------
 // Query parsing
 // --------------------
@@ -37,7 +47,7 @@ pub struct WsQuery {
 }
 
 // --------------------
-// Session local state (Sprint 2)
+// Session local state
 // --------------------
 #[derive(Debug)]
 struct SessionState {
@@ -46,7 +56,7 @@ struct SessionState {
 }
 
 // --------------------
-// Safe JSON builders (PRODUCTION FIX)
+// Safe JSON builders
 // --------------------
 fn sys_authed_json(tenant: &str, user: &str) -> String {
     json!({
@@ -54,10 +64,7 @@ fn sys_authed_json(tenant: &str, user: &str) -> String {
         "svc": "sys",
         "type": "authed",
         "flags": 0,
-        "data": {
-            "tenant": tenant,
-            "user": user
-        }
+        "data": { "tenant": tenant, "user": user }
     })
     .to_string()
 }
@@ -68,46 +75,17 @@ fn sys_error_json(code: &str, msg: &str) -> String {
         "svc": "sys",
         "type": "error",
         "flags": 0,
-        "data": {
-            "code": code,
-            "msg": msg
-        }
+        "data": { "code": code, "msg": msg }
     })
     .to_string()
 }
 
 fn sys_joined_json(room: &str) -> String {
-    json!({
-        "v": 1,
-        "svc": "sys",
-        "type": "joined",
-        "flags": 0,
-        "room": room
-    })
-    .to_string()
+    json!({ "v": 1, "svc": "sys", "type": "joined", "flags": 0, "room": room }).to_string()
 }
 
 fn sys_left_json() -> String {
-    json!({
-        "v": 1,
-        "svc": "sys",
-        "type": "left",
-        "flags": 0
-    })
-    .to_string()
-}
-
-// --------------------
-// Cheap frame length helper (policy before decode)
-// --------------------
-fn frame_len(msg: &Message) -> usize {
-    match msg {
-        Message::Text(s) => s.as_bytes().len(),
-        Message::Binary(b) => b.len(),
-        Message::Ping(v) => v.len(),
-        Message::Pong(v) => v.len(),
-        Message::Close(_) => 0,
-    }
+    json!({ "v": 1, "svc": "sys", "type": "left", "flags": 0 }).to_string()
 }
 
 // --------------------
@@ -119,9 +97,8 @@ pub async fn ws_upgrade(
     Query(q): Query<WsQuery>,
 ) -> Response {
     ws.on_upgrade(move |socket| async move {
-        if let Err(e) = run_session(app, q, socket).await {
-            let _ = e;
-        }
+        // 로깅 정책은 네가 원복했다고 했으니 조용히 처리
+        let _ = run_session(app, q, socket).await;
     })
 }
 
@@ -137,11 +114,23 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
     // ---- auth ticket -> user_id
     let user_id = app.resolve_ticket(&q.ticket)?;
 
+    // ---- Sprint3: shared core/dispatcher (AppState에 반드시 있어야 함)
+    let core: std::sync::Arc<RealtimeCore> = app.realtime();
+    let dispatcher: std::sync::Arc<Dispatcher> = app.dispatcher();
+
     // ---- outbound channel
     let (out_tx, mut out_rx) = mpsc::channel::<Message>(1024);
 
     // ---- split socket
     let (mut ws_tx, mut ws_rx) = socket.split();
+
+    // ---- Sprint3: register session into registry
+    core.sessions.insert(
+        user_id.clone(),
+        Connection {
+            tx: out_tx.clone(),
+        },
+    );
 
     // ---- send authed (SAFE JSON)
     out_tx
@@ -149,7 +138,7 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
         .await
         .map_err(|_| WsPrismError::Internal("outbound channel closed".into()))?;
 
-    // ---- timers (Sprint 1)
+    // ---- timers (Sprint1)
     let gw = &app.cfg().gateway;
     let ping_every = Duration::from_millis(gw.ping_interval_ms);
     let idle_timeout = Duration::from_millis(gw.idle_timeout_ms);
@@ -162,6 +151,7 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
         last_activity: Instant::now(),
     };
 
+    // ---- main loop
     loop {
         tokio::select! {
             // outbound writer
@@ -183,17 +173,18 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
 
                 sess.last_activity = Instant::now();
 
-                // ✅ cheap-first: bytes_len 먼저 계산 (decode보다 앞)
-                let bytes_len = frame_len(&msg);
+                // ---- decode once
+                let decoded = decode(msg)?;
+                match decoded {
+                    Inbound::Ping(payload) => {
+                        // 명시적 pong
+                        let _ = out_tx.send(Message::Pong(payload)).await;
+                    }
+                    Inbound::Pong(_) => {}
+                    Inbound::Close => break,
 
-                // ✅ 메시지 타입별로 "decode 이전" 정책 적용
-                match &msg {
-                    Message::Text(s) => {
-                        // Text는 svc/type를 알아야 allowlist 체크 가능 → 헤더만 싸게 파싱
-                        // 너의 text::Envelope가 RawValue 기반이라면 여기서 body 파싱은 발생하지 않음.
-                        let env: wsprism_core::protocol::text::Envelope = serde_json::from_str(s)
-                            .map_err(|e| WsPrismError::BadRequest(format!("decode failed: {e}")))?;
-
+                    Inbound::Text { env, bytes_len } => {
+                        // ---- policy (ext lane)
                         match policy.check_text(bytes_len, &env.svc, &env.msg_type) {
                             PolicyDecision::Pass => {}
                             PolicyDecision::Drop => continue,
@@ -207,42 +198,40 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                             }
                         }
 
-                        // ✅ policy 통과했으니 이제 decode (Decode-once 철학 유지)
-                        // (decode가 다시 JSON을 파싱할 수 있으니, 앞으로 Sprint3에서는 codec가 "Envelope만" 반환하도록 개선 추천)
-                        let decoded = decode(Message::Text(s.clone()))?;
-                        match decoded {
-                            Inbound::Text { env, .. } => {
-                                if env.svc == "room" && env.msg_type == "join" {
-                                    let room = env.room.clone().unwrap_or_else(|| "default".to_string());
-                                    sess.active_room = Some(room.clone());
-                                    let _ = out_tx.send(Message::Text(sys_joined_json(&room))).await;
-                                    continue;
-                                }
-                                if env.svc == "room" && env.msg_type == "leave" {
-                                    sess.active_room = None;
-                                    let _ = out_tx.send(Message::Text(sys_left_json())).await;
-                                    continue;
-                                }
-                                let _ = env;
+                        // ---- Sprint2+3: room join/leave는 session-local active_room + presence 업데이트
+                        if env.svc == "room" && env.msg_type == "join" {
+                            let room = env.room.clone().unwrap_or_else(|| "default".to_string());
+                            sess.active_room = Some(room.clone());
+                            core.presence.join(&room, &user_id);
+                            let _ = out_tx.send(Message::Text(sys_joined_json(&room))).await;
+                            continue;
+                        }
+
+                        if env.svc == "room" && env.msg_type == "leave" {
+                            if let Some(room) = sess.active_room.take() {
+                                core.presence.leave(&room, &user_id);
                             }
-                            // Text로 들어왔는데 다른 타입이면 무시
-                            _ => {}
+                            let _ = out_tx.send(Message::Text(sys_left_json())).await;
+                            continue;
+                        }
+
+                        // ---- Sprint3: dispatch to TextService
+                        let ctx = RealtimeCtx::new(
+                            q.tenant.clone(),
+                            user_id.clone(),
+                            sess.active_room.clone(),
+                            core.clone(),
+                        );
+
+                        if let Err(e) = dispatcher.dispatch_text(ctx, env).await {
+                            // 서비스 에러는 sys:error로 전달 (연결을 바로 끊진 않음)
+                            let _ = out_tx.send(Message::Text(sys_error_json(e.client_code().as_str(), &e.to_string()))).await;
                         }
                     }
 
-                    Message::Binary(_) => {
-                        // Hot은 svc_id/opcode를 알아야 allowlist → header만 싸게 파싱해야 함.
-                        // 가장 이상적: core hot parser로 header만 빠르게 파싱 (panic-free).
-                        // 현재는 decode가 HotFrame까지 만들어주므로, policy를 먼저 적용하려면 header-only peek가 필요.
-                        //
-                        // ✅ 최소 침습: "bytes_len max_frame" / rate limit 같은 것만 먼저 막고,
-                        // svc_id/opcode allowlist는 decode 이후에 체크(완전한 cheap-first는 Sprint3에서 codec 개선으로 해결).
-                        //
-                        // 그래도 가장 큰 병목인 "크기 폭탄"은 decode 전에 차단됨.
-                        match policy.check_hot(bytes_len, 0, 0) {
-                            // (주의) check_hot이 svc_id/opcode를 강제하면 여기서 0,0이 문제.
-                            // 네 로컬 디버깅에서 이 부분을 이미 맞췄다 했으니,
-                            // check_hot이 "len/rate"만 먼저 검사할 수 있도록 구현되어 있다는 전제.
+                    Inbound::Hot { frame, bytes_len } => {
+                        // ---- policy (hot lane)
+                        match policy.check_hot(bytes_len, frame.svc_id, frame.opcode) {
                             PolicyDecision::Pass => {}
                             PolicyDecision::Drop => continue,
                             PolicyDecision::Reject { code, msg } => {
@@ -255,49 +244,32 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                             }
                         }
 
-                        // 이제 decode
-                        let decoded = decode(msg)?;
-                        match decoded {
-                            Inbound::Hot { frame, bytes_len } => {
-                                // ✅ 여기서 svc_id/opcode allowlist를 확실히 적용 (현 상태의 현실적 최선)
-                                match policy.check_hot(bytes_len, frame.svc_id, frame.opcode) {
-                                    PolicyDecision::Pass => {}
-                                    PolicyDecision::Drop => continue,
-                                    PolicyDecision::Reject { code, msg } => {
-                                        let _ = out_tx.send(Message::Text(sys_error_json(code.as_str(), msg))).await;
-                                        continue;
-                                    }
-                                    PolicyDecision::Close { code, msg } => {
-                                        let _ = out_tx.send(Message::Text(sys_error_json(code.as_str(), msg))).await;
-                                        break;
-                                    }
-                                }
+                        // ---- Hot Lane routes to active_room only
+                        if sess.active_room.is_none() {
+                            let _ = out_tx.send(Message::Text(sys_error_json("BAD_REQUEST", "no active_room"))).await;
+                            continue;
+                        }
 
-                                if sess.active_room.is_none() {
-                                    let _ = out_tx.send(Message::Text(sys_error_json("BAD_REQUEST", "no active_room"))).await;
-                                    continue;
-                                }
+                        let ctx = RealtimeCtx::new(
+                            q.tenant.clone(),
+                            user_id.clone(),
+                            sess.active_room.clone(),
+                            core.clone(),
+                        );
 
-                                let _ = frame;
-                            }
-                            _ => {}
+                        if let Err(e) = dispatcher.dispatch_hot(ctx, frame).await {
+                            let _ = out_tx.send(Message::Text(sys_error_json(e.client_code().as_str(), &e.to_string()))).await;
                         }
                     }
-
-                    Message::Ping(payload) => {
-                        let _ = out_tx.send(Message::Pong(payload.clone())).await;
-                    }
-                    Message::Pong(_) => {}
-                    Message::Close(_) => break,
                 }
             }
 
-            // ping
+            // ping tick
             _ = ping_tick.tick() => {
                 let _ = out_tx.send(Message::Ping(Vec::new())).await;
             }
 
-            // idle timeout
+            // idle timeout poll
             _ = tokio::time::sleep(Duration::from_millis(250)) => {
                 if sess.last_activity.elapsed() >= idle_timeout {
                     let _ = out_tx.send(Message::Text(sys_error_json("TIMEOUT", "idle timeout"))).await;
@@ -306,6 +278,10 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
             }
         }
     }
+
+    // ---- cleanup
+    core.sessions.remove(&user_id);
+    core.presence.cleanup_user(&user_id);
 
     Ok(())
 }
