@@ -1,6 +1,8 @@
 version: 1
 gateway:
   listen: "0.0.0.0:8080"
+  ping_interval_ms: 20000
+  idle_timeout_ms: 60000
 tenants:
   - id: "acme"
     limits:

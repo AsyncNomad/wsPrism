@@ -4,6 +4,7 @@
 #![allow(clippy::expect_used)]
 #![allow(clippy::panic)]
 
+use base64::{engine::general_purpose, Engine as _};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -30,7 +31,9 @@ pub struct FrameData {
 impl FrameData {
     pub fn decode(&self) -> Vec<u8> {
         match self.encoding.as_str() {
-            "base64" => base64::decode(&self.data).expect("invalid base64 in test vector"),
+            "base64" => general_purpose::STANDARD
+                .decode(&self.data)
+                .expect("invalid base64 in test vector"),
             "hex" => hex::decode(&self.data).expect("invalid hex in test vector"),
             other => panic!("unsupported encoding: {other}"),
         }

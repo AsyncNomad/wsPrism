@@ -47,7 +47,9 @@ pub fn decode_hot_frame(mut buf: Bytes) -> Result<HotFrame> {
 
     let seq = if (flags & HOT_FLAG_SEQ_PRESENT) != 0 {
         if buf.remaining() < 4 {
-            return Err(WsPrismError::BadRequest("seq flag set but missing u32".into()));
+            return Err(WsPrismError::BadRequest(
+                "seq flag set but missing u32".into(),
+            ));
         }
         Some(buf.get_u32_le())
     } else {

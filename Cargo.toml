@@ -3,21 +3,19 @@ resolver = "2"
 members = ["crates/*"]
 
 [workspace.dependencies]
-# Runtime/Logging
+# runtime / logging
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
-# Serialization/Error
+# serialization / config / errors
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
 serde_yaml = "0.9"
 thiserror = "1"
 
-# Binary
+# binary utils
 bytes = "1"
-base64 = "0.21"
-hex = "0.4"
 
-# Internal Crates
+# internal crates
 wsprism-core = { path = "crates/wsprism-core" }
