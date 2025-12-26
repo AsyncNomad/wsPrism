@@ -7,6 +7,7 @@ use serde_json::value::RawValue;
 
 /// Ext Lane envelope (Text frame).
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Envelope {
     /// Protocol version.
     pub v: u8,
