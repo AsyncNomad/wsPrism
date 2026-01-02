@@ -20,8 +20,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install mdBook
-        run: cargo install mdbook
+      - name: Install mdBook + mermaid
+        run: |
+          cargo install mdbook
+          cargo install mdbook-mermaid
+          mdbook-mermaid install
 
       - name: Build mdBook
         run: mdbook build docs
