@@ -16,6 +16,8 @@ use crate::realtime::RealtimeCore;
 // ✅ Sprint 3 Services
 use crate::services::{ChatService, EchoBinaryService};
 
+const FAIL_FAST_ON_MISMATCH: bool = false; // if changed to true, boot fails.
+
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<AppStateInner>,
@@ -62,6 +64,49 @@ impl AppState {
 
         // (2) EchoBinaryService (svc_id: 1)
         dispatcher.register_hot(Arc::new(EchoBinaryService::new(1)));
+
+        // allowlist <-> dispatcher sanity check
+        {
+            let text_svcs = dispatcher.registered_text_svcs();
+            let hot_svcs = dispatcher.registered_hot_svcs();
+
+            let exempt_text = ["room", "sys"]; // transport/internal
+
+            for t in &cfg.tenants {
+                // ext rules: "svc:type"
+                for rule in &t.policy.ext_allowlist {
+                    if let Some((svc, _ty)) = rule.split_once(':') {
+                        if exempt_text.contains(&svc) { continue; }
+                        if !text_svcs.contains(&svc) {
+                            tracing::warn!(tenant=%t.id, rule=%rule, "ext_allowlist refers to unregistered text service");
+                            if FAIL_FAST_ON_MISMATCH {
+                                return Err(WsPrismError::BadRequest(format!(
+                                    "tenant {} ext_allowlist references unregistered text service: {}",
+                                    t.id, svc
+                                )));
+                            }
+                        }
+                    }
+                }
+
+                // hot rules: "sid:opcode"
+                for rule in &t.policy.hot_allowlist {
+                    if let Some((sid_s, _op)) = rule.split_once(':') {
+                        if let Ok(sid) = sid_s.parse::<u8>() {
+                            if !hot_svcs.contains(&sid) {
+                                tracing::warn!(tenant=%t.id, rule=%rule, sid=%sid, "hot_allowlist refers to unregistered binary service");
+                                if FAIL_FAST_ON_MISMATCH {
+                                    return Err(WsPrismError::BadRequest(format!(
+                                        "tenant {} hot_allowlist references unregistered hot service id: {}",
+                                        t.id, sid
+                                    )));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Ok(Self {
             inner: Arc::new(AppStateInner { cfg, tenant_policy }),

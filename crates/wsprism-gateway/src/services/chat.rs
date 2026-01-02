@@ -55,21 +55,10 @@ impl TextService for ChatService {
                     })),
                 };
 
-                ctx.publish_room_reliable(&out_payload_room(&out)?, out).await
+                // ✅ room은 이미 있으니 그대로 사용
+                ctx.publish_room_reliable(&room, out).await
             }
             _ => Err(WsPrismError::BadRequest("unknown chat type".into())),
         }
-    }
-}
-
-// Helper: pick room from JSON (we already have room string, but keep Outgoing generic)
-fn out_payload_room(out: &Outgoing) -> Result<String> {
-    match &out.payload {
-        Payload::TextJson(v) => v
-            .get("room")
-            .and_then(|r| r.as_str())
-            .map(|s| s.to_string())
-            .ok_or_else(|| WsPrismError::Internal("missing room in outgoing".into())),
-        _ => Err(WsPrismError::Internal("chat outgoing must be json".into())),
     }
 }

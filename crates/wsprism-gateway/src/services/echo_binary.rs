@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_core::error::Result;
 use wsprism_core::protocol::hot::HotFrame;
 
 use crate::dispatch::BinaryService;
@@ -24,17 +24,19 @@ impl BinaryService for EchoBinaryService {
     }
 
     async fn handle_binary(&self, ctx: RealtimeCtx, frame: HotFrame) -> Result<()> {
-        let room = ctx
-            .active_room()
-            .ok_or_else(|| WsPrismError::BadRequest("no active_room".into()))?;
-
-        // Production: do NOT convert to JSON. Broadcast compact binary.
-        // Here we broadcast frame.payload as-is (you can add a small header if needed).
         let out = Outgoing {
             qos: QoS::Lossy,
             payload: Payload::Binary(frame.payload.clone()),
         };
 
-        ctx.publish_room_lossy(room, out)
+        if let Some(room) = ctx.active_room() {
+            // room-based publish
+            ctx.publish_room_lossy(room, out)?;
+            Ok(())
+        } else {
+            // roomless: only echo to current session
+            ctx.send_to_session(out)?;
+            Ok(())
+        }
     }
 }

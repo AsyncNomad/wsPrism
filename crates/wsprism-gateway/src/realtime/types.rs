@@ -64,7 +64,7 @@ impl PreparedMsg {
     }
 
     /// Convert to axum::ws::Message for transport.
-    /// NOTE: axum::Message::Binary requires Vec<u8>, so Binary path clones into Vec.
+    /// NOTE: axum::Message::Binary requires `Vec<u8>`, so Binary path clones into Vec.
     pub fn to_ws_message(&self) -> Message {
         match self {
             PreparedMsg::Text(s) => Message::Text(s.clone()),

@@ -33,6 +33,7 @@ impl GatewayConfig {
                 if !seen.insert(t.id.clone()) {
                     return Err(WsPrismError::BadRequest(format!("duplicate tenant id: {}", t.id)));
                 }
+                t.validate()?;
             }
         }
 
@@ -103,9 +104,19 @@ pub struct TenantConfig {
     #[serde(default)]
     pub limits: TenantLimits,
 
-    /// Sprint 2: policy controls (strict by default).
+    /// Sprint 2+: policy controls (strict by default).
     #[serde(default)]
     pub policy: TenantPolicy,
+}
+
+impl TenantConfig {
+    pub fn validate(&self) -> Result<()> {
+        if self.limits.max_frame_bytes == 0 {
+            return Err(WsPrismError::BadRequest("limits.max_frame_bytes must be > 0".into()));
+        }
+        self.policy.validate()?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Default)]
@@ -119,18 +130,93 @@ fn default_max_frame_bytes() -> usize {
     4096
 }
 
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum RateLimitScope {
+    Tenant,
+    Connection,
+    Both,
+}
+
+fn default_rate_limit_scope() -> RateLimitScope {
+    // YAML 코멘트(연결당)에 맞춰 기본은 connection으로.
+    RateLimitScope::Connection
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum HotErrorMode {
+    SysError,
+    Silent,
+}
+
+fn default_hot_error_mode() -> HotErrorMode {
+    HotErrorMode::SysError
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMode {
+    Single,
+    Multi,
+}
+
+#[derive(Debug, Deserialize, Clone, Copy)]
+#[serde(rename_all = "snake_case")]
+pub enum OnExceed {
+    Deny,
+    KickOldest,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct SessionPolicy {
+    #[serde(default = "default_session_mode")]
+    pub mode: SessionMode,
+
+    #[serde(default = "default_max_sessions_per_user")]
+    pub max_sessions_per_user: u32,
+
+    #[serde(default = "default_on_exceed")]
+    pub on_exceed: OnExceed,
+}
+
+fn default_session_mode() -> SessionMode {
+    SessionMode::Multi
+}
+fn default_max_sessions_per_user() -> u32 {
+    4
+}
+fn default_on_exceed() -> OnExceed {
+    OnExceed::Deny
+}
+
+impl Default for SessionPolicy {
+    fn default() -> Self {
+        Self {
+            mode: default_session_mode(),
+            max_sessions_per_user: default_max_sessions_per_user(),
+            on_exceed: default_on_exceed(),
+        }
+    }
+}
+
 /// Tenant policy knobs.
 /// Defaults are STRICT (deny-by-default) but include minimal room join/leave for Sprint 2.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct TenantPolicy {
-    /// Tenant-level inbound rate limit in requests per second.
+    /// Tenant-level or connection-level inbound rate limit in requests per second.
     #[serde(default = "default_rate_limit_rps")]
     pub rate_limit_rps: u32,
 
     /// Burst capacity for token bucket.
     #[serde(default = "default_rate_limit_burst")]
     pub rate_limit_burst: u32,
+
+    /// Where to apply rate limiting.
+    #[serde(default = "default_rate_limit_scope")]
+    pub rate_limit_scope: RateLimitScope,
 
     /// Ext lane allowlist entries, like:
     /// - "room:join"
@@ -144,6 +230,22 @@ pub struct TenantPolicy {
     /// - "1:1" (svc_id=1, opcode=1)
     #[serde(default)]
     pub hot_allowlist: Vec<String>,
+
+    /// Session policy (1:1 / 1:N)
+    #[serde(default)]
+    pub sessions: SessionPolicy,
+
+    /// Hot lane error surface (sys.error vs silent)
+    #[serde(default = "default_hot_error_mode")]
+    pub hot_error_mode: HotErrorMode,
+
+    /// If true, hot lane requires active_room; if false, roomless hot services are allowed.
+    #[serde(default = "default_hot_requires_active_room")]
+    pub hot_requires_active_room: bool,
+}
+
+fn default_hot_requires_active_room() -> bool {
+    true
 }
 
 impl Default for TenantPolicy {
@@ -151,9 +253,43 @@ impl Default for TenantPolicy {
         Self {
             rate_limit_rps: default_rate_limit_rps(),
             rate_limit_burst: default_rate_limit_burst(),
+            rate_limit_scope: default_rate_limit_scope(),
             ext_allowlist: default_ext_allowlist(),
             hot_allowlist: Vec::new(),
+            sessions: SessionPolicy::default(),
+            hot_error_mode: default_hot_error_mode(),
+            hot_requires_active_room: default_hot_requires_active_room(),
         }
+    }
+}
+
+impl TenantPolicy {
+    pub fn validate(&self) -> Result<()> {
+        if self.rate_limit_rps == 0 || self.rate_limit_burst == 0 {
+            return Err(WsPrismError::BadRequest(
+                "policy.rate_limit_rps and rate_limit_burst must be > 0".into(),
+            ));
+        }
+
+        // sessions policy sanity
+        match self.sessions.mode {
+            SessionMode::Single => {
+                if self.sessions.max_sessions_per_user != 1 {
+                    return Err(WsPrismError::BadRequest(
+                        "policy.sessions.mode=single requires max_sessions_per_user=1".into(),
+                    ));
+                }
+            }
+            SessionMode::Multi => {
+                if self.sessions.max_sessions_per_user == 0 {
+                    return Err(WsPrismError::BadRequest(
+                        "policy.sessions.max_sessions_per_user must be > 0".into(),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

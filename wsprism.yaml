@@ -1,26 +1,189 @@
-version: 1
+# wsprism.yaml
+# -----------------------
+# wsPrism Gateway Config
+# -----------------------
+
+version: 1  # (required) config schema version. Currently only 1 is supported.
 
 gateway:
+  # WebSocket server bind address.
+  # type: string (SocketAddr)
   listen: "0.0.0.0:8080"
+
+  # Server-side heartbeat interval.
+  # Sends WS Ping frames every ping_interval_ms.
+  # type: integer (ms), recommended: 5000 ~ 60000
   ping_interval_ms: 5000
+
+  # Idle timeout (connection liveness deadline).
+  # If there is no inbound activity for this duration, gateway closes the session.
+  # NOTE: current implementation treats ANY inbound frame (including Pong) as activity.
+  # type: integer (ms), must be > ping_interval_ms
   idle_timeout_ms: 10000
 
+
 tenants:
-  - id: acme
+  # -----------------------
+  # Tenant A: "acme"
+  # -----------------------
+  - id: acme  # (required) tenant id used in ws URL: ?tenant=acme
+
     limits:
+      # Maximum size for a single WebSocket frame in bytes.
+      # Used as an early guardrail against memory exhaustion / oversized packets.
+      # type: integer (bytes), must be > 0
       max_frame_bytes: 65536
 
     policy:
+      # -----------------------
+      # Rate Limiting
+      # -----------------------
+
+      # Token bucket refill rate (requests per second).
+      # Interpreted as "frames per second" at transport layer.
+      # type: integer, must be > 0
       rate_limit_rps: 1000
+
+      # Token bucket burst capacity.
+      # type: integer, must be > 0
       rate_limit_burst: 2000
 
-      # allowlist는 "문자열 배열" 형태
+      # Where to apply rate limiting:
+      # - tenant      : one shared bucket for the whole tenant (global)
+      # - connection  : one bucket per connection/session
+      # - both        : both checks (tenant AND connection)
+      # type: enum {tenant, connection, both}
+      rate_limit_scope: both
+
+      # -----------------------
+      # Session Policy (1:1 / 1:N)
+      # -----------------------
+
+      sessions:
+        # Connection model:
+        # - single : 1 user -> 1 session (banking-like)
+        # - multi  : 1 user -> N sessions (chat/game/collab-like)
+        # type: enum {single, multi}
+        mode: multi
+
+        # Max concurrent sessions per user within this tenant.
+        # If mode=single, this must be 1.
+        # type: integer >= 1
+        max_sessions_per_user: 4
+
+        # When exceeding max sessions:
+        # - deny       : reject the new connection attempt
+        # - kick_oldest: close the oldest existing session and accept the new one
+        # type: enum {deny, kick_oldest}
+        on_exceed: kick_oldest
+
+      # -----------------------
+      # Hot Lane behavior controls
+      # -----------------------
+
+      # What to do when hot lane hits an error that would be client-visible.
+      # - sys_error : send sys.error (Text frame) even for hot lane
+      # - silent    : do not respond, just drop/close depending on decision
+      # type: enum {sys_error, silent}
+      hot_error_mode: silent
+
+      # If true, hot lane requires an active_room (set via room:join).
+      # If false, roomless binary services are allowed.
+      # type: boolean
+      hot_requires_active_room: true
+
+      # -----------------------
+      # Allowlists (deny-by-default)
+      # -----------------------
+
+      # Ext Lane allowlist entries.
+      # Each entry format: "<svc>:<type>"
+      # Wildcards:
+      # - "<svc>:*" allows all types for that service
+      # Examples:
+      # - "room:join", "room:leave"
+      # - "chat:send"
+      # - "chat:*"
       ext_allowlist:
         - "room:join"
         - "room:leave"
         - "chat:send"
-        - "chat:message"
+        - "chat:*"
 
-      # hot_allowlist도 일단 동일하게 문자열로(스키마가 string을 기대하는 상태라 가정)
+      # Hot Lane allowlist entries.
+      # Each entry format: "<svc_id>:<opcode>" where both are u8 range numbers.
+      # Wildcards:
+      # - "<svc_id>:*" allows all opcodes for that service id
+      # Examples:
+      # - "1:1" movement
+      # - "1:*" allow all binary opcodes for svc_id=1
       hot_allowlist:
-        - "1:1"
+        - "1:*"
+
+
+  # -----------------------
+  # Tenant B: "bank" (single session, strict)
+  # -----------------------
+  - id: bank
+
+    limits:
+      # Smaller max frame for stricter security posture.
+      max_frame_bytes: 16384
+
+    policy:
+      # More conservative rate limit.
+      rate_limit_rps: 100
+      rate_limit_burst: 200
+      rate_limit_scope: tenant
+
+      sessions:
+        mode: single
+        max_sessions_per_user: 1
+        on_exceed: deny  # single session + deny is common for banking
+
+      hot_error_mode: sys_error
+      hot_requires_active_room: true
+
+      ext_allowlist:
+        - "room:join"
+        - "room:leave"
+        # Only allow very limited ext features.
+        - "chat:send"
+
+      hot_allowlist:
+        # No hot lane by default; empty means strict deny (drop).
+        # - "1:*"
+        []
+
+
+  # -----------------------
+  # Tenant C: "game" (multi session, high throughput)
+  # -----------------------
+  - id: game
+
+    limits:
+      max_frame_bytes: 65536
+
+    policy:
+      rate_limit_rps: 5000
+      rate_limit_burst: 10000
+      rate_limit_scope: connection  # per-connection only (very common for games)
+
+      sessions:
+        mode: multi
+        max_sessions_per_user: 10
+        on_exceed: kick_oldest
+
+      hot_error_mode: silent
+      hot_requires_active_room: true
+
+      ext_allowlist:
+        - "room:join"
+        - "room:leave"
+        - "chat:*"
+        - "match:*"
+
+      hot_allowlist:
+        - "1:*"   # gameplay
+        - "2:*"   # physics
+        - "10:1"  # reserved admin opcode (example)

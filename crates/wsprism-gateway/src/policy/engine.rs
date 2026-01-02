@@ -3,16 +3,14 @@ use std::time::{Duration, Instant};
 
 use wsprism_core::error::ClientCode;
 
-use crate::config::schema::TenantPolicy;
+pub use crate::config::schema::{HotErrorMode, OnExceed, SessionMode};
+use crate::config::schema::{RateLimitScope, SessionPolicy, TenantPolicy};
 
-use super::allowlist::{compile_ext_rules, compile_hot_rules, is_ext_allowed, is_hot_allowed, ExtRule, HotRule};
+use super::allowlist::{
+    compile_ext_rules, compile_hot_rules, is_ext_allowed, is_hot_allowed, ExtRule, HotRule,
+};
 
 /// Decision from policy evaluation.
-///
-/// - Pass: continue to next stage
-/// - Drop: silently ignore (recommended for Hot Lane abuse)
-/// - Reject: send an error to client but keep the connection
-/// - Close: send an error (best-effort) then close the connection
 #[derive(Debug, Clone)]
 pub enum PolicyDecision {
     Pass,
@@ -30,28 +28,74 @@ pub struct TenantPolicyRuntime {
     ext_rules: Vec<ExtRule>,
     hot_rules: Vec<HotRule>,
 
-    // Simple token bucket rate limiter (tenant-level).
-    limiter: RateLimiter,
+    // Rate limit configuration
+    rate_limit_scope: RateLimitScope,
+    conn_rps: u32,
+    conn_burst: u32,
+    tenant_limiter: Option<RateLimiter>,
+
+    // Session policy
+    sessions: SessionPolicy,
+
+    // Hot lane behavior
+    hot_error_mode: HotErrorMode,
+    hot_requires_active_room: bool,
 }
 
 impl TenantPolicyRuntime {
-    pub fn new(tenant_id: String, max_frame_bytes: usize, policy: &TenantPolicy) -> wsprism_core::Result<Self> {
+    pub fn new(
+        tenant_id: String,
+        max_frame_bytes: usize,
+        policy: &TenantPolicy,
+    ) -> wsprism_core::Result<Self> {
         let ext_rules = compile_ext_rules(&policy.ext_allowlist)?;
         let hot_rules = compile_hot_rules(&policy.hot_allowlist)?;
+
+        let tenant_limiter = match policy.rate_limit_scope {
+            RateLimitScope::Tenant | RateLimitScope::Both => {
+                Some(RateLimiter::new(policy.rate_limit_rps, policy.rate_limit_burst))
+            }
+            RateLimitScope::Connection => None,
+        };
 
         Ok(Self {
             tenant_id,
             max_frame_bytes,
             ext_rules,
             hot_rules,
-            limiter: RateLimiter::new(policy.rate_limit_rps, policy.rate_limit_burst),
+            rate_limit_scope: policy.rate_limit_scope,
+            conn_rps: policy.rate_limit_rps,
+            conn_burst: policy.rate_limit_burst,
+            tenant_limiter,
+            sessions: policy.sessions.clone(),
+            hot_error_mode: policy.hot_error_mode,
+            hot_requires_active_room: policy.hot_requires_active_room,
         })
+    }
+
+    pub fn session_policy(&self) -> &SessionPolicy {
+        &self.sessions
+    }
+    pub fn hot_error_mode(&self) -> HotErrorMode {
+        self.hot_error_mode
+    }
+    pub fn hot_requires_active_room(&self) -> bool {
+        self.hot_requires_active_room
+    }
+
+    /// Create per-connection limiter if enabled (Connection/Both).
+    pub fn new_connection_limiter(&self) -> Option<ConnRateLimiter> {
+        match self.rate_limit_scope {
+            RateLimitScope::Connection | RateLimitScope::Both => {
+                Some(ConnRateLimiter::new(self.conn_rps, self.conn_burst))
+            }
+            RateLimitScope::Tenant => None,
+        }
     }
 
     /// Cheap global checks for any inbound payload.
     pub fn check_len(&self, bytes_len: usize) -> PolicyDecision {
         if bytes_len > self.max_frame_bytes {
-            // For extreme abuse you may prefer Close, but Reject is friendlier for Ext.
             return PolicyDecision::Close {
                 code: ClientCode::BadRequest,
                 msg: "frame too large",
@@ -60,18 +104,19 @@ impl TenantPolicyRuntime {
         PolicyDecision::Pass
     }
 
-    /// Ext Lane policy: svc/type allowlist + rate limit.
+    /// Ext Lane policy: svc/type allowlist + (optional) tenant-level rate limit.
     pub fn check_text(&self, bytes_len: usize, svc: &str, msg_type: &str) -> PolicyDecision {
         match self.check_len(bytes_len) {
             PolicyDecision::Pass => {}
             other => return other,
         }
 
-        if !self.limiter.allow() {
-            return PolicyDecision::Drop;
+        if let Some(lim) = &self.tenant_limiter {
+            if !lim.allow() {
+                return PolicyDecision::Drop;
+            }
         }
 
-        // If allowlist is empty, we default-deny (strict).
         if self.ext_rules.is_empty() {
             return PolicyDecision::Reject {
                 code: ClientCode::BadRequest,
@@ -89,20 +134,21 @@ impl TenantPolicyRuntime {
         PolicyDecision::Pass
     }
 
-    /// Hot Lane policy: svc_id/opcode allowlist + rate limit.
+    /// Hot Lane policy: svc_id/opcode allowlist + (optional) tenant-level rate limit.
     pub fn check_hot(&self, bytes_len: usize, svc_id: u8, opcode: u8) -> PolicyDecision {
         match self.check_len(bytes_len) {
             PolicyDecision::Pass => {}
             other => return other,
         }
 
-        // Hot Lane: rate limit violations should be silent drops.
-        if !self.limiter.allow() {
-            return PolicyDecision::Drop;
+        if let Some(lim) = &self.tenant_limiter {
+            if !lim.allow() {
+                return PolicyDecision::Drop;
+            }
         }
 
         if self.hot_rules.is_empty() {
-            return PolicyDecision::Drop; // strict deny for hot lane
+            return PolicyDecision::Drop; // strict deny
         }
 
         if !is_hot_allowed(&self.hot_rules, svc_id, opcode) {
@@ -113,10 +159,25 @@ impl TenantPolicyRuntime {
     }
 }
 
-/// Minimal token-bucket limiter.
-///
-/// NOTE: This is intentionally small and dependency-free for Sprint 2.
-/// In production, you may wrap a battle-tested crate (e.g., governor).
+/// Per-connection token bucket (no mutex).
+#[derive(Debug)]
+pub struct ConnRateLimiter {
+    bucket: TokenBucket,
+}
+
+impl ConnRateLimiter {
+    pub fn new(rps: u32, burst: u32) -> Self {
+        Self {
+            bucket: TokenBucket::new(rps, burst),
+        }
+    }
+
+    pub fn allow(&mut self) -> bool {
+        self.bucket.allow()
+    }
+}
+
+/// Minimal token-bucket limiter (tenant-level, shared).
 struct RateLimiter {
     inner: Arc<Mutex<TokenBucket>>,
 }
@@ -129,11 +190,17 @@ impl RateLimiter {
     }
 
     fn allow(&self) -> bool {
-        let mut g = self.inner.lock().expect("rate limiter poisoned");
-        g.allow()
+        // Poisoned mutex means logic bug; treat as "deny" instead of panic.
+        // (enterprise: never bring down gateway)
+        if let Ok(mut g) = self.inner.lock() {
+            g.allow()
+        } else {
+            false
+        }
     }
 }
 
+#[derive(Debug)]
 struct TokenBucket {
     rps: u32,
     capacity: u32,
@@ -170,7 +237,6 @@ impl TokenBucket {
             return;
         }
 
-        // Refill in ms granularity (cheap, deterministic).
         let add = (elapsed.as_millis() as u64 * self.rps as u64 / 1000) as u32;
         if add > 0 {
             self.tokens = (self.tokens + add).min(self.capacity);

@@ -1,5 +1,3 @@
-# Readme(KR)
-
 <div align="center">
 
 <img src="assets/logo.png" alt="wsPrism Logo" width="600px">
@@ -28,49 +26,21 @@
 
 ### 1. 설정 (Configuration)
 
-프로젝트 루트의 `wsprism.yaml` 파일을 사용자의 요구에 맞게 수정합니다.
+wsPrism은 프로젝트 루트의 `wsprism.yaml` 파일을 통해 게이트웨이의 모든 동작을 제어합니다. 운영자는 이 파일을 커스텀함으로써 테넌트별로 완전히 다른 정책을 적용할 수 있습니다. 이를 통해 다음과 같은 것들을 설정할 수 있습니다:
 
-이 파일은 네트워크 설정, 보안 정책, 테넌트 격리를 제어합니다.
+- WebSocket 서버 주소, 핑 주기, 유휴 타임아웃 등 네트워크 동작
 
-```yaml
-version: 1
+- 테넌트(프로젝트) 단위의 격리된 정책
 
-gateway:
-  # WebSocket 서버가 바인딩될 주소와 포트
-  listen: "0.0.0.0:8080"
-  # 연결 유지를 위해 서버가 PING 프레임을 보내는 주기
-  ping_interval_ms: 5000
-  # 해당 시간 동안 PONG이 없으면 연결 종료
-  idle_timeout_ms: 10000
+- 초당 메시지 수, 버스트 허용량 등 Rate Limit 전략
 
-tenants:
-  - id: acme
-    limits:
-      # 단일 WebSocket 프레임의 최대 크기 (64KB)
-      # 메모리 고갈 공격 방지
-      max_frame_bytes: 65536
+- 유저당 동시 접속 수와 초과 시 동작을 정의하는 세션 정책 (1:1 / 1:N)
 
-    policy:
-      # 연결당 토큰 버킷 기반 레이트 리미트 설정
-      rate_limit_rps: 1000
-      rate_limit_burst: 2000
+- 저지연 바이너리 경로(Hot Lane)의 오류 처리 방식과 사용 조건
 
-      # 허용 목록(ALLOWLIST): 일치하는 메시지만 라우팅됨
+- 허용된 메시지만 통과시키는 Deny-by-default Allowlist 기반 라우팅
 
-      # [Ext Lane] 허용되는 텍스트/JSON 명령
-      ext_allowlist:
-        - "room:join"
-        - "room:leave"
-        - "chat:send"
-        - "chat:message"
-
-      # [Hot Lane] 허용되는 바이너리 오퍼코드
-      # 바이너리 프로토콜에 따라 "Major:Minor" 또는 "OpCode" 형식
-      hot_allowlist:
-        - "1:1" # 예: 플레이어 이동
-        - "1:2" # 예: 공격 액션
-
-```
+이 방식으로 wsPrism은 게임, 채팅, 협업 툴, 금융 시스템 등 서로 다른 요구사항을 코드 수정 없이 설정만으로 안전하고 일관되게 수용할 수 있습니다.
 
 ### 2. 게이트웨이 실행 (Run the Gateway)
 
@@ -91,8 +61,8 @@ RUST_LOG=wsprism_gateway=debug cargo run --release -- --config wsprism.yaml
 서버가 정상적으로 실행되면 다음과 같은 로그가 출력됩니다.
 
 ```
-INFO  wsprism::server > 🚀 wsPrism Gateway active at0.0.0.0:8080
-INFO  wsprism::loader > Loadedconfigurationfor tenant: "acme"
+INFO  wsprism::server > 🚀 wsPrism Gateway active at 0.0.0.0:8080
+INFO  wsprism::loader > Loaded configuration for tenant: "acme"
 ```
 
 ### 4. 연결 (Connect)
@@ -216,12 +186,7 @@ graph TD
 
 **wsPrism은 현재 실험적인 개인 프로토타입 프로젝트입니다.**
 
-엔터프라이즈급 아키텍처와 성능을 목표로 설계되었으나, 본 소프트웨어는 **어떠한 형태의 보증도 없이 “있는 그대로(as is)” 제공**됩니다.
-
-여기에는 상품성, 특정 목적 적합성, 비침해에 대한 보증이 포함되며 이에 국한되지 않습니다.
-
-본 소프트웨어를 사용함으로써, 귀하는 다음 사항에 동의하게 됩니다.
-
+엔터프라이즈급 아키텍처와 성능을 목표로 설계되었으나, 본 소프트웨어는 **어떠한 형태의 보증도 없이 “있는 그대로(as is)” 제공**됩니다. 여기에는 상품성, 특정 목적 적합성, 비침해에 대한 보증이 포함되며 이에 국한되지 않습니다. 본 소프트웨어를 사용함으로써, 귀하는 다음 사항에 동의하게 됩니다.
 1. **자기 책임 하에 사용:** 본 소프트웨어의 사용 또는 재배포 적합성에 대한 책임은 전적으로 사용자에게 있습니다.
 2. **책임 부인:** 저작자 또는 권리 보유자는, 본 소프트웨어의 사용 또는 이와 관련하여 발생하는 어떠한 청구, 손해, 책임에 대해서도 책임을 지지 않습니다.
 3. **프로덕션 인증 미완료:** 본 소프트웨어는 공식적인 보안 감사나 대규모 프로덕션 환경 검증을 거치지 않았습니다.

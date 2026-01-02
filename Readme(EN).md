@@ -28,46 +28,21 @@ Get wsPrism up and running in seconds.
 
 ### 1. Configuration
 
-Create a `wsprism.yaml` file in your project root. This file controls networking, security policies, and tenant isolation.
+wsPrism controls all gateway behavior through a single wsprism.yaml file located at the project root. By customizing this file, operators can apply completely different policies on a per-tenant basis. Through this configuration, the following aspects can be defined:
 
-```yaml
-version: 1
+- Network behavior such as the WebSocket server address, ping interval, and idle timeout
 
-gateway:
-  # The address and port the WebSocket server will bind to.
-  listen: "0.0.0.0:8080"
-  # Interval for sending server-side PING frames to keep connections alive.
-  ping_interval_ms: 5000
-  # Close connections if no PONG is received within this duration.
-  idle_timeout_ms: 10000
+- Isolated policies at the tenant (project) level
 
-tenants:
-  - id: acme
-    limits:
-      # Maximum allowed size for a single WebSocket frame (64KB).
-      # Helps prevent memory exhaustion attacks.
-      max_frame_bytes: 65536
+- Rate limiting strategies including requests per second and burst capacity
 
-    policy:
-      # Token bucket rate limiting settings per connection.
-      rate_limit_rps: 1000
-      rate_limit_burst: 2000
+- Session policies that define concurrent connections per user and behavior on exceed (1:1 / 1:N)
 
-      # ALLOWLIST: Only messages matching these patterns will be routed.
-      
-      # [Ext Lane] Text/JSON commands allowed for this tenant.
-      ext_allowlist:
-        - "room:join"
-        - "room:leave"
-        - "chat:send"
-        - "chat:message"
+- Error handling modes and usage conditions for the low-latency binary path (Hot Lane)
 
-      # [Hot Lane] Binary opcodes allowed (represented as strings).
-      # "Major:Minor" or "OpCode" format depending on your binary protocol.
-      hot_allowlist:
-        - "1:1" # e.g., Player Movement
-        - "1:2" # e.g., Attack Action
-```
+- Deny-by-default, allowlist-based routing that permits only explicitly allowed messages
+
+With this approach, wsPrism can safely and consistently support diverse requirements—such as games, chat applications, collaborative tools, and financial systems—purely through configuration, without any code changes.
 
 ### 2. Run the Gateway
 

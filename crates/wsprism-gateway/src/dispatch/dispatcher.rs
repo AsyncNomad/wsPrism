@@ -45,6 +45,14 @@ impl Dispatcher {
         self.hot.insert(svc.svc_id(), svc);
     }
 
+    pub fn registered_text_svcs(&self) -> Vec<&'static str> {
+        self.text.iter().map(|e| *e.key()).collect()
+    }
+
+    pub fn registered_hot_svcs(&self) -> Vec<u8> {
+        self.hot.iter().map(|e| *e.key()).collect()
+    }
+
     pub async fn dispatch_text(&self, ctx: RealtimeCtx, env: Envelope) -> Result<()> {
         let svc = env.svc.as_str();
         let handler = self

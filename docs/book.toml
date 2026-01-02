@@ -1,0 +1,13 @@
+[book]
+authors = ["AsyncNomad"]
+language = "en"
+src = "src"
+title = "wsPrism Documentation"
+
+[output.html]
+git-repository-url = "https://github.com/AsyncNomad/wsPrism"
+edit-url-template = "https://github.com/AsyncNomad/wsPrism/edit/main/docs/src/{path}"
+
+# Support Mermaid Diagram
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
