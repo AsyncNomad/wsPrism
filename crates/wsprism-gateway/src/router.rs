@@ -1,4 +1,6 @@
 //! Axum router wiring (HTTP -> WS upgrade).
+//!
+//! Currently exposes a single `/v1/ws` route for WebSocket upgrades.
 
 use axum::{routing::get, Router};
 

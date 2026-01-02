@@ -1,11 +1,7 @@
-//! Policy layer (Sprint 2).
+//! Policy layer (allowlists, limits, rate limiting).
 //!
-//! Ordering: policy → (plugins/WASM later) → service.
-//!
-//! Policy is intentionally cheap:
-//! - max_frame_bytes
-//! - allowlist (ext: svc/type, hot: svc_id/opcode)
-//! - rate limit (tenant-level token bucket)
+//! Compiles tenant policy configuration into fast lookup structures for
+//! transport and dispatcher layers to consume at runtime.
 
 pub mod allowlist;
 pub mod engine;

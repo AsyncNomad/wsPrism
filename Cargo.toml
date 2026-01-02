@@ -19,6 +19,7 @@ bytes = "1"
 
 # internal crates
 wsprism-core = { path = "crates/wsprism-core" }
+wsprism-gateway = { path = "crates/wsprism-gateway" }
 
 axum = { version = "0.7", features = ["ws"] }
 futures-util = "0.3"

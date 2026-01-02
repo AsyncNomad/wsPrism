@@ -23,6 +23,7 @@ pub trait BinaryService: Send + Sync {
     async fn handle_binary(&self, ctx: RealtimeCtx, frame: HotFrame) -> Result<()>;
 }
 
+/// Registry and dispatcher for Text (Ext lane) and Binary (Hot lane) services.
 #[derive(Default)]
 pub struct Dispatcher {
     text: DashMap<&'static str, Arc<dyn TextService>>,

@@ -1,3 +1,5 @@
+//! Built-in service registry (Ext + Hot).
+
 pub mod chat;
 pub mod echo_binary;
 

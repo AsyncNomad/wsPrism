@@ -1,9 +1,14 @@
+//! Typed configuration schema for the gateway (`wsprism.yaml`).
+//!
+//! Unknown fields are rejected to avoid silently ignoring operator intent.
+
 use serde::Deserialize;
 use wsprism_core::error::{Result, WsPrismError};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewayConfig {
+    /// Schema version (must be 1).
     pub version: u32,
 
     #[serde(default)]
@@ -45,12 +50,15 @@ impl GatewayConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GatewaySection {
+    /// Listener address (host:port).
     #[serde(default = "default_listen")]
     pub listen: String,
 
+    /// WebSocket ping interval in milliseconds.
     #[serde(default = "default_ping_interval_ms")]
     pub ping_interval_ms: u64,
 
+    /// Idle timeout in milliseconds. Connections with no activity beyond this are closed.
     #[serde(default = "default_idle_timeout_ms")]
     pub idle_timeout_ms: u64,
 }
@@ -99,6 +107,7 @@ fn default_idle_timeout_ms() -> u64 {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct TenantConfig {
+    /// Tenant identifier (namespaces policy and runtime state).
     pub id: String,
 
     #[serde(default)]
@@ -122,6 +131,7 @@ impl TenantConfig {
 #[derive(Debug, Deserialize, Clone, Default)]
 #[serde(deny_unknown_fields)]
 pub struct TenantLimits {
+    /// Maximum allowed frame size for this tenant (bytes).
     #[serde(default = "default_max_frame_bytes")]
     pub max_frame_bytes: usize,
 }

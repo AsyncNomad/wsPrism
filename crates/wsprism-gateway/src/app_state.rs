@@ -16,8 +16,10 @@ use crate::realtime::RealtimeCore;
 // ✅ Sprint 3 Services
 use crate::services::{ChatService, EchoBinaryService};
 
-const FAIL_FAST_ON_MISMATCH: bool = false; // if changed to true, boot fails.
+/// If true, the gateway fails fast on allowlist/dispatcher mismatches at boot.
+const FAIL_FAST_ON_MISMATCH: bool = false;
 
+/// Shared, clonable gateway application state (config + policy + runtimes).
 #[derive(Clone)]
 pub struct AppState {
     inner: Arc<AppStateInner>,
@@ -31,8 +33,9 @@ struct AppStateInner {
 }
 
 impl AppState {
-    /// Build application state.
-    /// Returns Result so main can handle errors gracefully (no panic).
+    /// Build application state (config + compiled policies + runtimes).
+    ///
+    /// Returns `Result` so the binary can surface startup errors without panic.
     pub fn new(cfg: GatewayConfig) -> Result<Self> {
         // 1) Compile tenant policy runtimes
         let mut tenant_policy = HashMap::new();

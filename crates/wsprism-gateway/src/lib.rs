@@ -1,4 +1,8 @@
-//! wsprism-gateway library entry.
+//! wsPrism gateway library entry.
+//!
+//! This crate wires the transport, policy, dispatcher, realtime core, and
+//! built-in services into a cohesive gateway stack. It is intended to be
+//! consumed by the binary (`main.rs`) and by integration tests.
 
 pub mod app_state;
 pub mod config;

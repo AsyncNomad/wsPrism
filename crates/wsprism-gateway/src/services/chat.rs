@@ -9,6 +9,7 @@ use crate::dispatch::TextService;
 use crate::realtime::{Outgoing, Payload, QoS, RealtimeCtx};
 
 #[derive(Default)]
+/// Built-in text service for chat messaging on the Ext lane.
 pub struct ChatService;
 
 impl ChatService {

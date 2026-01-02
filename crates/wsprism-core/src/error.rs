@@ -1,8 +1,15 @@
-//! Shared error type across wsPrism crates.
+//! Shared error types across wsPrism crates.
+//!
+//! These errors form the stable surface area that the gateway can turn into
+//! client-facing responses (e.g., `sys.error` envelopes) while keeping internal
+//! implementation details encapsulated.
 
 use thiserror::Error;
 
-/// Client-facing error codes (stable API).
+/// Stable client-facing error codes.
+///
+/// These codes are used in outward-facing responses and logging to decouple
+/// client behavior from internal error variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClientCode {
     /// Invalid input / malformed message.
@@ -36,10 +43,10 @@ impl ClientCode {
     }
 }
 
-/// Shared result type.
+/// Convenient result alias for core operations.
 pub type Result<T> = std::result::Result<T, WsPrismError>;
 
-/// Unified error type used by core and gateway.
+/// Unified error type used by core and gateway layers.
 #[derive(Debug, Error)]
 pub enum WsPrismError {
     #[error("bad request: {0}")]

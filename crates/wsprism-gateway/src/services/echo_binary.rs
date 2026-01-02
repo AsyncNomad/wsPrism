@@ -6,7 +6,9 @@ use wsprism_core::protocol::hot::HotFrame;
 use crate::dispatch::BinaryService;
 use crate::realtime::{Outgoing, Payload, QoS, RealtimeCtx};
 
-/// Echo binary frames to active_room (Lossy). Useful to prove Hot Lane routing.
+/// Echo binary frames back to the active room or the current session.
+///
+/// Useful for proving Hot Lane routing and session scoping.
 pub struct EchoBinaryService {
     svc_id: u8,
 }

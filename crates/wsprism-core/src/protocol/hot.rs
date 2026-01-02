@@ -1,8 +1,9 @@
 //! Hot Lane binary frame parsing (panic-free).
 //!
 //! Parsing rules:
-//! - Never index (`buf[0]`) — always use `Buf` and `remaining()` checks.
+//! - Never index (`buf[0]`); always use `Buf` and `remaining()` checks.
 //! - Never `unwrap()` / `expect()` / `panic!()` in production paths.
+//! - Validate header lengths before reading optional fields.
 
 use bytes::Buf;
 use bytes::Bytes;
@@ -15,7 +16,7 @@ pub const HOT_FLAG_SEQ_PRESENT: u8 = 0x01;
 /// Parsed Hot Lane frame.
 #[derive(Debug, Clone)]
 pub struct HotFrame {
-    /// Protocol version.
+    /// Protocol version (must be 1).
     pub v: u8,
     /// Service id (routes to native BinaryService).
     pub svc_id: u8,
@@ -30,6 +31,9 @@ pub struct HotFrame {
 }
 
 /// Decode a Hot Lane frame from bytes.
+///
+/// Defensive against malformed input; returns structured errors instead of
+/// panicking on short buffers or unsupported versions.
 pub fn decode_hot_frame(mut buf: Bytes) -> Result<HotFrame> {
     // Minimum header: v, svc_id, opcode, flags
     if buf.remaining() < 4 {

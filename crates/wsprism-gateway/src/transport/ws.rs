@@ -8,8 +8,15 @@
 //! - Hot lane error surface configurable (sys.error vs silent)
 //! - Roomless hot lane configurable
 
+//! WebSocket handler (transport + session lifecycle).
+//!
+//! - Upgrades HTTP to WS
+//! - Resolves tenant policy + auth ticket
+//! - Applies per-connection/tenant policy, session limits, and room bookkeeping
+//! - Dispatches Ext/Hot messages downstream
+
 use axum::{
-    extract::{ws:: CloseFrame, ws::Message, ws::WebSocket, ws::WebSocketUpgrade, Query, State},
+    extract::{ws::CloseFrame, ws::Message, ws::WebSocket, ws::WebSocketUpgrade, Query, State},
     response::Response,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -52,9 +59,8 @@ pub struct WsQuery {
     pub sid: Option<String>,
 }
 
-// --------------------
 // Session local state
-// --------------------
+/// Per-connection state tracked within the WS handler loop.
 #[derive(Debug)]
 struct SessionState {
     active_room: Option<String>,

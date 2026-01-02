@@ -1,5 +1,10 @@
-use std::sync::Arc;
+//! Realtime egress engine and per-message context.
+//!
+//! Provides helpers to send to a single session, all sessions of a user, or to
+//! broadcast to a room with lossy/reliable QoS semantics.
+
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
@@ -7,8 +12,8 @@ use tokio::time::{timeout, Duration};
 
 use wsprism_core::error::{Result, WsPrismError};
 
-use crate::realtime::types::{Outgoing, PreparedMsg, QoS};
 use crate::realtime::core::{Presence, SessionRegistry};
+use crate::realtime::types::{Outgoing, PreparedMsg, QoS};
 
 static DROP_COUNT: AtomicU64 = AtomicU64::new(0);
 static SEND_FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -17,7 +22,7 @@ fn sample_every_1024(n: u64) -> bool {
     (n & 1023) == 1
 }
 
-/// RealtimeCore: egress engine (send to user / publish to room).
+/// RealtimeCore: egress engine (send to user / session / room).
 pub struct RealtimeCore {
     pub sessions: Arc<SessionRegistry>,
     pub presence: Arc<Presence>,

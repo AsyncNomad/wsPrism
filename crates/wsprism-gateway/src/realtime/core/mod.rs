@@ -1,4 +1,7 @@
 //! Realtime core components for Gateway runtime.
+//!
+//! Session registry, presence tracking, and the egress runtime/context shared
+//! across services.
 
 mod presence;
 mod realtime;

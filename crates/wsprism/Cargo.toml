@@ -1,0 +1,8 @@
+[package]
+name = "wsprism"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wsprism-core = { workspace = true }
+wsprism-gateway = { workspace = true }

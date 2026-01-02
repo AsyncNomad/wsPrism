@@ -1,3 +1,8 @@
+//! Compiled policy runtime for a tenant.
+//!
+//! Parses allowlists, enforces size/rate limits, and exposes connection-level
+//! limiters as needed by the transport layer.
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 

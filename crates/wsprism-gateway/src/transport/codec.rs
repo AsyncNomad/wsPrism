@@ -1,4 +1,4 @@
-//! Decode-once codec for transport layer (Sprint 1/2).
+//! Decode-once codec for the transport layer.
 //!
 //! - Text frames => Envelope (lazy `RawValue` for data)
 //! - Binary frames => HotFrame (panic-free bytes::Buf parsing)
@@ -12,10 +12,15 @@ use wsprism_core::{
 
 #[derive(Debug)]
 pub enum Inbound {
+    /// Ext lane JSON envelope with captured byte length (for policy).
     Text { env: text::Envelope, bytes_len: usize },
+    /// Hot lane binary frame with captured byte length (for policy).
     Hot { frame: hot::HotFrame, bytes_len: usize },
+    /// WS ping payload.
     Ping(Vec<u8>),
+    /// WS pong payload.
     Pong(Vec<u8>),
+    /// WS close control frame (no payload surfaced).
     Close,
 }
 

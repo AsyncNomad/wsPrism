@@ -5,6 +5,9 @@ use serde_json::Value;
 use wsprism_core::error::{Result, WsPrismError};
 
 /// Quality-of-Service strategy for outgoing delivery.
+///
+/// Chooses between latency-first (drop on backpressure) and reliability-first
+/// (await with optional timeout) behavior.
 #[derive(Debug, Clone)]
 pub enum QoS {
     /// Latency-critical: do not await; if the user's queue is full, drop.

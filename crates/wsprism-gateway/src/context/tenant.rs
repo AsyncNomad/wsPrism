@@ -5,14 +5,18 @@ use wsprism_core::error::{Result, WsPrismError};
 use crate::{app_state::AppState, policy};
 
 /// Immutable metadata for a connected session.
+/// Immutable metadata for a connected session (tenant/user/sid).
 #[derive(Debug, Clone)]
 pub struct SessionMeta {
+    /// Tenant identifier.
     pub tenant_id: String,
+    /// User identifier within the tenant.
     pub user_id: String,
+    /// Session identifier (per-connection).
     pub session_id: String,
 }
 
-/// Resolved tenant runtime (compiled policy + limits).
+/// Resolved tenant runtime (compiled policy + limits) for a given session.
 #[derive(Clone)]
 pub struct TenantContext {
     pub meta: SessionMeta,

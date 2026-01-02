@@ -1,4 +1,7 @@
 //! Gateway config loader (strict parsing).
+//!
+//! This module exposes the typed configuration (parsed from `wsprism.yaml`)
+//! and helpers to load/validate it before wiring the gateway runtime.
 
 pub mod schema;
 

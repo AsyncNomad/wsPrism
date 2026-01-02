@@ -1,10 +1,7 @@
-//! wsPrism Gateway (Sprint 1)
+//! wsPrism gateway binary entrypoint.
 //!
-//! Focus: transport & lifecycle
-//! - WebSocket endpoint: /v1/ws?tenant=...&ticket=...
-//! - Decode-once pipeline: WS Message -> Inbound (Text Envelope / HotFrame)
-//! - Tracing span per session
-//! - Heartbeat ping + idle timeout
+//! Bootstraps tracing, loads configuration, builds application state, and
+//! starts the WebSocket server.
 
 use std::net::SocketAddr;
 use tracing_subscriber::{fmt, EnvFilter};

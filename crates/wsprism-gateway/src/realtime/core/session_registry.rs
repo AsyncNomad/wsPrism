@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// One session's outbound queue sender.
+/// One session's outbound queue sender.
 #[derive(Clone)]
 pub struct Connection {
     pub tx: mpsc::Sender<Message>,
@@ -16,7 +17,9 @@ struct SessionEntry {
     created_seq: u64,
 }
 
-/// session_key -> Connection, user_key -> {session_key...}
+/// Session registry:
+/// - `session_key -> Connection`
+/// - `user_key -> {session_key...}`
 #[derive(Default)]
 pub struct SessionRegistry {
     sessions: DashMap<String, SessionEntry>,

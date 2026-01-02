@@ -1,9 +1,14 @@
 use dashmap::{DashMap, DashSet};
 
-/// Room presence: room_key -> sessions, session_key -> rooms.
+/// Room presence: `room_key -> sessions`, `session_key -> rooms`.
+///
+/// Keys are tenant-scoped strings to keep per-tenant state isolated.
+/// Room presence index scoped by tenant.
 #[derive(Default)]
 pub struct Presence {
+    /// room_key -> sessions
     room_to_sessions: DashMap<String, DashSet<String>>,
+    /// session_key -> rooms
     session_to_rooms: DashMap<String, DashSet<String>>,
 }
 
