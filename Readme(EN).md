@@ -9,6 +9,17 @@
 **Native Performance. Universal Extensibility.**
 
 </div>
+---
+
+<p align="center">
+  <a href="https://asyncnomad.github.io/wsPrism/">
+    <img src="https://img.shields.io/badge/📖_Project-Documentation-blue?style=for-the-badge" alt="Project Documentation">
+  </a>
+  &nbsp;
+  <a href="https://asyncnomad.github.io/wsPrism/api/wsprism/index.html">
+    <img src="https://img.shields.io/badge/⚙️_Rust-API_Docs-orange?style=for-the-badge&logo=rust" alt="Rust API Docs">
+  </a>
+</p>
 
 ---
 
