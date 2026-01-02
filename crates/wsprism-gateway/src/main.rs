@@ -5,6 +5,7 @@
 
 use std::net::SocketAddr;
 use tracing_subscriber::{fmt, EnvFilter};
+use tokio::time::Instant;
 
 use wsprism_gateway::{app_state, config, router};
 
@@ -21,10 +22,51 @@ async fn main() {
         .expect("gateway.listen must be a valid SocketAddr");
 
     let state = app_state::AppState::new(cfg).expect("failed to build app state");
-    let app = router::build_router(state);
+    let app = router::build_router(state.clone());
 
     tracing::info!(%listen, "wsprism-gateway starting");
     let listener = tokio::net::TcpListener::bind(listen).await.expect("failed to bind");
 
-    axum::serve(listener, app).await.expect("server failed");
+    let drain_grace_ms = state.cfg().gateway.drain_grace_ms;
+
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            shutdown_signal().await;
+
+            tracing::info!("shutdown signal received; entering draining mode");
+            state.enter_draining();
+            state.realtime().best_effort_shutdown_all("draining");
+
+            let deadline = Instant::now() + std::time::Duration::from_millis(drain_grace_ms);
+            while Instant::now() < deadline {
+                // len_sessions()가 없으면 all_sessions().len() 등 헬퍼를 추가해 사용
+                if state.realtime().sessions.len_sessions() == 0 {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("server failed");
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    let term = async {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+        let _ = sigterm.recv().await;
+    };
+
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = term => {},
+    }
 }

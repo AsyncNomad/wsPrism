@@ -3,8 +3,11 @@
 //! Provides helpers to send to a single session, all sessions of a user, or to
 //! broadcast to a room with lossy/reliable QoS semantics.
 
+use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+
+use axum::extract::ws::{CloseFrame, Message};
 
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
@@ -17,6 +20,16 @@ use crate::realtime::types::{Outgoing, PreparedMsg, QoS};
 
 static DROP_COUNT: AtomicU64 = AtomicU64::new(0);
 static SEND_FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Total number of egress drops (try_send failed).
+pub fn egress_drop_count() -> u64 {
+    DROP_COUNT.load(Ordering::Relaxed)
+}
+
+/// Total number of reliable send failures/timeouts.
+pub fn egress_send_fail_count() -> u64 {
+    SEND_FAIL_COUNT.load(Ordering::Relaxed)
+}
 
 fn sample_every_1024(n: u64) -> bool {
     (n & 1023) == 1
@@ -33,6 +46,26 @@ impl RealtimeCore {
         Self {
             sessions: Arc::new(SessionRegistry::new()),
             presence: Arc::new(Presence::new()),
+        }
+    }
+
+    /// Best-effort shutdown: ask all active sessions to close.
+    ///
+    /// This is intended for graceful process termination (draining). We only
+    /// enqueue Close frames; actual cleanup happens in each session's Drop guard.
+    pub fn best_effort_shutdown_all(&self, reason: &str) {
+        let sessions = self.sessions.all_sessions();
+        for (session_key, conn) in sessions {
+            let frame = CloseFrame {
+                code: 1001, // Going Away
+                reason: Cow::from(reason.to_string()),
+            };
+            if conn.tx.try_send(Message::Close(Some(frame))).is_err() {
+                let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
+                if sample_every_1024(n) {
+                    tracing::warn!(%session_key, drops=%n, "egress drop while draining");
+                }
+            }
         }
     }
 
@@ -62,10 +95,24 @@ impl RealtimeCore {
             .ok_or_else(|| WsPrismError::BadRequest("session not connected".into()))?;
 
         let prepared = PreparedMsg::prepare(&out)?;
-        let _ = conn.tx.try_send(prepared.to_ws_message());
+        match conn.tx.try_send(prepared.to_ws_message()) {
+            Ok(()) => {}
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_msg)) => {
+                let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
+                if sample_every_1024(n) {
+                    tracing::warn!(%session_key, "send_to_session dropped: outbound queue FULL");
+                }
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_msg)) => {
+                let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
+                if sample_every_1024(n) {
+                    tracing::warn!(%session_key, "send_to_session dropped: channel CLOSED");
+                }
+            }
+        }
+
         Ok(())
     }
-
 
     /// Lossy broadcast: try_send only, drop if queue is full.
     pub fn publish_room_lossy(&self, room_key: &str, out: Outgoing) -> Result<()> {

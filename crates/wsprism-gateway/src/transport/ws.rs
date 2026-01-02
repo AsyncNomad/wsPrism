@@ -17,13 +17,15 @@
 
 use axum::{
     extract::{ws::CloseFrame, ws::Message, ws::WebSocket, ws::WebSocketUpgrade, Query, State},
+    http::StatusCode,
     response::Response,
 };
+use axum::response::IntoResponse;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, Instant};
+use tokio::time::{timeout, Duration, Instant};
 
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -37,6 +39,7 @@ use crate::policy::engine::{ConnRateLimiter, HotErrorMode, OnExceed, PolicyDecis
 use crate::realtime::core::Connection;
 use crate::realtime::{RealtimeCore, RealtimeCtx};
 use crate::transport::codec::{decode, Inbound};
+use crate::obs::metrics::GatewayMetrics;
 
 static NEXT_SID: AtomicU64 = AtomicU64::new(1);
 
@@ -119,12 +122,14 @@ struct SessionCleanup {
     core: Arc<RealtimeCore>,
     user_key: String,
     session_key: String,
+    metrics: Arc<GatewayMetrics>,
 }
 
 impl Drop for SessionCleanup {
     fn drop(&mut self) {
         let _ = self.core.sessions.remove_session(&self.user_key, &self.session_key);
         self.core.presence.cleanup_session(&self.session_key);
+        self.metrics.on_session_close();
         tracing::debug!(user_key=%self.user_key, session_key=%self.session_key, "session cleaned up");
     }
 }
@@ -137,6 +142,12 @@ pub async fn ws_upgrade(
     ws: WebSocketUpgrade,
     Query(q): Query<WsQuery>,
 ) -> Response {
+    if app.is_draining() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "draining").into_response();
+    }
+
+    app.metrics().inc_ws_upgrades();
+
     ws.on_upgrade(move |socket| async move {
         let _ = run_session(app, q, socket).await;
     })
@@ -164,6 +175,7 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
     // ---- shared core/dispatcher
     let core: Arc<RealtimeCore> = app.realtime();
     let dispatcher: Arc<Dispatcher> = app.dispatcher();
+    let metrics = app.metrics();
 
     // ---- derived keys (tenant scoped)
     let user_key = format!("{}::{}", q.tenant, user_id);
@@ -214,6 +226,8 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                     if victim_conn.tx.try_send(Message::Close(Some(frame))).is_err() {
                         tracing::warn!(victim_session_key=%victim_session_key, "failed to close victim session");
                     }
+
+                    metrics.inc_kicked();
                 } else {
                     let _ = out_tx
                         .send(Message::Text(sys_error_json("TOO_MANY_SESSIONS", "too many sessions")))
@@ -231,11 +245,14 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
         Connection { tx: out_tx.clone() },
     );
 
+    metrics.on_session_open();
+
     // ---- cleanup guard (covers ALL early returns)
     let _cleanup = SessionCleanup {
         core: core.clone(),
         user_key: user_key.clone(),
         session_key: session_key.clone(),
+        metrics: metrics.clone(),
     };
 
     // ---- send authed
@@ -248,6 +265,7 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
     let gw = &app.cfg().gateway;
     let ping_every = Duration::from_millis(gw.ping_interval_ms);
     let idle_timeout = Duration::from_millis(gw.idle_timeout_ms);
+    let writer_timeout = Duration::from_millis(gw.writer_send_timeout_ms);
 
     let mut ping_tick = tokio::time::interval(ping_every);
     ping_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -268,9 +286,17 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
             maybe_out = out_rx.recv() => {
                 match maybe_out {
                     Some(m) => {
-                        if ws_tx.send(m).await.is_err() {
-                            tracing::debug!("ws_tx send failed; closing session");
-                            break;
+                        match timeout(writer_timeout, ws_tx.send(m)).await {
+                            Err(_) => {
+                                metrics.inc_writer_send_timeout();
+                                tracing::warn!(timeout_ms = gw.writer_send_timeout_ms, "writer send timeout; closing slow consumer");
+                                break;
+                            }
+                            Ok(Err(_)) => {
+                                tracing::debug!("ws_tx send failed; closing session");
+                                break;
+                            }
+                            Ok(Ok(())) => {}
                         }
                     }
                     None => break,
@@ -289,6 +315,7 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                     Ok(d) => d,
                     Err(e) => {
                         tracing::debug!(err=%e, "decode failed");
+                        metrics.inc_decode_error();
                         // Ext-style error surface (client-visible) for decode errors
                         let _ = out_tx.send(Message::Text(sys_error_json(e.client_code().as_str(), &e.to_string()))).await;
                         break;
@@ -314,12 +341,17 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                         // ---- tenant policy (ext lane)
                         match policy.check_text(bytes_len, &env.svc, &env.msg_type) {
                             PolicyDecision::Pass => {}
-                            PolicyDecision::Drop => continue,
+                            PolicyDecision::Drop => {
+                                metrics.inc_policy_drop();
+                                continue;
+                            }
                             PolicyDecision::Reject { code, msg } => {
+                                metrics.inc_policy_reject();
                                 let _ = out_tx.send(Message::Text(sys_error_json(code.as_str(), msg))).await;
                                 continue;
                             }
                             PolicyDecision::Close { code, msg } => {
+                                metrics.inc_policy_close();
                                 let _ = out_tx.send(Message::Text(sys_error_json(code.as_str(), msg))).await;
                                 break;
                             }
@@ -368,6 +400,9 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                         );
 
                         if let Err(e) = dispatcher.dispatch_text(ctx, env).await {
+                            if e.to_string().starts_with("unknown svc") {
+                                metrics.inc_unknown_service();
+                            }
                             tracing::debug!(code=%e.client_code().as_str(), err=%e, "text service error");
                             let _ = out_tx.send(Message::Text(sys_error_json(e.client_code().as_str(), &e.to_string()))).await;
                         }
@@ -385,8 +420,12 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                         // ---- tenant policy (hot lane)
                         match policy.check_hot(bytes_len, frame.svc_id, frame.opcode) {
                             PolicyDecision::Pass => {}
-                            PolicyDecision::Drop => continue,
+                            PolicyDecision::Drop => {
+                                metrics.inc_policy_drop();
+                                continue;
+                            }
                             PolicyDecision::Reject { code, msg } => {
+                                metrics.inc_policy_reject();
                                 // hot error surface configurable
                                 match policy.hot_error_mode() {
                                     HotErrorMode::Silent => continue,
@@ -397,6 +436,7 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                                 }
                             }
                             PolicyDecision::Close { code, msg } => {
+                                metrics.inc_policy_close();
                                 match policy.hot_error_mode() {
                                     HotErrorMode::Silent => break,
                                     HotErrorMode::SysError => {
@@ -427,6 +467,9 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                         );
 
                         if let Err(e) = dispatcher.dispatch_hot(ctx, frame).await {
+                            if e.to_string().starts_with("unknown hot svc_id") {
+                                metrics.inc_unknown_service();
+                            }
                             tracing::debug!(code=%e.client_code().as_str(), err=%e, "hot service error");
                             match policy.hot_error_mode() {
                                 HotErrorMode::Silent => {}

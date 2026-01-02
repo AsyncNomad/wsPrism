@@ -12,6 +12,7 @@ use wsprism_core::error::{Result, WsPrismError};
 use crate::{config::GatewayConfig, policy};
 use crate::dispatch::Dispatcher;
 use crate::realtime::RealtimeCore;
+use crate::obs::metrics::GatewayMetrics;
 
 // ✅ Sprint 3 Services
 use crate::services::{ChatService, EchoBinaryService};
@@ -25,6 +26,7 @@ pub struct AppState {
     inner: Arc<AppStateInner>,
     realtime: Arc<RealtimeCore>,
     dispatcher: Arc<Dispatcher>,
+    metrics: Arc<GatewayMetrics>,
 }
 
 struct AppStateInner {
@@ -37,6 +39,8 @@ impl AppState {
     ///
     /// Returns `Result` so the binary can surface startup errors without panic.
     pub fn new(cfg: GatewayConfig) -> Result<Self> {
+        let metrics = Arc::new(GatewayMetrics::default());
+
         // 1) Compile tenant policy runtimes
         let mut tenant_policy = HashMap::new();
         for t in &cfg.tenants {
@@ -115,6 +119,7 @@ impl AppState {
             inner: Arc::new(AppStateInner { cfg, tenant_policy }),
             realtime,
             dispatcher: Arc::new(dispatcher),
+            metrics,
         })
     }
 
@@ -139,5 +144,36 @@ impl AppState {
 
     pub fn dispatcher(&self) -> Arc<Dispatcher> {
         Arc::clone(&self.dispatcher)
+    }
+
+    pub fn metrics(&self) -> Arc<GatewayMetrics> {
+        Arc::clone(&self.metrics)
+    }
+
+    pub fn is_draining(&self) -> bool {
+        self.metrics.is_draining()
+    }
+
+    /// Enter draining mode (idempotent).
+    ///
+    /// Draining means:
+    /// - readiness becomes 503
+    /// - new WS upgrades are rejected
+    pub fn enter_draining(&self) {
+        let _ = self.metrics.set_draining();
+    }
+
+    /// Extra counters that are owned by other modules (egress drop/timeouts).
+    pub fn metrics_extra(&self) -> Vec<(&'static str, u64)> {
+        vec![
+            (
+                "wsprism_egress_drop_total",
+                crate::realtime::core::egress_drop_count(),
+            ),
+            (
+                "wsprism_egress_send_fail_total",
+                crate::realtime::core::egress_send_fail_count(),
+            ),
+        ]
     }
 }

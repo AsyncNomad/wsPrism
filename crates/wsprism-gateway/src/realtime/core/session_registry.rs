@@ -74,6 +74,21 @@ impl SessionRegistry {
         self.user_index.get(user_key).map(|s| s.len()).unwrap_or(0)
     }
 
+    /// Snapshot of all active sessions.
+    ///
+    /// Returns a vector of (session_key, Connection). Intended for best-effort
+    /// shutdown/draining logic.
+    pub fn all_sessions(&self) -> Vec<(String, Connection)> {
+        self.sessions
+            .iter()
+            .map(|r| (r.key().clone(), r.value().conn.clone()))
+            .collect()
+    }
+
+    pub fn len_sessions(&self) -> usize {
+        self.sessions.len()
+    }
+
     /// Evict the oldest session for this user.
     /// Returns (victim_session_key, victim_connection).
     pub fn evict_oldest(&self, user_key: &str) -> Option<(String, Connection)> {

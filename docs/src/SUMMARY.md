@@ -12,4 +12,4 @@
 - [Policy Engine](architecture/policy.md)
 
 # API Reference
-- [Rust API Docs](https://AsyncNomad.github.io/wsPrism/api/wsprism_gateway/index.html)
+- [Rust API Docs](https://asyncnomad.github.io/wsPrism/api/wsprism/index.html)

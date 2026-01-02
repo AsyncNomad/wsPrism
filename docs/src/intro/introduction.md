@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="../../../assets/logo.png" alt="wsPrism Logo" width="600px">
+<img src="../assets/logo.png" alt="wsPrism Logo" width="600px">
 
 # wsPrism
 

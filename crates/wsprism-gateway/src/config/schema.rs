@@ -61,6 +61,19 @@ pub struct GatewaySection {
     /// Idle timeout in milliseconds. Connections with no activity beyond this are closed.
     #[serde(default = "default_idle_timeout_ms")]
     pub idle_timeout_ms: u64,
+
+    /// Outbound writer send timeout in milliseconds.
+    ///
+    /// If a client is slow and a write stalls longer than this, the session is
+    /// closed to protect tail latency.
+    #[serde(default = "default_writer_send_timeout_ms")]
+    pub writer_send_timeout_ms: u64,
+
+    /// Grace period (ms) after entering draining mode before process exits.
+    ///
+    /// During draining, readiness becomes 503 and new upgrades are rejected.
+    #[serde(default = "default_drain_grace_ms")]
+    pub drain_grace_ms: u64,
 }
 
 impl Default for GatewaySection {
@@ -69,6 +82,8 @@ impl Default for GatewaySection {
             listen: default_listen(),
             ping_interval_ms: default_ping_interval_ms(),
             idle_timeout_ms: default_idle_timeout_ms(),
+            writer_send_timeout_ms: default_writer_send_timeout_ms(),
+            drain_grace_ms: default_drain_grace_ms(),
         }
     }
 }
@@ -90,6 +105,18 @@ impl GatewaySection {
                 "gateway.idle_timeout_ms must be greater than ping_interval_ms".into(),
             ));
         }
+
+        if !(50..=60000).contains(&self.writer_send_timeout_ms) {
+            return Err(WsPrismError::BadRequest(
+                "gateway.writer_send_timeout_ms must be between 50 and 60000".into(),
+            ));
+        }
+
+        if self.drain_grace_ms > 600000 {
+            return Err(WsPrismError::BadRequest(
+                "gateway.drain_grace_ms must be <= 600000".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -102,6 +129,14 @@ fn default_ping_interval_ms() -> u64 {
 }
 fn default_idle_timeout_ms() -> u64 {
     60000
+}
+
+fn default_writer_send_timeout_ms() -> u64 {
+    1500
+}
+
+fn default_drain_grace_ms() -> u64 {
+    2000
 }
 
 #[derive(Debug, Deserialize, Clone)]
