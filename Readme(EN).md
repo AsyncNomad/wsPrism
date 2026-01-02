@@ -9,7 +9,6 @@
 **Native Performance. Universal Extensibility.**
 
 </div>
----
 
 <p align="center">
   <a href="https://asyncnomad.github.io/wsPrism/">
