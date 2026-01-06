@@ -1,44 +1,59 @@
 # Configuration Guide
 
 wsPrism is configured via a single YAML file (`wsprism.yaml`) located in your project root.  
-This file controls networking, security policies, rate limits, session behavior, and tenant isolation.
+This file controls networking, security policies, rate limits, session behavior, tenant isolation, and observability.
 
 ---
 
 ## Full Configuration Example
 
 Below is a comprehensive example showing different tenant configurations:
-- **Standard SaaS**
-- **High-Security (Banking-style)**
-- **High-Throughput (Gaming-style)**
+
+- **Standard SaaS** – Balanced settings for general applications  
+- **High-Security (Banking-style)** – Strict single-session enforcement and audit-friendly behavior  
+- **High-Throughput (Gaming-style)** – Optimized for massive concurrency and low latency
 
 ```yaml
 # wsprism.yaml
-# -----------------------
-# wsPrism Gateway Config
-# -----------------------
+# ----------------=========================================----------------
+# wsPrism Gateway Configuration
+# ----------------=========================================----------------
 
 version: 1  # (required) Config schema version. Currently only 1 is supported.
 
 gateway:
-  # WebSocket server bind address
+  # -----------------------------------------------------------------------
+  # 1. Network & Lifecycle
+  # -----------------------------------------------------------------------
   listen: "0.0.0.0:8080"
+  ping_interval_ms: 20000
+  idle_timeout_ms: 60000
+  writer_send_timeout_ms: 1500
+  drain_grace_ms: 5000
 
-  # Server-side heartbeat interval (milliseconds)
-  ping_interval_ms: 5000
+  # -----------------------------------------------------------------------
+  # 2. Handshake Defender (DoS Protection)
+  # -----------------------------------------------------------------------
+  handshake_limit:
+    enabled: true
+    global_rps: 500
+    global_burst: 1000
+    per_ip_rps: 10
+    per_ip_burst: 20
+    max_ip_entries: 50000
 
-  # Idle timeout (milliseconds).
-  # Connection closes if no inbound activity.
-  # Must be greater than ping_interval_ms.
-  idle_timeout_ms: 10000
-
+  # -----------------------------------------------------------------------
 tenants:
-  # -----------------------
-  # Tenant A: "acme" (Standard)
-  # -----------------------
+  # =======================================================================
+  # Tenant A: "acme" (Standard SaaS)
+  # =======================================================================
   - id: acme
     limits:
       max_frame_bytes: 65536
+      max_sessions_total: 10000
+      max_rooms_total: 500
+      max_users_per_room: 100
+      max_rooms_per_user: 10
 
     policy:
       rate_limit_rps: 1000
@@ -57,16 +72,20 @@ tenants:
         - "room:join"
         - "room:leave"
         - "chat:*"
-      
+
       hot_allowlist:
         - "1:*"
 
-  # -----------------------
+  # =======================================================================
   # Tenant B: "bank" (High Security)
-  # -----------------------
+  # =======================================================================
   - id: bank
     limits:
       max_frame_bytes: 16384
+      max_sessions_total: 1000
+      max_rooms_total: 0
+      max_users_per_room: 0
+      max_rooms_per_user: 0
 
     policy:
       rate_limit_rps: 100
@@ -82,18 +101,21 @@ tenants:
       hot_requires_active_room: true
 
       ext_allowlist:
-        - "room:join"
-        - "room:leave"
-        - "chat:send"
-      
+        - "auth:verify"
+        - "msg:secure"
+
       hot_allowlist: []
 
-  # -----------------------
+  # =======================================================================
   # Tenant C: "game" (High Throughput)
-  # -----------------------
+  # =======================================================================
   - id: game
     limits:
       max_frame_bytes: 65536
+      max_sessions_total: 100000
+      max_rooms_total: 5000
+      max_users_per_room: 200
+      max_rooms_per_user: 0
 
     policy:
       rate_limit_rps: 5000
@@ -110,12 +132,11 @@ tenants:
 
       ext_allowlist:
         - "room:*"
-        - "chat:*"
         - "match:*"
-      
+
       hot_allowlist:
         - "1:*"
-        - "2:*"
+        - "2:10"
 ```
 
 ---
@@ -124,41 +145,58 @@ tenants:
 
 ### Root Fields
 
-| Field     | Type     | Required | Description |
-|----------|----------|----------|-------------|
-| version  | integer  | Yes      | Config schema version. Currently only `1` is supported. |
-| gateway  | object   | No       | Global network settings. |
-| tenants  | array    | Yes      | List of isolated tenant configurations. |
+| Field | Type | Required | Description |
+|------|------|----------|-------------|
+| version | integer | Yes | Config schema version. Currently only `1` is supported. |
+| gateway | object | No | Global network, security, and observability settings. |
+| tenants | array | Yes | List of isolated tenant configurations. |
 
 ---
 
 ## Gateway Section
 
+### Network & Lifecycle
+
 | Field | Type | Default | Description |
 |------|------|---------|-------------|
 | listen | string | — | Bind address (e.g. `0.0.0.0:8080`). |
 | ping_interval_ms | integer | 5000 | Interval for server-side PING frames. |
-| idle_timeout_ms | integer | 10000 | Close connection if no inbound activity. Must be greater than `ping_interval_ms`. |
+| idle_timeout_ms | integer | 10000 | Close connection if no inbound activity. |
+| writer_send_timeout_ms | integer | 1500 | Drop slow consumers. |
+| drain_grace_ms | integer | 5000 | Graceful shutdown wait time. |
 
----
+### Handshake Defender (DoS Protection)
 
-## Tenant Configuration
+| Field | Type | Default | Description |
+|------|------|---------|-------------|
+| enabled | bool | false | Enable pre-upgrade rate limiting. |
+| global_rps | integer | 200 | Global handshake RPS limit. |
+| global_burst | integer | 200 | Global burst capacity. |
+| per_ip_rps | integer | 10 | Per-IP handshake RPS. |
+| per_ip_burst | integer | 50 | Per-IP burst capacity. |
+| max_ip_entries | integer | 50000 | Max IPs tracked in memory. |
 
-Each item in the `tenants` list represents an isolated project.
+### Observability
 
 | Field | Type | Description |
 |------|------|-------------|
-| id | string | **Required.** Unique identifier. Used in connection URL: `?tenant=<id>`. |
-| limits | object | Hard limits for resource protection. |
-| policy | object | Logic for rate limiting, sessions, and routing. |
+| metrics.enabled | bool | Enable Prometheus metrics. |
+| metrics.path | string | Metrics endpoint path. |
 
 ---
 
-## Limits Object
+## Tenant Limits (Resource Governance)
+
+Hard limits to prevent resource exhaustion.  
+`0` means unlimited.
 
 | Field | Type | Description |
 |------|------|-------------|
-| max_frame_bytes | integer | Maximum allowed size for a single WebSocket frame. Prevents memory exhaustion attacks. |
+| max_frame_bytes | integer | Max WebSocket frame size. |
+| max_sessions_total | integer | Max concurrent sessions per tenant. |
+| max_rooms_total | integer | Max active rooms. |
+| max_users_per_room | integer | Max users per room. |
+| max_rooms_per_user | integer | Max rooms a user may join. |
 
 ---
 
@@ -170,72 +208,50 @@ Token Bucket–based flow control.
 
 | Field | Type | Description |
 |------|------|-------------|
-| rate_limit_rps | integer | Refill rate (requests per second). Must be > 0. |
-| rate_limit_burst | integer | Burst capacity. Must be > 0. |
+| rate_limit_rps | integer | Refill rate (requests/sec). |
+| rate_limit_burst | integer | Burst capacity. |
 | rate_limit_scope | enum | `tenant`, `connection`, or `both`. |
-
-**Scope behavior**
-- `tenant`: One shared bucket for the entire tenant
-- `connection`: Independent bucket per socket
-- `both`: Enforces both limits
 
 ---
 
 ### 2. Session Management
 
-Controls concurrency and multi-device behavior.
-
 | Field | Type | Description |
 |------|------|-------------|
-| sessions.mode | enum | `single` (1 user = 1 session) or `multi` (1 user = N sessions). |
-| max_sessions_per_user | integer | Maximum concurrent sessions. Must be `1` if mode is `single`. |
+| sessions.mode | enum | `single` or `multi`. |
+| max_sessions_per_user | integer | Max concurrent sessions per user. |
 | on_exceed | enum | `deny` or `kick_oldest`. |
 
 ---
 
-### 3. Hot Lane Behavior
-
-Controls the binary (low-latency) data path.
+### 3. Hot Lane (Binary Protocol)
 
 | Field | Type | Description |
 |------|------|-------------|
-| hot_error_mode | enum | `sys_error` (send error frame) or `silent` (drop silently). |
-| hot_requires_active_room | bool | If true, binary messages are rejected unless the user joined a room. |
+| hot_error_mode | enum | `sys_error` or `silent`. |
+| hot_requires_active_room | bool | Require room join before binary messages. |
 
 ---
 
-### 4. Allowlists (Routing)
+### 4. Allowlists (Routing Security)
 
-wsPrism operates on a **deny-by-default** model.  
-All messages must be explicitly allowed.
+Deny-by-default routing.
 
 | Field | Format | Examples |
 |------|--------|----------|
 | ext_allowlist | `<service>:<type>` | `room:join`, `chat:*` |
-| hot_allowlist | `<service_id>:<opcode>` | `1:1`, `1:*` |
-
-Wildcards (`*`) allow all types or opcodes for a service.
+| hot_allowlist | `<service_id>:<opcode>` | `1:*`, `2:10` |
 
 ---
 
 ## Best Practices
 
-### 🎮 Games / Chat / Collaboration
+### 🎮 Games / Realtime Systems
 - Session Mode: `multi`
-- Max Sessions: `3 ~ 10`
-- On Exceed: `kick_oldest`
 - Rate Limit Scope: `connection`
 - Hot Error Mode: `silent`
 
-**Goal:** Throughput + UX
-
----
-
 ### 🏦 Banking / High Security
 - Session Mode: `single`
-- Max Sessions: `1`
-- On Exceed: `deny`
 - Rate Limit Scope: `tenant`
 - Avoid wildcards in allowlists
-
-**Goal:** Security + strict control

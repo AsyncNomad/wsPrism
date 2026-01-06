@@ -22,6 +22,8 @@ pub enum ClientCode {
     PayloadTooLarge,
     /// Not allowed by policy.
     NotAllowed,
+    /// Resource exhausted (Sprint 5: Capacity limits).
+    ResourceExhausted,
     /// Unsupported protocol version.
     UnsupportedVersion,
     /// Internal server error.
@@ -37,6 +39,7 @@ impl ClientCode {
             ClientCode::RateLimited => "RATE_LIMITED",
             ClientCode::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
             ClientCode::NotAllowed => "NOT_ALLOWED",
+            ClientCode::ResourceExhausted => "RESOURCE_EXHAUSTED",
             ClientCode::UnsupportedVersion => "UNSUPPORTED_VERSION",
             ClientCode::Internal => "INTERNAL",
         }
@@ -59,6 +62,8 @@ pub enum WsPrismError {
     PayloadTooLarge,
     #[error("not allowed: {0}")]
     NotAllowed(String),
+    #[error("resource exhausted: {0}")]
+    ResourceExhausted(String),
     #[error("unsupported protocol version")]
     UnsupportedVersion,
     #[error("internal: {0}")]
@@ -74,6 +79,7 @@ impl WsPrismError {
             WsPrismError::RateLimited => ClientCode::RateLimited,
             WsPrismError::PayloadTooLarge => ClientCode::PayloadTooLarge,
             WsPrismError::NotAllowed(_) => ClientCode::NotAllowed,
+            WsPrismError::ResourceExhausted(_) => ClientCode::ResourceExhausted,
             WsPrismError::UnsupportedVersion => ClientCode::UnsupportedVersion,
             WsPrismError::Internal(_) => ClientCode::Internal,
         }

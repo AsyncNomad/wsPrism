@@ -28,26 +28,29 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind(listen).await.expect("failed to bind");
 
     let drain_grace_ms = state.cfg().gateway.drain_grace_ms;
+    
+    // Sprint 5: Enable ConnectInfo for HandshakeDefender
+    axum::serve(
+        listener, 
+        app.into_make_service_with_connect_info::<SocketAddr>()
+    )
+    .with_graceful_shutdown(async move {
+        shutdown_signal().await;
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            shutdown_signal().await;
+        tracing::info!("shutdown signal received; entering draining mode");
+        state.enter_draining();
+        state.realtime().best_effort_shutdown_all("draining");
 
-            tracing::info!("shutdown signal received; entering draining mode");
-            state.enter_draining();
-            state.realtime().best_effort_shutdown_all("draining");
-
-            let deadline = Instant::now() + std::time::Duration::from_millis(drain_grace_ms);
-            while Instant::now() < deadline {
-                // len_sessions()가 없으면 all_sessions().len() 등 헬퍼를 추가해 사용
-                if state.realtime().sessions.len_sessions() == 0 {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let deadline = Instant::now() + std::time::Duration::from_millis(drain_grace_ms);
+        while Instant::now() < deadline {
+            if state.realtime().sessions.len_sessions() == 0 {
+                break;
             }
-        })
-        .await
-        .expect("server failed");
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("server failed");
 }
 
 async fn shutdown_signal() {

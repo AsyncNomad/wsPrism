@@ -1,189 +1,193 @@
-# wsprism.yaml
-# -----------------------
-# wsPrism Gateway Config
-# -----------------------
+# ==============================================================================
+# wsPrism Gateway Configuration
+# ==============================================================================
+# This configuration controls the "Protection" and "Policy" layers of the gateway.
+# It allows operators to define strict resource limits, DoS protection, and
+# tenant-specific behaviors without recompiling the server.
+# ==============================================================================
 
-version: 1  # (required) config schema version. Currently only 1 is supported.
+version: 1  # (required) Config schema version.
 
 gateway:
-  # WebSocket server bind address.
-  # type: string (SocketAddr)
+  # ----------------------------------------------------------------------------
+  # 1. Network & Lifecycle (Transport Layer)
+  # ----------------------------------------------------------------------------
+
+  # WebSocket server bind address (Host:Port).
   listen: "0.0.0.0:8080"
 
-  # Server-side heartbeat interval.
-  # Sends WS Ping frames every ping_interval_ms.
-  # type: integer (ms), recommended: 5000 ~ 60000
-  ping_interval_ms: 5000
+  # Server-side heartbeat interval (Ping).
+  # The gateway sends PING frames to keep connections alive through load balancers.
+  # type: integer (ms)
+  ping_interval_ms: 20000
 
-  # Idle timeout (connection liveness deadline).
-  # If there is no inbound activity for this duration, gateway closes the session.
-  # NOTE: current implementation treats ANY inbound frame (including Pong) as activity.
-  # type: integer (ms), must be > ping_interval_ms
-  idle_timeout_ms: 10000
+  # Idle timeout (Connection Liveness).
+  # If no inbound activity (Pong/Text/Binary) is received within this window,
+  # the gateway aggressively closes the session to free up resources.
+  # type: integer (ms)
+  idle_timeout_ms: 60000
+
+  # Outbound Write Timeout (Slow Consumer Protection).
+  # If a client cannot read data fast enough and the OS buffer fills up,
+  # write operations will block. If blocking exceeds this time, the client is dropped.
+  # type: integer (ms)
+  writer_send_timeout_ms: 1500
+
+  # Graceful Shutdown Period.
+  # When SIGTERM is received, the gateway stops accepting new connections and
+  # waits this long for existing sessions to disconnect cleanly.
+  # type: integer (ms)
+  drain_grace_ms: 5000
+
+
+  # ----------------------------------------------------------------------------
+  # 2. Handshake Defender (DoS Protection)
+  # ----------------------------------------------------------------------------
+  # Protects the server from "Connection Storms" and DoS attacks.
+  # Checks are performed at the HTTP layer *before* WebSocket upgrade logic runs.
+  # Rejected clients receive HTTP 429 Too Many Requests with a `Retry-After` header.
+  
+  handshake_limit:
+    # Master switch for the defender.
+    enabled: true
+
+    # Global Limit (Token Bucket):
+    # Total connection attempts allowed per second across ALL IPs.
+    # Protects the server from total CPU exhaustion.
+    global_rps: 500
+    global_burst: 1000
+
+    # Per-IP Limit (Token Bucket):
+    # Connection attempts allowed per specific IP address.
+    # Prevents a single actor from flooding the handshake endpoint.
+    per_ip_rps: 10
+    per_ip_burst: 20
+
+    # Memory Safety:
+    # Max number of unique IP addresses to track in memory.
+    # If exceeded, old entries are probabilistically evicted to prevent OOM.
+    max_ip_entries: 50000
 
 
 tenants:
-  # -----------------------
-  # Tenant A: "acme"
-  # -----------------------
-  - id: acme  # (required) tenant id used in ws URL: ?tenant=acme
+  # ============================================================================
+  # Tenant A: "starter_plan" (Strict Resource Governance)
+  # ============================================================================
+  # Example for a free-tier or shared environment where isolation is critical.
+  # ============================================================================
+  - id: starter_plan
 
     limits:
-      # Maximum size for a single WebSocket frame in bytes.
-      # Used as an early guardrail against memory exhaustion / oversized packets.
-      # type: integer (bytes), must be > 0
-      max_frame_bytes: 65536
+      # Packet Size Limit.
+      max_frame_bytes: 4096
+
+      # [NEW in Sprint 5] Resource Governance Limits
+      # ------------------------------------------------------------
+      
+      # 1. Tenant-wide Concurrency Cap.
+      # If exceeded, new connections are rejected at HTTP layer (503 Service Unavailable).
+      # 0 = Unlimited.
+      max_sessions_total: 1000 
+
+      # 2. Total Room Cap.
+      # Prevents "Room Spamming" (creating thousands of 1-person rooms).
+      max_rooms_total: 500
+
+      # 3. Room Density Limit.
+      # Max users allowed in a single room.
+      max_users_per_room: 50
+
+      # 4. User Complexity Limit.
+      # Max unique rooms a single user can join simultaneously.
+      max_rooms_per_user: 5
 
     policy:
-      # -----------------------
-      # Rate Limiting
-      # -----------------------
+      # Rate Limiting (Post-Handshake traffic control)
+      rate_limit_rps: 50
+      rate_limit_burst: 100
+      rate_limit_scope: connection  # Applied per socket
 
-      # Token bucket refill rate (requests per second).
-      # Interpreted as "frames per second" at transport layer.
-      # type: integer, must be > 0
-      rate_limit_rps: 1000
-
-      # Token bucket burst capacity.
-      # type: integer, must be > 0
-      rate_limit_burst: 2000
-
-      # Where to apply rate limiting:
-      # - tenant      : one shared bucket for the whole tenant (global)
-      # - connection  : one bucket per connection/session
-      # - both        : both checks (tenant AND connection)
-      # type: enum {tenant, connection, both}
-      rate_limit_scope: both
-
-      # -----------------------
-      # Session Policy (1:1 / 1:N)
-      # -----------------------
-
+      # Session Policy
       sessions:
-        # Connection model:
-        # - single : 1 user -> 1 session (banking-like)
-        # - multi  : 1 user -> N sessions (chat/game/collab-like)
-        # type: enum {single, multi}
-        mode: multi
-
-        # Max concurrent sessions per user within this tenant.
-        # If mode=single, this must be 1.
-        # type: integer >= 1
-        max_sessions_per_user: 4
-
-        # When exceeding max sessions:
-        # - deny       : reject the new connection attempt
-        # - kick_oldest: close the oldest existing session and accept the new one
-        # type: enum {deny, kick_oldest}
-        on_exceed: kick_oldest
-
-      # -----------------------
-      # Hot Lane behavior controls
-      # -----------------------
-
-      # What to do when hot lane hits an error that would be client-visible.
-      # - sys_error : send sys.error (Text frame) even for hot lane
-      # - silent    : do not respond, just drop/close depending on decision
-      # type: enum {sys_error, silent}
-      hot_error_mode: silent
-
-      # If true, hot lane requires an active_room (set via room:join).
-      # If false, roomless binary services are allowed.
-      # type: boolean
-      hot_requires_active_room: true
-
-      # -----------------------
-      # Allowlists (deny-by-default)
-      # -----------------------
-
-      # Ext Lane allowlist entries.
-      # Each entry format: "<svc>:<type>"
-      # Wildcards:
-      # - "<svc>:*" allows all types for that service
-      # Examples:
-      # - "room:join", "room:leave"
-      # - "chat:send"
-      # - "chat:*"
-      ext_allowlist:
-        - "room:join"
-        - "room:leave"
-        - "chat:send"
-        - "chat:*"
-
-      # Hot Lane allowlist entries.
-      # Each entry format: "<svc_id>:<opcode>" where both are u8 range numbers.
-      # Wildcards:
-      # - "<svc_id>:*" allows all opcodes for that service id
-      # Examples:
-      # - "1:1" movement
-      # - "1:*" allow all binary opcodes for svc_id=1
-      hot_allowlist:
-        - "1:*"
-
-
-  # -----------------------
-  # Tenant B: "bank" (single session, strict)
-  # -----------------------
-  - id: bank
-
-    limits:
-      # Smaller max frame for stricter security posture.
-      max_frame_bytes: 16384
-
-    policy:
-      # More conservative rate limit.
-      rate_limit_rps: 100
-      rate_limit_burst: 200
-      rate_limit_scope: tenant
-
-      sessions:
-        mode: single
+        mode: single                # Only 1 session allowed per user
         max_sessions_per_user: 1
-        on_exceed: deny  # single session + deny is common for banking
+        on_exceed: kick_oldest      # Login elsewhere kicks the previous session
 
-      hot_error_mode: sys_error
-      hot_requires_active_room: true
-
+      # Security
       ext_allowlist:
         - "room:join"
         - "room:leave"
-        # Only allow very limited ext features.
         - "chat:send"
-
-      hot_allowlist:
-        # No hot lane by default; empty means strict deny (drop).
-        # - "1:*"
-        []
+      
+      hot_allowlist: []             # Binary protocol disabled for this tenant
 
 
-  # -----------------------
-  # Tenant C: "game" (multi session, high throughput)
-  # -----------------------
-  - id: game
+  # ============================================================================
+  # Tenant B: "enterprise_game" (High Performance)
+  # ============================================================================
+  # Example for a multiplayer game requiring low latency and high concurrency.
+  # ============================================================================
+  - id: enterprise_game
 
     limits:
       max_frame_bytes: 65536
 
+      # Relaxed Resource Limits
+      max_sessions_total: 100000    # Supports massive scale
+      max_rooms_total: 10000
+      max_users_per_room: 200       # Large matches/lobbies
+      max_rooms_per_user: 0         # Unlimited room joins (e.g., global chat + guild + match)
+
     policy:
-      rate_limit_rps: 5000
-      rate_limit_burst: 10000
-      rate_limit_scope: connection  # per-connection only (very common for games)
+      rate_limit_rps: 2000
+      rate_limit_burst: 4000
+      rate_limit_scope: connection
+
+      sessions:
+        mode: multi                 # Allow PC and Mobile at the same time
+        max_sessions_per_user: 4
+        on_exceed: deny             # Prevent 5th connection
+
+      # Hot Lane (Binary) Configuration
+      # Used for movement/physics data.
+      # 'silent' mode drops invalid packets without sending error frames (saves bandwidth).
+      hot_error_mode: silent
+      hot_requires_active_room: true
+
+      # Routing Whitelist
+      ext_allowlist:
+        - "room:*"
+        - "match:*"
+        - "chat:*"
+      
+      # Binary OpCodes (Service ID : OpCode)
+      hot_allowlist:
+        - "1:*"   # Service 1 (Movement): All opcodes allowed
+        - "2:10"  # Service 2 (Combat): Only opcode 10 allowed
+
+
+  # ============================================================================
+  # Tenant C: "internal_dashboard" (Monitoring Tool)
+  # ============================================================================
+  - id: internal_sys
+
+    limits:
+      max_frame_bytes: 1048576      # Allow large JSON payloads (1MB)
+      max_sessions_total: 50
+      max_rooms_total: 0
+      max_users_per_room: 0
+      max_rooms_per_user: 0
+
+    policy:
+      rate_limit_rps: 500
+      rate_limit_burst: 1000
+      rate_limit_scope: tenant      # Shared pool for all dashboard users
 
       sessions:
         mode: multi
         max_sessions_per_user: 10
         on_exceed: kick_oldest
 
-      hot_error_mode: silent
-      hot_requires_active_room: true
-
       ext_allowlist:
-        - "room:join"
-        - "room:leave"
-        - "chat:*"
-        - "match:*"
-
-      hot_allowlist:
-        - "1:*"   # gameplay
-        - "2:*"   # physics
-        - "10:1"  # reserved admin opcode (example)
+        - "sys:*"                   # Allow all system commands
+        - "metrics:subscribe"

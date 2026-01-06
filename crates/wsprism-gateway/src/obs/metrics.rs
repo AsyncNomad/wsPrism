@@ -1,193 +1,207 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+//! Minimal metrics registry for the gateway.
+//!
+//! No external dependencies are used; this module provides counter/gauge/histogram
+//! types with dynamic labels backed by `DashMap`. Labels are flattened into
+//! sorted key vectors to keep deterministic ordering. Histogram buckets are
+//! fixed in microseconds to avoid floating point math.
 
-/// Minimal gateway metrics (Prometheus text exposition).
-///
-/// Sprint 4: Provide basic operability signals without adding new dependencies.
+use dashmap::DashMap;
+use std::fmt::Write;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::time::Duration;
+
+/// Helper to escape label values.
+fn escape_label(v: &str) -> String {
+    v.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n")
+}
+
+#[derive(Default)]
+pub struct CounterVec {
+    map: DashMap<Vec<(String, String)>, AtomicU64>,
+}
+
+impl CounterVec {
+    /// Increment by 1.
+    pub fn inc(&self, labels: &[(&str, &str)]) {
+        self.add(labels, 1);
+    }
+
+    /// Increment by an arbitrary value.
+    pub fn add(&self, labels: &[(&str, &str)], v: u64) {
+        let mut key: Vec<(String, String)> = labels.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        key.sort();
+        
+        let counter = self.map.entry(key).or_insert_with(|| AtomicU64::new(0));
+        counter.fetch_add(v, Ordering::Relaxed);
+    }
+
+    /// Render in Prometheus text exposition format.
+    fn render(&self, name: &str, out: &mut String) {
+        let _ = writeln!(out, "# TYPE {} counter", name);
+        for r in self.map.iter() {
+            let key = r.key();
+            let val = r.value().load(Ordering::Relaxed);
+            let label_str = key.iter()
+                .map(|(k, v)| format!("{}=\"{}\"", k, escape_label(v)))
+                .collect::<Vec<_>>().join(",");
+            let _ = writeln!(out, "{}{{{}}} {}", name, label_str, val);
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct GaugeVec {
+    map: DashMap<Vec<(String, String)>, AtomicI64>,
+}
+
+impl GaugeVec {
+    /// Increment by 1.
+    pub fn inc(&self, labels: &[(&str, &str)]) { self.add(labels, 1); }
+    /// Decrement by 1.
+    pub fn dec(&self, labels: &[(&str, &str)]) { self.add(labels, -1); }
+
+    /// Add an arbitrary signed delta.
+    pub fn add(&self, labels: &[(&str, &str)], v: i64) {
+        let mut key: Vec<(String, String)> = labels.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        key.sort();
+        let gauge = self.map.entry(key).or_insert_with(|| AtomicI64::new(0));
+        gauge.fetch_add(v, Ordering::Relaxed);
+    }
+
+    /// Render in Prometheus text exposition format.
+    fn render(&self, name: &str, out: &mut String) {
+        let _ = writeln!(out, "# TYPE {} gauge", name);
+        for r in self.map.iter() {
+            let key = r.key();
+            let val = r.value().load(Ordering::Relaxed);
+            let label_str = key.iter()
+                .map(|(k, v)| format!("{}=\"{}\"", k, escape_label(v)))
+                .collect::<Vec<_>>().join(",");
+            let _ = writeln!(out, "{}{{{}}} {}", name, label_str, val);
+        }
+    }
+}
+
+// Fixed Buckets in Microseconds (µs)
+// 100us, 500us, 1ms, 5ms, 10ms, 50ms, 100ms, 500ms, 1s
+const BUCKETS_MICROS: [u64; 9] = [100, 500, 1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000];
+
+struct AtomicHistogram {
+    count: AtomicU64,
+    sum: AtomicU64,
+    buckets: [AtomicU64; 9],
+}
+
+impl Default for AtomicHistogram {
+    fn default() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            sum: AtomicU64::new(0),
+            buckets: [
+                AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+                AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0),
+                AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0)
+            ],
+        }
+    }
+}
+
+#[derive(Default)]
+pub struct HistogramVec {
+    map: DashMap<Vec<(String, String)>, AtomicHistogram>,
+}
+
+impl HistogramVec {
+    /// Observe a duration and increment cumulative buckets (microsecond scale).
+    pub fn observe(&self, labels: &[(&str, &str)], duration: Duration) {
+        let mut key: Vec<(String, String)> = labels.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        key.sort();
+
+        let hist = self.map.entry(key).or_insert_with(AtomicHistogram::default);
+        let micros = duration.as_micros() as u64;
+
+        hist.count.fetch_add(1, Ordering::Relaxed);
+        hist.sum.fetch_add(micros, Ordering::Relaxed); // Record sum in micros
+
+        // Cumulative Buckets: Increment ALL buckets larger than value
+        for (i, &b) in BUCKETS_MICROS.iter().enumerate() {
+            if micros <= b {
+                hist.buckets[i].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Render in Prometheus text exposition format (unit: microseconds).
+    fn render(&self, name: &str, out: &mut String) {
+        let _ = writeln!(out, "# TYPE {} histogram", name);
+        for r in self.map.iter() {
+            let key = r.key();
+            let hist = r.value();
+            
+            let label_str = key.iter()
+                .map(|(k, v)| format!("{}=\"{}\"", k, escape_label(v)))
+                .collect::<Vec<_>>().join(",");
+            let prefix = if label_str.is_empty() { String::new() } else { format!("{},", label_str) };
+
+            for (i, &le) in BUCKETS_MICROS.iter().enumerate() {
+                let count = hist.buckets[i].load(Ordering::Relaxed);
+                // Convert bucket le from micros to seconds string for standard Prometheus display? 
+                // Or just keep int? Standard is seconds (float).
+                // For simplicity in this int-based impl, we output micros but should ideally label unit.
+                // Let's output integer micros for 'le'.
+                let _ = writeln!(out, "{}_bucket{{{}le=\"{}\"}} {}", name, prefix, le, count);
+            }
+            let count = hist.count.load(Ordering::Relaxed);
+            let _ = writeln!(out, "{}_bucket{{{}le=\"+Inf\"}} {}", name, prefix, count);
+            
+            let sum = hist.sum.load(Ordering::Relaxed);
+            let _ = writeln!(out, "{}_sum{{{}}} {}", name, label_str, sum);
+            let _ = writeln!(out, "{}_count{{{}}} {}", name, label_str, count);
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct GatewayMetrics {
-    // lifecycle
-    ws_upgrades_total: AtomicU64,
-    ws_sessions_accepted_total: AtomicU64,
-    ws_sessions_closed_total: AtomicU64,
-    ws_sessions_active: AtomicU64,
-
-    // ingress/errors
-    decode_error_total: AtomicU64,
-    policy_drop_total: AtomicU64,
-    policy_reject_total: AtomicU64,
-    policy_close_total: AtomicU64,
-    unknown_service_total: AtomicU64,
-
-    // writer/hardening
-    writer_send_timeout_total: AtomicU64,
-    kicked_total: AtomicU64,
-
-    // ops
-    draining: AtomicBool,
-    draining_initiated_total: AtomicU64,
+    pub ws_upgrades: CounterVec,
+    pub ws_active_sessions: GaugeVec,
+    pub policy_decisions: CounterVec,
+    pub handshake_rejections: CounterVec,
+    pub dispatch_duration: HistogramVec, // In Microseconds
+    pub decode_errors: CounterVec,
+    pub service_errors: CounterVec,
+    pub writer_timeouts: CounterVec,
+    pub unknown_service_errors: CounterVec,
+    draining: std::sync::atomic::AtomicBool,
 }
 
 impl GatewayMetrics {
-    pub fn inc_ws_upgrades(&self) {
-        self.ws_upgrades_total.fetch_add(1, Ordering::Relaxed);
-    }
+    /// Mark draining state.
+    pub fn set_draining(&self) { self.draining.store(true, Ordering::Relaxed); }
+    /// Return whether draining is active.
+    pub fn is_draining(&self) -> bool { self.draining.load(Ordering::Relaxed) }
 
-    pub fn on_session_open(&self) {
-        self.ws_sessions_accepted_total.fetch_add(1, Ordering::Relaxed);
-        self.ws_sessions_active.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn on_session_close(&self) {
-        self.ws_sessions_closed_total.fetch_add(1, Ordering::Relaxed);
-        // expected to never underflow (open/close are paired by design)
-        self.ws_sessions_active.fetch_sub(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_decode_error(&self) {
-        self.decode_error_total.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_policy_drop(&self) {
-        self.policy_drop_total.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_policy_reject(&self) {
-        self.policy_reject_total.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_policy_close(&self) {
-        self.policy_close_total.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_unknown_service(&self) {
-        self.unknown_service_total.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_writer_send_timeout(&self) {
-        self.writer_send_timeout_total.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub fn inc_kicked(&self) {
-        self.kicked_total.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Enter draining mode.
-    /// Returns true if this call flipped the state from false -> true.
-    pub fn set_draining(&self) -> bool {
-        let prev = self.draining.swap(true, Ordering::SeqCst);
-        if !prev {
-            self.draining_initiated_total.fetch_add(1, Ordering::Relaxed);
-        }
-        !prev
-    }
-
-    pub fn is_draining(&self) -> bool {
-        self.draining.load(Ordering::Relaxed)
-    }
-
+    /// Render all registered metrics plus any extra lines provided by callers.
     pub fn render(&self, extra: &[(&str, u64)]) -> String {
         let mut out = String::new();
-
-        // ---- ws lifecycle
-        out.push_str("# HELP wsprism_ws_upgrades_total Total HTTP->WS upgrade attempts.\n");
-        out.push_str("# TYPE wsprism_ws_upgrades_total counter\n");
-        out.push_str(&format!(
-            "wsprism_ws_upgrades_total {}\n",
-            self.ws_upgrades_total.load(Ordering::Relaxed)
-        ));
-
-        out.push_str("# HELP wsprism_ws_sessions_active Currently active WebSocket sessions.\n");
-        out.push_str("# TYPE wsprism_ws_sessions_active gauge\n");
-        out.push_str(&format!(
-            "wsprism_ws_sessions_active {}\n",
-            self.ws_sessions_active.load(Ordering::Relaxed)
-        ));
-
-        out.push_str("# HELP wsprism_ws_sessions_accepted_total Total accepted WebSocket sessions.\n");
-        out.push_str("# TYPE wsprism_ws_sessions_accepted_total counter\n");
-        out.push_str(&format!(
-            "wsprism_ws_sessions_accepted_total {}\n",
-            self.ws_sessions_accepted_total.load(Ordering::Relaxed)
-        ));
-
-        out.push_str("# HELP wsprism_ws_sessions_closed_total Total closed WebSocket sessions.\n");
-        out.push_str("# TYPE wsprism_ws_sessions_closed_total counter\n");
-        out.push_str(&format!(
-            "wsprism_ws_sessions_closed_total {}\n",
-            self.ws_sessions_closed_total.load(Ordering::Relaxed)
-        ));
-
-        // ---- ingress / errors
-        out.push_str("# HELP wsprism_decode_error_total Total inbound decode errors.\n");
-        out.push_str("# TYPE wsprism_decode_error_total counter\n");
-        out.push_str(&format!(
-            "wsprism_decode_error_total {}\n",
-            self.decode_error_total.load(Ordering::Relaxed)
-        ));
-
-        out.push_str("# HELP wsprism_policy_drop_total Total policy drops.\n");
-        out.push_str("# TYPE wsprism_policy_drop_total counter\n");
-        out.push_str(&format!(
-            "wsprism_policy_drop_total {}\n",
-            self.policy_drop_total.load(Ordering::Relaxed)
-        ));
-
-        out.push_str("# HELP wsprism_policy_reject_total Total policy rejects.\n");
-        out.push_str("# TYPE wsprism_policy_reject_total counter\n");
-        out.push_str(&format!(
-            "wsprism_policy_reject_total {}\n",
-            self.policy_reject_total.load(Ordering::Relaxed)
-        ));
-
-        out.push_str("# HELP wsprism_policy_close_total Total policy closes.\n");
-        out.push_str("# TYPE wsprism_policy_close_total counter\n");
-        out.push_str(&format!(
-            "wsprism_policy_close_total {}\n",
-            self.policy_close_total.load(Ordering::Relaxed)
-        ));
-
-        out.push_str("# HELP wsprism_unknown_service_total Total unknown service dispatch errors.\n");
-        out.push_str("# TYPE wsprism_unknown_service_total counter\n");
-        out.push_str(&format!(
-            "wsprism_unknown_service_total {}\n",
-            self.unknown_service_total.load(Ordering::Relaxed)
-        ));
-
-        // ---- hardening
-        out.push_str("# HELP wsprism_writer_send_timeout_total Total outbound writer send timeouts.\n");
-        out.push_str("# TYPE wsprism_writer_send_timeout_total counter\n");
-        out.push_str(&format!(
-            "wsprism_writer_send_timeout_total {}\n",
-            self.writer_send_timeout_total.load(Ordering::Relaxed)
-        ));
-
-        out.push_str("# HELP wsprism_kicked_total Total sessions kicked by policy.\n");
-        out.push_str("# TYPE wsprism_kicked_total counter\n");
-        out.push_str(&format!(
-            "wsprism_kicked_total {}\n",
-            self.kicked_total.load(Ordering::Relaxed)
-        ));
-
-        // ---- ops
-        out.push_str("# HELP wsprism_draining Whether the gateway is in draining mode.\n");
-        out.push_str("# TYPE wsprism_draining gauge\n");
-        out.push_str(&format!(
-            "wsprism_draining {}\n",
-            if self.is_draining() { 1 } else { 0 }
-        ));
-
-        out.push_str("# HELP wsprism_draining_initiated_total Number of times draining was initiated.\n");
-        out.push_str("# TYPE wsprism_draining_initiated_total counter\n");
-        out.push_str(&format!(
-            "wsprism_draining_initiated_total {}\n",
-            self.draining_initiated_total.load(Ordering::Relaxed)
-        ));
-
-        // ---- extra counters (egress, etc)
-        for (name, val) in extra {
-            out.push_str(&format!("{} {}\n", name, val));
-        }
-
+        self.ws_upgrades.render("wsprism_ws_upgrades_total", &mut out);
+        self.ws_active_sessions.render("wsprism_ws_sessions_active", &mut out);
+        self.policy_decisions.render("wsprism_policy_decisions_total", &mut out);
+        self.handshake_rejections.render("wsprism_handshake_rejections_total", &mut out);
+        self.dispatch_duration.render("wsprism_dispatch_duration_micros", &mut out); // Explicit unit
+        self.decode_errors.render("wsprism_decode_errors_total", &mut out);
+        self.service_errors.render("wsprism_service_errors_total", &mut out);
+        self.writer_timeouts.render("wsprism_writer_timeouts_total", &mut out);
+        self.unknown_service_errors.render("wsprism_unknown_service_total", &mut out);
+        
+        let _ = writeln!(out, "# TYPE wsprism_draining gauge\nwsprism_draining {}", if self.is_draining() { 1 } else { 0 });
+        for (k, v) in extra { let _ = writeln!(out, "{} {}", k, v); }
         out
     }
 }

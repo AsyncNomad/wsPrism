@@ -58,7 +58,8 @@ pub struct GatewaySection {
     #[serde(default = "default_ping_interval_ms")]
     pub ping_interval_ms: u64,
 
-    /// Idle timeout in milliseconds. Connections with no activity beyond this are closed.
+    /// Idle timeout in milliseconds.
+    /// Connections with no activity beyond this are closed.
     #[serde(default = "default_idle_timeout_ms")]
     pub idle_timeout_ms: u64,
 
@@ -74,7 +75,56 @@ pub struct GatewaySection {
     /// During draining, readiness becomes 503 and new upgrades are rejected.
     #[serde(default = "default_drain_grace_ms")]
     pub drain_grace_ms: u64,
+
+    // Sprint 5: Handshake Defender Configuration
+    #[serde(default)]
+    pub handshake_limit: HandshakeConfig,
 }
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct HandshakeConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Global limiter: burst capacity.
+    #[serde(default = "default_hs_global_burst")]
+    pub global_burst: u32,
+    /// Global limiter: refill rate per sec.
+    #[serde(default = "default_hs_global_rps")]
+    pub global_rps: u32,
+
+    /// Per-IP limiter: burst capacity.
+    #[serde(default = "default_hs_ip_burst")]
+    pub per_ip_burst: u32,
+    /// Per-IP limiter: refill rate per sec.
+    #[serde(default = "default_hs_ip_rps")]
+    pub per_ip_rps: u32,
+
+    /// Clean up per-ip map opportunistically when it grows too big.
+    #[serde(default = "default_hs_max_entries")]
+    pub max_ip_entries: usize,
+}
+
+impl Default for HandshakeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            global_burst: 200,
+            global_rps: 100,
+            per_ip_burst: 50,
+            per_ip_rps: 10,
+            max_ip_entries: 50_000,
+        }
+    }
+}
+
+// Handshake defaults
+fn default_hs_global_burst() -> u32 { 200 }
+fn default_hs_global_rps() -> u32 { 100 }
+fn default_hs_ip_burst() -> u32 { 50 }
+fn default_hs_ip_rps() -> u32 { 10 }
+fn default_hs_max_entries() -> usize { 50_000 }
 
 impl Default for GatewaySection {
     fn default() -> Self {
@@ -84,6 +134,7 @@ impl Default for GatewaySection {
             idle_timeout_ms: default_idle_timeout_ms(),
             writer_send_timeout_ms: default_writer_send_timeout_ms(),
             drain_grace_ms: default_drain_grace_ms(),
+            handshake_limit: HandshakeConfig::default(),
         }
     }
 }
@@ -105,13 +156,11 @@ impl GatewaySection {
                 "gateway.idle_timeout_ms must be greater than ping_interval_ms".into(),
             ));
         }
-
         if !(50..=60000).contains(&self.writer_send_timeout_ms) {
             return Err(WsPrismError::BadRequest(
                 "gateway.writer_send_timeout_ms must be between 50 and 60000".into(),
             ));
         }
-
         if self.drain_grace_ms > 600000 {
             return Err(WsPrismError::BadRequest(
                 "gateway.drain_grace_ms must be <= 600000".into(),
@@ -121,23 +170,11 @@ impl GatewaySection {
     }
 }
 
-fn default_listen() -> String {
-    "0.0.0.0:8080".into()
-}
-fn default_ping_interval_ms() -> u64 {
-    20000
-}
-fn default_idle_timeout_ms() -> u64 {
-    60000
-}
-
-fn default_writer_send_timeout_ms() -> u64 {
-    1500
-}
-
-fn default_drain_grace_ms() -> u64 {
-    2000
-}
+fn default_listen() -> String { "0.0.0.0:8080".into() }
+fn default_ping_interval_ms() -> u64 { 20000 }
+fn default_idle_timeout_ms() -> u64 { 60000 }
+fn default_writer_send_timeout_ms() -> u64 { 1500 }
+fn default_drain_grace_ms() -> u64 { 2000 }
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -163,17 +200,43 @@ impl TenantConfig {
     }
 }
 
-#[derive(Debug, Deserialize, Clone, Default)]
+#[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct TenantLimits {
-    /// Maximum allowed frame size for this tenant (bytes).
-    #[serde(default = "default_max_frame_bytes")]
-    pub max_frame_bytes: usize,
+/// Maximum allowed frame size for this tenant (bytes).
+#[serde(default = "default_max_frame_bytes")]
+pub max_frame_bytes: usize,
+
+// Sprint 5: Resource Governance
+/// Max concurrent sessions for the entire tenant. 0 = unlimited.
+/// Lock-free best-effort: under extreme contention a tiny overshoot is possible.
+#[serde(default)]
+pub max_sessions_total: u64,
+/// Max active rooms for the tenant. 0 = unlimited.
+/// A room counts as "active" if it has at least one session.
+#[serde(default)]
+pub max_rooms_total: u64,
+/// Max users allowed in a single room. 0 = unlimited.
+#[serde(default)]
+pub max_users_per_room: u64,
+/// Max unique rooms a single user can join. 0 = unlimited.
+#[serde(default)]
+pub max_rooms_per_user: u64,
 }
 
-fn default_max_frame_bytes() -> usize {
-    4096
+impl Default for TenantLimits {
+    fn default() -> Self {
+        Self {
+            max_frame_bytes: 4096,
+            max_sessions_total: 0,
+            max_rooms_total: 0,
+            max_users_per_room: 0,
+            max_rooms_per_user: 0,
+        }
+    }
 }
+
+fn default_max_frame_bytes() -> usize { 4096 }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -183,10 +246,7 @@ pub enum RateLimitScope {
     Both,
 }
 
-fn default_rate_limit_scope() -> RateLimitScope {
-    // YAML 코멘트(연결당)에 맞춰 기본은 connection으로.
-    RateLimitScope::Connection
-}
+fn default_rate_limit_scope() -> RateLimitScope { RateLimitScope::Connection }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -195,9 +255,7 @@ pub enum HotErrorMode {
     Silent,
 }
 
-fn default_hot_error_mode() -> HotErrorMode {
-    HotErrorMode::SysError
-}
+fn default_hot_error_mode() -> HotErrorMode { HotErrorMode::SysError }
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -226,15 +284,9 @@ pub struct SessionPolicy {
     pub on_exceed: OnExceed,
 }
 
-fn default_session_mode() -> SessionMode {
-    SessionMode::Multi
-}
-fn default_max_sessions_per_user() -> u32 {
-    4
-}
-fn default_on_exceed() -> OnExceed {
-    OnExceed::Deny
-}
+fn default_session_mode() -> SessionMode { SessionMode::Multi }
+fn default_max_sessions_per_user() -> u32 { 4 }
+fn default_on_exceed() -> OnExceed { OnExceed::Deny }
 
 impl Default for SessionPolicy {
     fn default() -> Self {
@@ -247,7 +299,7 @@ impl Default for SessionPolicy {
 }
 
 /// Tenant policy knobs.
-/// Defaults are STRICT (deny-by-default) but include minimal room join/leave for Sprint 2.
+/// Defaults are STRICT (deny-by-default).
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct TenantPolicy {
@@ -263,16 +315,11 @@ pub struct TenantPolicy {
     #[serde(default = "default_rate_limit_scope")]
     pub rate_limit_scope: RateLimitScope,
 
-    /// Ext lane allowlist entries, like:
-    /// - "room:join"
-    /// - "room:leave"
-    /// - "chat:*" (wildcard type)
+    /// Ext lane allowlist entries, like "svc:type"
     #[serde(default = "default_ext_allowlist")]
     pub ext_allowlist: Vec<String>,
 
-    /// Hot lane allowlist entries, like:
-    /// - "1:*" (svc_id=1, any opcode)
-    /// - "1:1" (svc_id=1, opcode=1)
+    /// Hot lane allowlist entries, like "sid:opcode"
     #[serde(default)]
     pub hot_allowlist: Vec<String>,
 
@@ -284,14 +331,12 @@ pub struct TenantPolicy {
     #[serde(default = "default_hot_error_mode")]
     pub hot_error_mode: HotErrorMode,
 
-    /// If true, hot lane requires active_room; if false, roomless hot services are allowed.
+    /// If true, hot lane requires active_room.
     #[serde(default = "default_hot_requires_active_room")]
     pub hot_requires_active_room: bool,
 }
 
-fn default_hot_requires_active_room() -> bool {
-    true
-}
+fn default_hot_requires_active_room() -> bool { true }
 
 impl Default for TenantPolicy {
     fn default() -> Self {
@@ -315,7 +360,6 @@ impl TenantPolicy {
                 "policy.rate_limit_rps and rate_limit_burst must be > 0".into(),
             ));
         }
-
         // sessions policy sanity
         match self.sessions.mode {
             SessionMode::Single => {
@@ -333,17 +377,12 @@ impl TenantPolicy {
                 }
             }
         }
-
         Ok(())
     }
 }
 
-fn default_rate_limit_rps() -> u32 {
-    200
-}
-fn default_rate_limit_burst() -> u32 {
-    400
-}
+fn default_rate_limit_rps() -> u32 { 200 }
+fn default_rate_limit_burst() -> u32 { 400 }
 fn default_ext_allowlist() -> Vec<String> {
     vec!["room:join".into(), "room:leave".into()]
 }

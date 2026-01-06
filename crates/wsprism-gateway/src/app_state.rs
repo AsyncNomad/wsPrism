@@ -13,9 +13,9 @@ use crate::{config::GatewayConfig, policy};
 use crate::dispatch::Dispatcher;
 use crate::realtime::RealtimeCore;
 use crate::obs::metrics::GatewayMetrics;
-
-// ✅ Sprint 3 Services
 use crate::services::{ChatService, EchoBinaryService};
+// Sprint 5
+use crate::transport::handshake::HandshakeDefender;
 
 /// If true, the gateway fails fast on allowlist/dispatcher mismatches at boot.
 const FAIL_FAST_ON_MISMATCH: bool = false;
@@ -27,6 +27,8 @@ pub struct AppState {
     realtime: Arc<RealtimeCore>,
     dispatcher: Arc<Dispatcher>,
     metrics: Arc<GatewayMetrics>,
+    // Sprint 5
+    handshake: Arc<HandshakeDefender>,
 }
 
 struct AppStateInner {
@@ -40,6 +42,8 @@ impl AppState {
     /// Returns `Result` so the binary can surface startup errors without panic.
     pub fn new(cfg: GatewayConfig) -> Result<Self> {
         let metrics = Arc::new(GatewayMetrics::default());
+        // Sprint 5
+        let handshake = Arc::new(HandshakeDefender::new(cfg.gateway.handshake_limit.clone()));
 
         // 1) Compile tenant policy runtimes
         let mut tenant_policy = HashMap::new();
@@ -50,7 +54,6 @@ impl AppState {
                 &t.policy,
             )
             .map_err(|e| {
-                // Panic 대신 명확한 에러 반환
                 WsPrismError::BadRequest(format!(
                     "tenant policy compile failed (tenant={}): {e}",
                     t.id
@@ -65,11 +68,7 @@ impl AppState {
         let dispatcher = Dispatcher::new();
 
         // 3) Register built-in services (Sprint 3)
-        
-        // (1) ChatService ("chat")
         dispatcher.register_text(Arc::new(ChatService::new()));
-
-        // (2) EchoBinaryService (svc_id: 1)
         dispatcher.register_hot(Arc::new(EchoBinaryService::new(1)));
 
         // allowlist <-> dispatcher sanity check
@@ -120,6 +119,7 @@ impl AppState {
             realtime,
             dispatcher: Arc::new(dispatcher),
             metrics,
+            handshake,
         })
     }
 
@@ -150,15 +150,15 @@ impl AppState {
         Arc::clone(&self.metrics)
     }
 
+    pub fn handshake(&self) -> Arc<HandshakeDefender> {
+        Arc::clone(&self.handshake)
+    }
+
     pub fn is_draining(&self) -> bool {
         self.metrics.is_draining()
     }
 
     /// Enter draining mode (idempotent).
-    ///
-    /// Draining means:
-    /// - readiness becomes 503
-    /// - new WS upgrades are rejected
     pub fn enter_draining(&self) {
         let _ = self.metrics.set_draining();
     }
