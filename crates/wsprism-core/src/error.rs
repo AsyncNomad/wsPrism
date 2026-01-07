@@ -3,6 +3,10 @@
 //! These errors form the stable surface area that the gateway can turn into
 //! client-facing responses (e.g., `sys.error` envelopes) while keeping internal
 //! implementation details encapsulated.
+//!
+//! Design goal: All fallible operations in core should return `WsPrismError`
+//! rather than panic. Combined with crate-level lint denies for panic/unwrap,
+//! this keeps production code resilient to malformed or hostile input.
 
 use thiserror::Error;
 
@@ -22,7 +26,7 @@ pub enum ClientCode {
     PayloadTooLarge,
     /// Not allowed by policy.
     NotAllowed,
-    /// Resource exhausted (Sprint 5: Capacity limits).
+    /// Resource exhausted
     ResourceExhausted,
     /// Unsupported protocol version.
     UnsupportedVersion,
