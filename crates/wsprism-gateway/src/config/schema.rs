@@ -37,6 +37,13 @@ impl GatewayConfig {
                         "tenant.id must not be empty".into(),
                     ));
                 }
+                if t.id.starts_with('_') {
+                    // Reserved for internal labels such as `_unknown` (metrics).
+                    return Err(WsPrismError::BadRequest(format!(
+                        "tenant.id must not start with '_' (reserved): {}",
+                        t.id
+                    )));
+                }
                 if !seen.insert(t.id.clone()) {
                     return Err(WsPrismError::BadRequest(format!(
                         "duplicate tenant id: {}",

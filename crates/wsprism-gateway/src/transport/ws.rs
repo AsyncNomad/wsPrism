@@ -47,6 +47,9 @@ fn gen_trace() -> String {
     format!("{:x}-{:x}", now, seq)
 }
 
+/// Fixed `tenant` label for requests naming a tenant that isn't configured.
+const UNKNOWN_TENANT_LABEL: &str = "_unknown";
+
 /// RFC 6455 close code 1009: message too big to process.
 const CLOSE_MESSAGE_TOO_BIG: u16 = 1009;
 
@@ -128,10 +131,14 @@ pub async fn ws_upgrade(
     ws: WebSocketUpgrade,
     Query(q): Query<WsQuery>,
 ) -> impl IntoResponse {
+    let t_cfg = app.cfg().tenants.iter().find(|t| t.id == q.tenant);
+    // S5: metric labels must come from config, never from the raw query.
+    let tenant_label = t_cfg.map_or(UNKNOWN_TENANT_LABEL, |t| t.id.as_str());
+
     if let Err(wait_secs) = app.handshake().check(addr.ip()) {
         app.metrics()
             .handshake_rejections
-            .inc(&[("tenant", &q.tenant), ("reason", "rate_limit")]);
+            .inc(&[("tenant", tenant_label), ("reason", "rate_limit")]);
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, retry_after_header(wait_secs));
         return (StatusCode::TOO_MANY_REQUESTS, headers, "Too Many Requests").into_response();
@@ -139,7 +146,10 @@ pub async fn ws_upgrade(
     if app.is_draining() {
         return (StatusCode::SERVICE_UNAVAILABLE, "draining").into_response();
     }
-    let Some(t_cfg) = app.cfg().tenants.iter().find(|t| t.id == q.tenant) else {
+    let Some(t_cfg) = t_cfg else {
+        app.metrics()
+            .handshake_rejections
+            .inc(&[("tenant", tenant_label), ("reason", "unknown_tenant")]);
         return (StatusCode::BAD_REQUEST, "Unknown Tenant").into_response();
     };
     // S2: enforce the tenant frame limit in the WS codec itself, so oversized

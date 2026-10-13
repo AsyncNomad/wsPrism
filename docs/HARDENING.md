@@ -40,7 +40,14 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 | S2 | ☑ | WS `max_message_size` 미설정(axum 기본 64MB) + `check_len`이 디코드 *후* 실행 → 대용량 JSON 파싱 DoS | `transport/ws.rs`, `transport/codec.rs` |
 | S3 | ☐ | `chat.send`가 발신자의 룸 멤버십을 검사하지 않음 | `services/chat.rs` |
 | S4 | ☐ | 클라이언트 지정 `sid` 충돌 시 기존 세션 덮어쓰기 → 테넌트 카운터 누수, 기존 연결 고아화 | `realtime/core/session_registry.rs` |
-| S5 | ☐ | 핸드셰이크 거절 메트릭 라벨에 미검증 `tenant` 사용 → 라벨 카디널리티 폭발(메모리 DoS) | `transport/ws.rs` |
+| S5 | ☑ | 핸드셰이크 거절 메트릭 라벨에 미검증 `tenant` 사용 → 라벨 카디널리티 폭발(메모리 DoS) | `transport/ws.rs` |
+
+#### S5 결정 기록
+
+- **수정**: `ws_upgrade`에서 테넌트를 먼저 조회하고, 메트릭 라벨은 *설정에 있는 id* 또는 고정값 `_unknown`만 쓴다. 레이트리밋은 여전히 테넌트 검증보다 먼저 적용된다(조회는 읽기 전용이라 순서를 바꿔도 비용 차이 없음).
+- **신규 계측**: 미등록 테넌트로 인한 400도 `handshake_rejections{reason="unknown_tenant",tenant="_unknown"}`로 센다(이전엔 미계측).
+- **예약어**: `_unknown`과 실제 테넌트가 겹치지 않도록 `_`로 시작하는 테넌트 id를 설정 검증에서 거부한다.
+- **감사**: 모든 메트릭 라벨 값을 점검. `tenant` 외에는 전부 정적 문자열 또는 `ClientCode::as_str()`(고정 집합)이다.
 
 #### S6 결정 기록 (S5 재현 테스트 작성 중 발견)
 

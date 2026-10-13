@@ -30,3 +30,14 @@ tenants:
     assert_eq!(cfg.version, 1);
     assert_eq!(cfg.tenants[0].id, "acme");
 }
+
+#[test]
+fn reject_reserved_tenant_id_prefix() {
+    let bad = r#"
+version: 1
+tenants:
+  - id: "_unknown"
+"#;
+    let err = config::load_from_str(bad).expect_err("must fail");
+    assert!(err.to_string().contains("reserved"), "{err}");
+}
