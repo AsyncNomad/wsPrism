@@ -54,7 +54,7 @@ impl TextService for ChatService {
                 })?;
 
                 let out = Outgoing {
-                    qos: QoS::Reliable { timeout_ms: 1500 },
+                    qos: QoS::Reliable,
                     payload: Payload::TextJson(json!({
                         "v": 1,
                         "svc": "chat",
@@ -64,7 +64,7 @@ impl TextService for ChatService {
                     })),
                 };
 
-                ctx.publish_room_reliable(&room, out).await
+                ctx.publish_room_reliable(&room, out)
             }
             _ => Err(WsPrismError::BadRequest("unknown chat type".into())),
         }

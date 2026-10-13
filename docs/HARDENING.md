@@ -99,7 +99,7 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 
 | ID | 상태 | 내용 | 위치 |
 |---|---|---|---|
-| C1 | ☐ | Reliable 발행이 발신 세션 루프를 최대 timeout×1 동안 블로킹 (head-of-line). 발신자 자신도 룸 멤버라 **자기 큐**를 최대 1.5s 기다리는 경우 포함(C9의 유한 버전) | `services/chat.rs`, `realtime/core/realtime.rs` |
+| C1 | ☑ | Reliable 발행이 발신 세션 루프를 최대 timeout×1 동안 블로킹 (head-of-line). 발신자 자신도 룸 멤버라 **자기 큐**를 최대 1.5s 기다리는 경우 포함(C9의 유한 버전) | `services/chat.rs`, `realtime/core/realtime.rs` |
 | C2 | ☑ | kick_oldest 시 `ws_active_sessions` 게이지 이중 감소 | `transport/ws.rs` |
 | C3 | ☑ | "에러를 큐에 넣고 `break`"하는 모든 경로에서 에러가 클라이언트에 도달하지 않음: `on_exceed: deny`(writer 루프 시작 전 큐잉), policy `Close`, 디코드 오류, idle 타임아웃(큐잉 직후 루프 탈출 → out 큐 미플러시). 인증 실패도 업그레이드 *후* 판정 | `transport/ws.rs` |
 | C4 | ☑ | `room:leave`가 active_room만 떠남 → 다른 룸 탈출 불가 | `transport/ws.rs` |
@@ -107,6 +107,17 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 | C8 | ☑ | 강제 종료(kick/replace)된 세션의 루프가 클라이언트가 닫을 때까지 계속 돈다 → Presence에선 지워졌지만 로컬 `active_room`으로 Hot 발행·재join 가능. 서버 측 종료 신호 필요 | `transport/ws.rs`, `realtime/core/session_registry.rs` |
 | C9 | ☑ | 세션 루프가 자기 응답을 자기 송신 큐에 `send().await` — 큐를 비우는 것도 같은 루프라 큐가 가득 차면(느린 클라이언트 + 브로드캐스트) **세션이 영구 정지**. idle 검사도 같은 루프라 동작 안 함 | `transport/ws.rs` |
 | C6 | ◐ | 경미: span guard를 await 너머로 유지, Ext `v` 미검증, ~~ping 이중 응답~~(C9에서 제거), 토큰버킷 소수 시간 버림 | 여러 곳 |
+
+#### C1 결정 기록
+
+- **재현 조건이 중요했다**: 읽기를 *완전히 멈춘* 수신자로는 재현되지 않는다(서버 writer 타임아웃 1.5s가 그 수신자를 끊어 금방 풀림). 문제는 **느리지만 꾸준히 읽는** 수신자(모바일 등): writer가 조금씩 진행해 타임아웃이 안 걸리는 동안 큐가 계속 차 있어, 발신자(및 룸 전체)가 가장 느린 멤버의 속도로 끌려간다. 50ms마다 1개씩 읽는 수신자로 3/3 재현(메시지 198개째에서 8s 초과).
+- **기존 "Reliable"의 실제 의미**: 수신자 큐를 최대 1.5s 기다린 뒤 **조용히 버림**. 발신자를 막으면서도 신뢰성은 보장하지 못했다.
+- **새 의미**: `QoS::Reliable` = *순서대로 빠짐없이 전달하거나, 불가능하면 수신자를 `slow_consumer`(1008)로 끊는다*. 발신자는 절대 기다리지 않는다. `QoS::Lossy`는 큐가 차면 그 수신자에게만 버린다. 끊긴 수신자는 재접속으로 상태를 다시 맞춘다.
+  - 기각: *팬아웃을 별도 task로 spawn* — 발신자는 안 막히지만 같은 발신자의 연속 메시지 순서가 수신자별로 뒤섞일 수 있고, 느린 수신자 문제(무한 대기 task 누적)는 그대로.
+  - 기각: *발신자별 순차 팬아웃 워커* — 순서는 지키지만 구조가 크고, 결국 느린 수신자에 대해 같은 선택(버림/끊음/대기)을 해야 한다.
+- **통합**: 모든 송신 경로(`send_to_user`, `send_to_session`, `publish_room*`)가 `deliver` 하나를 거치며 `out.qos`를 따른다. (이전엔 `send_to_user`/`send_to_session`이 QoS를 무시하고 항상 lossy.) `publish_room_lossy`/`_reliable`은 QoS를 강제하는 래퍼로 유지.
+- **API 변화**: `QoS::Reliable { timeout_ms }` → `QoS::Reliable`(단위 variant), `publish_room_reliable`은 더 이상 `async`가 아니다.
+- **메트릭 변화**: `wsprism_egress_send_fail_total` 제거 → `wsprism_egress_slow_consumer_closes_total`(reliable 메시지 때문에 끊은 수신자 수). 대시보드가 있다면 갱신 필요.
 
 #### C4 결정 기록
 

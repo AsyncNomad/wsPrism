@@ -6,23 +6,25 @@
 //! contention to preserve throughput.
 
 use crate::config::schema::TenantLimits;
-use crate::realtime::core::{Presence, SessionRegistry};
+use crate::realtime::core::{Connection, Presence, SessionRegistry};
 use crate::realtime::types::{close_code, CloseSpec, Outgoing, PreparedMsg, QoS};
-use futures_util::stream::FuturesUnordered;
-use futures_util::StreamExt;
+use axum::extract::ws::Message;
+use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::time::{timeout, Duration};
+use tokio::sync::mpsc::error::TrySendError;
 use wsprism_core::error::{Result, WsPrismError};
 
 static DROP_COUNT: AtomicU64 = AtomicU64::new(0);
-static SEND_FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
+static SLOW_CONSUMER_COUNT: AtomicU64 = AtomicU64::new(0);
 
+/// Lossy messages dropped because the recipient's queue was full.
 pub fn egress_drop_count() -> u64 {
     DROP_COUNT.load(Ordering::Relaxed)
 }
-pub fn egress_send_fail_count() -> u64 {
-    SEND_FAIL_COUNT.load(Ordering::Relaxed)
+/// Recipients closed because a reliable message didn't fit their queue.
+pub fn egress_slow_consumer_count() -> u64 {
+    SLOW_CONSUMER_COUNT.load(Ordering::Relaxed)
 }
 fn sample_every_1024(n: u64) -> bool {
     (n & 1023) == 1
@@ -62,88 +64,97 @@ impl RealtimeCore {
         }
     }
 
+    /// Queue one message for one session according to `qos`. Never awaits,
+    /// so a slow recipient can never stall the publisher (C1):
+    /// - `Lossy`: if the queue is full, drop it for this recipient.
+    /// - `Reliable`: if the queue is full, close the recipient as a slow
+    ///   consumer so it resyncs on reconnect, instead of silently missing it.
+    fn deliver(&self, session_key: &str, conn: &Connection, msg: Message, qos: &QoS) {
+        match conn.tx.try_send(msg) {
+            Ok(()) | Err(TrySendError::Closed(_)) => {} // closed = session ending
+            Err(TrySendError::Full(_)) => match qos {
+                QoS::Lossy => {
+                    let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if sample_every_1024(n) {
+                        tracing::warn!(%session_key, drops=%n, "lossy egress drop");
+                    }
+                }
+                QoS::Reliable => {
+                    let n = SLOW_CONSUMER_COUNT.fetch_add(1, Ordering::Relaxed);
+                    if sample_every_1024(n) {
+                        tracing::warn!(%session_key, closes=%n, "reliable egress: closing slow consumer");
+                    }
+                    let notice = json!({
+                        "v": 1, "svc": "sys", "type": "error",
+                        "data": { "code": "SLOW_CONSUMER", "msg": "outbound queue full" }
+                    });
+                    let _ = conn.ctl.try_send(CloseSpec::new(
+                        close_code::POLICY,
+                        "slow_consumer",
+                        Some(notice.to_string()),
+                    ));
+                }
+            },
+        }
+    }
+
+    /// Send to every session of a user (honours `out.qos`).
     pub fn send_to_user(&self, user_key: &str, out: Outgoing) -> Result<()> {
-        let conns = self.sessions.get_user_sessions(user_key);
-        if conns.is_empty() {
+        let keys = self.sessions.user_session_keys(user_key);
+        if keys.is_empty() {
             return Err(WsPrismError::BadRequest("user not connected".into()));
         }
         let prepared = PreparedMsg::prepare(&out)?;
-        for c in conns {
-            if c.tx.try_send(prepared.to_ws_message()).is_err() {
-                let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
-                if sample_every_1024(n) {
-                    tracing::warn!(user_key=%user_key, drops=%n, "egress drop");
-                }
+        for key in keys {
+            if let Some(conn) = self.sessions.get_session(&key) {
+                self.deliver(&key, &conn, prepared.to_ws_message(), &out.qos);
             }
         }
         Ok(())
     }
 
-    /// Send to a single session. Queue-full drops are sampled and logged.
+    /// Send to a single session (honours `out.qos`).
     pub fn send_to_session(&self, session_key: &str, out: Outgoing) -> Result<()> {
         let conn = self
             .sessions
             .get_session(session_key)
             .ok_or_else(|| WsPrismError::BadRequest("session not connected".into()))?;
         let prepared = PreparedMsg::prepare(&out)?;
-        if conn.tx.try_send(prepared.to_ws_message()).is_err() {
-            let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
-            if sample_every_1024(n) {
-                tracing::warn!(%session_key, "send_to_session dropped");
+        self.deliver(session_key, &conn, prepared.to_ws_message(), &out.qos);
+        Ok(())
+    }
+
+    /// Publish to every session in a room (honours `out.qos`).
+    pub fn publish_room(&self, room_key: &str, out: Outgoing) -> Result<()> {
+        let prepared = PreparedMsg::prepare(&out)?;
+        for key in self.presence.sessions_in(room_key) {
+            if let Some(conn) = self.sessions.get_session(&key) {
+                self.deliver(&key, &conn, prepared.to_ws_message(), &out.qos);
             }
         }
         Ok(())
     }
 
+    /// Publish to a room with `QoS::Lossy`, whatever `out.qos` says.
     pub fn publish_room_lossy(&self, room_key: &str, out: Outgoing) -> Result<()> {
-        let prepared = PreparedMsg::prepare(&out)?;
-        let sessions = self.presence.sessions_in(room_key);
-        for sid in sessions {
-            if let Some(conn) = self.sessions.get_session(&sid) {
-                if conn.tx.try_send(prepared.to_ws_message()).is_err() {
-                    let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
-                    if sample_every_1024(n) {
-                        tracing::warn!(room_key=%room_key, drops=%n, "lossy drop");
-                    }
-                }
-            }
-        }
-        Ok(())
+        self.publish_room(
+            room_key,
+            Outgoing {
+                qos: QoS::Lossy,
+                ..out
+            },
+        )
     }
 
-    pub async fn publish_room_reliable(&self, room_key: &str, out: Outgoing) -> Result<()> {
-        let prepared = PreparedMsg::prepare(&out)?;
-        let sessions = self.presence.sessions_in(room_key);
-        let (timeout_ms, do_timeout) = match out.qos {
-            QoS::Reliable { timeout_ms } => (timeout_ms, timeout_ms > 0),
-            _ => (0, false),
-        };
-        let mut futs = FuturesUnordered::new();
-        for sid in sessions {
-            if let Some(conn) = self.sessions.get_session(&sid) {
-                let msg = prepared.to_ws_message();
-                futs.push(async move {
-                    if do_timeout {
-                        if timeout(Duration::from_millis(timeout_ms), conn.tx.send(msg))
-                            .await
-                            .is_err()
-                        {
-                            let n = SEND_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
-                            if sample_every_1024(n) {
-                                tracing::warn!(fails=%n, "reliable send timeout");
-                            }
-                        }
-                    } else if conn.tx.send(msg).await.is_err() {
-                        let n = SEND_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
-                        if sample_every_1024(n) {
-                            tracing::warn!(fails=%n, "reliable send failed");
-                        }
-                    }
-                });
-            }
-        }
-        while futs.next().await.is_some() {}
-        Ok(())
+    /// Publish to a room with `QoS::Reliable`, whatever `out.qos` says.
+    pub fn publish_room_reliable(&self, room_key: &str, out: Outgoing) -> Result<()> {
+        self.publish_room(
+            room_key,
+            Outgoing {
+                qos: QoS::Reliable,
+                ..out
+            },
+        )
     }
 }
 
@@ -247,8 +258,8 @@ impl RealtimeCtx {
         let rk = self.room_key(room);
         self.core.publish_room_lossy(&rk, out)
     }
-    pub async fn publish_room_reliable(&self, room: &str, out: Outgoing) -> Result<()> {
+    pub fn publish_room_reliable(&self, room: &str, out: Outgoing) -> Result<()> {
         let rk = self.room_key(room);
-        self.core.publish_room_reliable(&rk, out).await
+        self.core.publish_room_reliable(&rk, out)
     }
 }

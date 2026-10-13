@@ -136,13 +136,12 @@ impl SessionRegistry {
             .map(|r| r.value().conn.clone())
     }
 
-    pub fn get_user_sessions(&self, user_key: &str) -> Vec<Connection> {
-        let Some(set) = self.user_index.get(user_key) else {
-            return vec![];
-        };
-        set.iter()
-            .filter_map(|sid| self.get_session(sid.key()))
-            .collect()
+    /// Session keys of a user's live sessions (snapshot).
+    pub fn user_session_keys(&self, user_key: &str) -> Vec<String> {
+        self.user_index
+            .get(user_key)
+            .map(|set| set.iter().map(|k| k.key().clone()).collect())
+            .unwrap_or_default()
     }
 
     pub fn count_user_sessions(&self, user_key: &str) -> usize {

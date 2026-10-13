@@ -170,8 +170,8 @@ impl AppState {
                 crate::realtime::core::egress_drop_count(),
             ),
             (
-                "wsprism_egress_send_fail_total",
-                crate::realtime::core::egress_send_fail_count(),
+                "wsprism_egress_slow_consumer_closes_total",
+                crate::realtime::core::egress_slow_consumer_count(),
             ),
         ]
     }

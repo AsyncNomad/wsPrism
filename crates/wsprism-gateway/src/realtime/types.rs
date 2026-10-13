@@ -4,17 +4,17 @@ use serde_json::Value;
 
 use wsprism_core::error::{Result, WsPrismError};
 
-/// Quality-of-Service strategy for outgoing delivery.
-///
-/// Chooses between latency-first (drop on backpressure) and reliability-first
-/// (await with optional timeout) behavior.
+/// Quality-of-Service strategy for outgoing delivery. Neither variant ever
+/// blocks the publisher; they differ in what happens when a recipient's
+/// queue is full (see C1 in docs/HARDENING.md).
 #[derive(Debug, Clone, Default)]
 pub enum QoS {
-    /// Latency-critical: do not await; if the user's queue is full, drop.
+    /// Latency-first: drop the message for that recipient (latest state wins).
     #[default]
     Lossy,
-    /// Reliability-critical: attempt delivery and optionally time out.
-    Reliable { timeout_ms: u64 },
+    /// Gap-free: the recipient gets every message in order, or is closed as a
+    /// slow consumer (`slow_consumer`, 1008) so it knows to resync.
+    Reliable,
 }
 
 /// Outgoing payload variants.
