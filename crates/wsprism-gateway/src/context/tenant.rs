@@ -36,7 +36,10 @@ impl TenantContext {
 }
 
 /// Resolve tenant runtime or return a client-visible error.
-pub fn resolve_tenant(state: &AppState, tenant_id: &str) -> Result<Arc<policy::TenantPolicyRuntime>> {
+pub fn resolve_tenant(
+    state: &AppState,
+    tenant_id: &str,
+) -> Result<Arc<policy::TenantPolicyRuntime>> {
     state
         .tenant_policy(tenant_id)
         .ok_or_else(|| WsPrismError::BadRequest(format!("unknown tenant: {tenant_id}")))

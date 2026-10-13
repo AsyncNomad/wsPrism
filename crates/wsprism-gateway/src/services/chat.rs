@@ -42,8 +42,9 @@ impl TextService for ChatService {
                     .as_ref()
                     .ok_or_else(|| WsPrismError::BadRequest("chat.send requires data".into()))?;
 
-                let req: SendReq = serde_json::from_str(raw.get())
-                    .map_err(|e| WsPrismError::BadRequest(format!("chat.send invalid data: {e}")))?;
+                let req: SendReq = serde_json::from_str(raw.get()).map_err(|e| {
+                    WsPrismError::BadRequest(format!("chat.send invalid data: {e}"))
+                })?;
 
                 let out = Outgoing {
                     qos: QoS::Reliable { timeout_ms: 1500 },

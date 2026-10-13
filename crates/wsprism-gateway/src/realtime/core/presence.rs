@@ -1,7 +1,7 @@
+use crate::config::schema::TenantLimits;
 use dashmap::{DashMap, DashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use wsprism_core::error::{Result, WsPrismError};
-use crate::config::schema::TenantLimits;
 
 /// Room presence: `room_key -> sessions`, `session_key -> rooms`.
 ///
@@ -17,7 +17,7 @@ pub struct Presence {
     // Governance indices
     room_to_users: DashMap<String, DashSet<String>>,
     user_to_rooms: DashMap<String, DashSet<String>>,
-    
+
     // Multi-session ref-counting: user::room -> session_count
     user_room_refs: DashMap<String, usize>,
 
@@ -51,15 +51,16 @@ impl Presence {
         room_key: &str,
         user_key: &str,
         session_key: &str,
-        limits: &TenantLimits
+        limits: &TenantLimits,
     ) -> Result<()> {
-        
         // --- 1. Check Room Capacity (Max Users per Room) ---
         if limits.max_users_per_room > 0 {
             if let Some(users) = self.room_to_users.get(room_key) {
                 // If user is not already in room, check limit
                 if users.len() as u64 >= limits.max_users_per_room && !users.contains(user_key) {
-                     return Err(WsPrismError::ResourceExhausted("room user limit reached".into()));
+                    return Err(WsPrismError::ResourceExhausted(
+                        "room user limit reached".into(),
+                    ));
                 }
             }
         }
@@ -68,7 +69,9 @@ impl Presence {
         if limits.max_rooms_per_user > 0 {
             if let Some(rooms) = self.user_to_rooms.get(user_key) {
                 if rooms.len() as u64 >= limits.max_rooms_per_user && !rooms.contains(room_key) {
-                    return Err(WsPrismError::ResourceExhausted("user room limit reached".into()));
+                    return Err(WsPrismError::ResourceExhausted(
+                        "user room limit reached".into(),
+                    ));
                 }
             }
         }
@@ -78,31 +81,51 @@ impl Presence {
         // Note: This is a slight approximation. A room exists if it has sessions.
         let is_new_room = !self.room_to_sessions.contains_key(room_key);
         if is_new_room && limits.max_rooms_total > 0 {
-            let counter = self.tenant_room_counts.entry(tenant_id.to_string()).or_insert_with(|| AtomicU64::new(0));
+            let counter = self
+                .tenant_room_counts
+                .entry(tenant_id.to_string())
+                .or_insert_with(|| AtomicU64::new(0));
             if counter.load(Ordering::Relaxed) >= limits.max_rooms_total {
-                return Err(WsPrismError::ResourceExhausted("tenant room limit reached".into()));
+                return Err(WsPrismError::ResourceExhausted(
+                    "tenant room limit reached".into(),
+                ));
             }
             // Increment
             counter.fetch_add(1, Ordering::Relaxed);
         } else if is_new_room {
-             self.tenant_room_counts.entry(tenant_id.to_string()).or_default().fetch_add(1, Ordering::Relaxed);
+            self.tenant_room_counts
+                .entry(tenant_id.to_string())
+                .or_default()
+                .fetch_add(1, Ordering::Relaxed);
         }
 
         // --- 4. Perform Join (Order: Routing -> Governance) ---
-        
+
         // A. Routing
-        self.room_to_sessions.entry(room_key.to_string()).or_default().insert(session_key.to_string());
-        self.session_to_rooms.entry(session_key.to_string()).or_default().insert(room_key.to_string());
-        
+        self.room_to_sessions
+            .entry(room_key.to_string())
+            .or_default()
+            .insert(session_key.to_string());
+        self.session_to_rooms
+            .entry(session_key.to_string())
+            .or_default()
+            .insert(room_key.to_string());
+
         // B. Governance (Ref counting for multi-session support)
         let ref_key = format!("{}::{}", user_key, room_key);
         let mut refs = self.user_room_refs.entry(ref_key).or_insert(0);
         *refs += 1;
-        
+
         // If this is the first session for this user in this room, add to user indices
         if *refs == 1 {
-            self.room_to_users.entry(room_key.to_string()).or_default().insert(user_key.to_string());
-            self.user_to_rooms.entry(user_key.to_string()).or_default().insert(room_key.to_string());
+            self.room_to_users
+                .entry(room_key.to_string())
+                .or_default()
+                .insert(user_key.to_string());
+            self.user_to_rooms
+                .entry(user_key.to_string())
+                .or_default()
+                .insert(room_key.to_string());
         }
 
         Ok(())
@@ -116,17 +139,22 @@ impl Presence {
             room_empty = set.is_empty();
         }
         // Cleanup empty routing set outside lock
-        if room_empty { self.room_to_sessions.remove(room_key); }
+        if room_empty {
+            self.room_to_sessions.remove(room_key);
+        }
 
         if let Some(set) = self.session_to_rooms.get(session_key) {
             set.remove(room_key);
-            if set.is_empty() { drop(set); self.session_to_rooms.remove(session_key); }
+            if set.is_empty() {
+                drop(set);
+                self.session_to_rooms.remove(session_key);
+            }
         }
 
         // 2. Remove from governance (Ref counting)
         let ref_key = format!("{}::{}", user_key, room_key);
         let mut remove_user_mapping = false;
-        
+
         if let Some(mut refs) = self.user_room_refs.get_mut(&ref_key) {
             *refs -= 1;
             if *refs == 0 {
@@ -135,30 +163,37 @@ impl Presence {
         }
         if remove_user_mapping {
             self.user_room_refs.remove(&ref_key);
-            
+
             // Remove from user_to_rooms
             if let Some(set) = self.user_to_rooms.get(user_key) {
                 set.remove(room_key);
-                if set.is_empty() { drop(set); self.user_to_rooms.remove(user_key); }
+                if set.is_empty() {
+                    drop(set);
+                    self.user_to_rooms.remove(user_key);
+                }
             }
 
             // Remove from room_to_users
             if let Some(set) = self.room_to_users.get(room_key) {
                 set.remove(user_key);
-                if set.is_empty() { drop(set); self.room_to_users.remove(room_key); }
+                if set.is_empty() {
+                    drop(set);
+                    self.room_to_users.remove(room_key);
+                }
             }
         }
-        
+
         // 3. Decrement Tenant Room Count if room empty
         if room_empty {
-             if let Some(counter) = self.tenant_room_counts.get(tenant_id) {
-                 counter.fetch_sub(1, Ordering::Relaxed);
-             }
+            if let Some(counter) = self.tenant_room_counts.get(tenant_id) {
+                counter.fetch_sub(1, Ordering::Relaxed);
+            }
         }
     }
 
     pub fn sessions_in(&self, room_key: &str) -> Vec<String> {
-        self.room_to_sessions.get(room_key)
+        self.room_to_sessions
+            .get(room_key)
             .map(|set| set.iter().map(|u| u.key().to_string()).collect())
             .unwrap_or_default()
     }

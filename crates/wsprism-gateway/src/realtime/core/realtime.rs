@@ -1,28 +1,34 @@
 //! Realtime egress engine and per-message context.
-//! 
+//!
 //! The realtime core fans out messages to users, sessions, or rooms with
 //! lossy/reliable QoS and keeps lightweight counters for observability. It is
 //! intentionally lock-free; small temporary overshoots are possible under high
 //! contention to preserve throughput.
 
-use std::borrow::Cow;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use crate::config::schema::TenantLimits;
+use crate::realtime::core::{Presence, SessionRegistry};
+use crate::realtime::types::{Outgoing, PreparedMsg, QoS};
 use axum::extract::ws::{CloseFrame, Message};
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
+use std::borrow::Cow;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use tokio::time::{timeout, Duration};
 use wsprism_core::error::{Result, WsPrismError};
-use crate::realtime::core::{Presence, SessionRegistry};
-use crate::realtime::types::{Outgoing, PreparedMsg, QoS};
-use crate::config::schema::TenantLimits;
 
 static DROP_COUNT: AtomicU64 = AtomicU64::new(0);
 static SEND_FAIL_COUNT: AtomicU64 = AtomicU64::new(0);
 
-pub fn egress_drop_count() -> u64 { DROP_COUNT.load(Ordering::Relaxed) }
-pub fn egress_send_fail_count() -> u64 { SEND_FAIL_COUNT.load(Ordering::Relaxed) }
-fn sample_every_1024(n: u64) -> bool { (n & 1023) == 1 }
+pub fn egress_drop_count() -> u64 {
+    DROP_COUNT.load(Ordering::Relaxed)
+}
+pub fn egress_send_fail_count() -> u64 {
+    SEND_FAIL_COUNT.load(Ordering::Relaxed)
+}
+fn sample_every_1024(n: u64) -> bool {
+    (n & 1023) == 1
+}
 
 pub struct RealtimeCore {
     pub sessions: Arc<SessionRegistry>,
@@ -64,7 +70,9 @@ impl RealtimeCore {
         for c in conns {
             if c.tx.try_send(prepared.to_ws_message()).is_err() {
                 let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
-                if sample_every_1024(n) { tracing::warn!(user_key=%user_key, drops=%n, "egress drop"); }
+                if sample_every_1024(n) {
+                    tracing::warn!(user_key=%user_key, drops=%n, "egress drop");
+                }
             }
         }
         Ok(())
@@ -72,12 +80,16 @@ impl RealtimeCore {
 
     /// Send to a single session. Queue-full drops are sampled and logged.
     pub fn send_to_session(&self, session_key: &str, out: Outgoing) -> Result<()> {
-        let conn = self.sessions.get_session(session_key)
+        let conn = self
+            .sessions
+            .get_session(session_key)
             .ok_or_else(|| WsPrismError::BadRequest("session not connected".into()))?;
         let prepared = PreparedMsg::prepare(&out)?;
         if conn.tx.try_send(prepared.to_ws_message()).is_err() {
             let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
-            if sample_every_1024(n) { tracing::warn!(%session_key, "send_to_session dropped"); }
+            if sample_every_1024(n) {
+                tracing::warn!(%session_key, "send_to_session dropped");
+            }
         }
         Ok(())
     }
@@ -89,7 +101,9 @@ impl RealtimeCore {
             if let Some(conn) = self.sessions.get_session(&sid) {
                 if conn.tx.try_send(prepared.to_ws_message()).is_err() {
                     let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
-                    if sample_every_1024(n) { tracing::warn!(room_key=%room_key, drops=%n, "lossy drop"); }
+                    if sample_every_1024(n) {
+                        tracing::warn!(room_key=%room_key, drops=%n, "lossy drop");
+                    }
                 }
             }
         }
@@ -109,13 +123,20 @@ impl RealtimeCore {
                 let msg = prepared.to_ws_message();
                 futs.push(async move {
                     if do_timeout {
-                        if timeout(Duration::from_millis(timeout_ms), conn.tx.send(msg)).await.is_err() {
+                        if timeout(Duration::from_millis(timeout_ms), conn.tx.send(msg))
+                            .await
+                            .is_err()
+                        {
                             let n = SEND_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
-                            if sample_every_1024(n) { tracing::warn!(fails=%n, "reliable send timeout"); }
+                            if sample_every_1024(n) {
+                                tracing::warn!(fails=%n, "reliable send timeout");
+                            }
                         }
                     } else if conn.tx.send(msg).await.is_err() {
                         let n = SEND_FAIL_COUNT.fetch_add(1, Ordering::Relaxed);
-                        if sample_every_1024(n) { tracing::warn!(fails=%n, "reliable send failed"); }
+                        if sample_every_1024(n) {
+                            tracing::warn!(fails=%n, "reliable send failed");
+                        }
                     }
                 });
             }
@@ -165,27 +186,53 @@ impl RealtimeCtx {
         }
     }
 
-    pub fn tenant(&self) -> &str { &self.tenant }
-    pub fn user(&self) -> &str { &self.user }
-    pub fn user_key(&self) -> &str { &self.user_key }
-    pub fn session_id(&self) -> &str { &self.session_id }
-    pub fn session_key(&self) -> &str { &self.session_key }
-    pub fn active_room(&self) -> Option<&str> { self.active_room.as_deref() }
+    pub fn tenant(&self) -> &str {
+        &self.tenant
+    }
+    pub fn user(&self) -> &str {
+        &self.user
+    }
+    pub fn user_key(&self) -> &str {
+        &self.user_key
+    }
+    pub fn session_id(&self) -> &str {
+        &self.session_id
+    }
+    pub fn session_key(&self) -> &str {
+        &self.session_key
+    }
+    pub fn active_room(&self) -> Option<&str> {
+        self.active_room.as_deref()
+    }
 
-    fn room_key(&self, room: &str) -> String { format!("{}::{}", self.tenant(), room) }
+    fn room_key(&self, room: &str) -> String {
+        format!("{}::{}", self.tenant(), room)
+    }
 
     pub fn join_room_with_limits(&self, room: &str, limits: &TenantLimits) -> Result<()> {
         let rk = self.room_key(room);
-        self.core.presence.try_join(self.tenant(), &rk, self.user_key(), self.session_key(), limits)
+        self.core.presence.try_join(
+            self.tenant(),
+            &rk,
+            self.user_key(),
+            self.session_key(),
+            limits,
+        )
     }
 
     pub fn leave_room(&self, room: &str) {
         let rk = self.room_key(room);
-        self.core.presence.leave(self.tenant(), &rk, self.user_key(), self.session_key());
+        self.core
+            .presence
+            .leave(self.tenant(), &rk, self.user_key(), self.session_key());
     }
 
-    pub fn send_to_user(&self, out: Outgoing) -> Result<()> { self.core.send_to_user(self.user_key(), out) }
-    pub fn send_to_session(&self, out: Outgoing) -> Result<()> { self.core.send_to_session(self.session_key(), out) }
+    pub fn send_to_user(&self, out: Outgoing) -> Result<()> {
+        self.core.send_to_user(self.user_key(), out)
+    }
+    pub fn send_to_session(&self, out: Outgoing) -> Result<()> {
+        self.core.send_to_session(self.session_key(), out)
+    }
     pub fn publish_room_lossy(&self, room: &str, out: Outgoing) -> Result<()> {
         let rk = self.room_key(room);
         self.core.publish_room_lossy(&rk, out)

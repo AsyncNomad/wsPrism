@@ -57,9 +57,10 @@ impl TenantPolicyRuntime {
         let hot_rules = compile_hot_rules(&policy.hot_allowlist)?;
 
         let tenant_limiter = match policy.rate_limit_scope {
-            RateLimitScope::Tenant | RateLimitScope::Both => {
-                Some(RateLimiter::new(policy.rate_limit_rps, policy.rate_limit_burst))
-            }
+            RateLimitScope::Tenant | RateLimitScope::Both => Some(RateLimiter::new(
+                policy.rate_limit_rps,
+                policy.rate_limit_burst,
+            )),
             RateLimitScope::Connection => None,
         };
 

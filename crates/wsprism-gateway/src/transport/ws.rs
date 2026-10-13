@@ -5,36 +5,44 @@
 //! - Session/room governance and policy enforcement
 //! - Labeled metrics for policy decisions/errors + sampled Hot Lane latency
 
-use axum::{
-    extract::{connect_info::ConnectInfo, ws::CloseFrame, ws::Message, ws::WebSocket, ws::WebSocketUpgrade, Query, State},
-    http::{HeaderMap, StatusCode, header::RETRY_AFTER},
-    response::{IntoResponse},
-};
-use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
-use serde_json::json;
-use tokio::sync::mpsc;
-use tokio::time::{timeout, Duration, Instant};
-use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
-use wsprism_core::error::{Result, WsPrismError};
 use crate::app_state::AppState;
+use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::{ConnRateLimiter, HotErrorMode, OnExceed, PolicyDecision};
 use crate::realtime::core::Connection;
 use crate::realtime::RealtimeCore;
 use crate::realtime::RealtimeCtx;
 use crate::transport::codec::{decode, Inbound};
 use crate::transport::handshake::retry_after_header_secs;
-use crate::obs::metrics::GatewayMetrics;
+use axum::{
+    extract::{
+        connect_info::ConnectInfo, ws::CloseFrame, ws::Message, ws::WebSocket,
+        ws::WebSocketUpgrade, Query, State,
+    },
+    http::{header::RETRY_AFTER, HeaderMap, StatusCode},
+    response::IntoResponse,
+};
+use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
+use serde_json::json;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc;
+use tokio::time::{timeout, Duration, Instant};
+use wsprism_core::error::{Result, WsPrismError};
 
 static NEXT_SID: AtomicU64 = AtomicU64::new(1);
 static NEXT_TRACE: AtomicU64 = AtomicU64::new(1);
 
-fn gen_sid() -> String { format!("{:x}", NEXT_SID.fetch_add(1, Ordering::Relaxed)) }
+fn gen_sid() -> String {
+    format!("{:x}", NEXT_SID.fetch_add(1, Ordering::Relaxed))
+}
 fn gen_trace() -> String {
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
     let seq = NEXT_TRACE.fetch_add(1, Ordering::Relaxed);
     format!("{:x}-{:x}", now, seq)
 }
@@ -66,7 +74,8 @@ fn sys_kicked_json(reason: &str, trace_id: &str) -> String {
     json!({ "v": 1, "svc": "sys", "type": "kicked", "data": { "reason": reason }, "trace_id": trace_id }).to_string()
 }
 fn sys_joined_json(room: &str, trace_id: &str) -> String {
-    json!({ "v": 1, "svc": "sys", "type": "joined", "room": room, "trace_id": trace_id }).to_string()
+    json!({ "v": 1, "svc": "sys", "type": "joined", "room": room, "trace_id": trace_id })
+        .to_string()
 }
 fn sys_left_json(trace_id: &str) -> String {
     json!({ "v": 1, "svc": "sys", "type": "left", "trace_id": trace_id }).to_string()
@@ -74,49 +83,82 @@ fn sys_left_json(trace_id: &str) -> String {
 
 /// RAII guard that tears down session and presence entries on exit.
 struct SessionCleanup {
-    core: Arc<RealtimeCore>, tenant_id: String, user_key: String, session_key: String, metrics: Arc<GatewayMetrics>,
+    core: Arc<RealtimeCore>,
+    tenant_id: String,
+    user_key: String,
+    session_key: String,
+    metrics: Arc<GatewayMetrics>,
 }
 impl Drop for SessionCleanup {
     fn drop(&mut self) {
-        let _ = self.core.sessions.remove_session(&self.user_key, &self.session_key);
-        self.core.presence.cleanup_session(&self.tenant_id, &self.user_key, &self.session_key);
-        self.metrics.ws_active_sessions.dec(&[("tenant", &self.tenant_id)]);
+        let _ = self
+            .core
+            .sessions
+            .remove_session(&self.user_key, &self.session_key);
+        self.core
+            .presence
+            .cleanup_session(&self.tenant_id, &self.user_key, &self.session_key);
+        self.metrics
+            .ws_active_sessions
+            .dec(&[("tenant", &self.tenant_id)]);
         tracing::debug!(s=%self.session_key, "session raii cleanup done");
     }
 }
 
 pub async fn ws_upgrade(
-    State(app): State<AppState>, ConnectInfo(addr): ConnectInfo<SocketAddr>, ws: WebSocketUpgrade, Query(q): Query<WsQuery>,
+    State(app): State<AppState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ws: WebSocketUpgrade,
+    Query(q): Query<WsQuery>,
 ) -> impl IntoResponse {
     if let Err(wait_secs) = app.handshake().check(addr.ip()).await {
-        app.metrics().handshake_rejections.inc(&[("tenant", &q.tenant), ("reason", "rate_limit")]);
+        app.metrics()
+            .handshake_rejections
+            .inc(&[("tenant", &q.tenant), ("reason", "rate_limit")]);
         let (val, _) = retry_after_header_secs(wait_secs);
         let mut headers = HeaderMap::new();
         headers.insert(RETRY_AFTER, val.parse().unwrap());
         return (StatusCode::TOO_MANY_REQUESTS, headers, "Too Many Requests").into_response();
     }
-    if app.is_draining() { return (StatusCode::SERVICE_UNAVAILABLE, "draining").into_response(); }
+    if app.is_draining() {
+        return (StatusCode::SERVICE_UNAVAILABLE, "draining").into_response();
+    }
     if let Some(t_cfg) = app.cfg().tenants.iter().find(|t| t.id == q.tenant) {
         let limit = t_cfg.limits.max_sessions_total;
         if limit > 0 {
             let current = app.realtime().sessions.count_tenant_sessions(&q.tenant);
             if current >= limit {
-                app.metrics().handshake_rejections.inc(&[("tenant", &q.tenant), ("reason", "tenant_capacity")]);
+                app.metrics()
+                    .handshake_rejections
+                    .inc(&[("tenant", &q.tenant), ("reason", "tenant_capacity")]);
                 let mut headers = HeaderMap::new();
                 headers.insert(RETRY_AFTER, "1".parse().unwrap());
-                return (StatusCode::SERVICE_UNAVAILABLE, headers, "Tenant Capacity Exceeded").into_response();
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    headers,
+                    "Tenant Capacity Exceeded",
+                )
+                    .into_response();
             }
         }
-    } else { return (StatusCode::BAD_REQUEST, "Unknown Tenant").into_response(); }
+    } else {
+        return (StatusCode::BAD_REQUEST, "Unknown Tenant").into_response();
+    }
 
-    app.metrics().ws_upgrades.inc(&[("tenant", &q.tenant), ("status", "ok")]);
+    app.metrics()
+        .ws_upgrades
+        .inc(&[("tenant", &q.tenant), ("status", "ok")]);
     ws.on_upgrade(move |socket| async move {
-        if let Err(e) = run_session(app, q, socket).await { tracing::error!("session error: {}", e); }
+        if let Err(e) = run_session(app, q, socket).await {
+            tracing::error!("session error: {}", e);
+        }
     })
 }
 
 async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()> {
-    let policy = app.tenant_policy(&q.tenant).ok_or(WsPrismError::BadRequest("unknown tenant".into()))?;
+    let policy = app
+        .tenant_policy(&q.tenant)
+        .ok_or(WsPrismError::BadRequest("unknown tenant".into()))?;
     let user_id = app.resolve_ticket(&q.ticket)?;
     let sid = q.sid.unwrap_or_else(gen_sid);
     let trace_id = gen_trace();
@@ -134,36 +176,74 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
     let max_user_sessions = sp.max_sessions_per_user as usize;
     let current_user_sessions = core.sessions.count_user_sessions(&user_key);
     if current_user_sessions >= max_user_sessions {
-         metrics.policy_decisions.inc(&[("tenant", &q.tenant), ("lane", "session"), ("decision", "reject"), ("reason", "max_user_sessions")]);
-         match sp.on_exceed {
-             OnExceed::Deny => {
-                 let _ = out_tx.send(Message::Text(sys_error_json("TOO_MANY_SESSIONS", "limit exceeded", &trace_id))).await;
-                 return Ok(());
-             }
-             OnExceed::KickOldest => {
-                 if let Some((victim, victim_conn)) = core.sessions.evict_oldest(&user_key) {
-                     let _ = victim_conn.tx.try_send(Message::Text(sys_kicked_json("max_sessions_exceeded", &trace_id)));
-                     let _ = victim_conn.tx.try_send(Message::Close(Some(CloseFrame { code: 1008, reason: "kicked".into() })));
-                     core.presence.cleanup_session(&q.tenant, &user_key, &victim);
-                     metrics.ws_active_sessions.dec(&[("tenant", &q.tenant)]);
-                 }
-             }
-         }
+        metrics.policy_decisions.inc(&[
+            ("tenant", &q.tenant),
+            ("lane", "session"),
+            ("decision", "reject"),
+            ("reason", "max_user_sessions"),
+        ]);
+        match sp.on_exceed {
+            OnExceed::Deny => {
+                let _ = out_tx
+                    .send(Message::Text(sys_error_json(
+                        "TOO_MANY_SESSIONS",
+                        "limit exceeded",
+                        &trace_id,
+                    )))
+                    .await;
+                return Ok(());
+            }
+            OnExceed::KickOldest => {
+                if let Some((victim, victim_conn)) = core.sessions.evict_oldest(&user_key) {
+                    let _ = victim_conn.tx.try_send(Message::Text(sys_kicked_json(
+                        "max_sessions_exceeded",
+                        &trace_id,
+                    )));
+                    let _ = victim_conn.tx.try_send(Message::Close(Some(CloseFrame {
+                        code: 1008,
+                        reason: "kicked".into(),
+                    })));
+                    core.presence.cleanup_session(&q.tenant, &user_key, &victim);
+                    metrics.ws_active_sessions.dec(&[("tenant", &q.tenant)]);
+                }
+            }
+        }
     }
 
     let t_cfg = app.cfg().tenants.iter().find(|t| t.id == q.tenant).unwrap();
-    core.sessions.try_insert(q.tenant.clone(), user_key.clone(), session_key.clone(), Connection{ tx: out_tx.clone() }, t_cfg.limits.max_sessions_total)?;
+    core.sessions.try_insert(
+        q.tenant.clone(),
+        user_key.clone(),
+        session_key.clone(),
+        Connection { tx: out_tx.clone() },
+        t_cfg.limits.max_sessions_total,
+    )?;
     metrics.ws_active_sessions.inc(&[("tenant", &q.tenant)]);
-    let _cleanup = SessionCleanup { core: core.clone(), tenant_id: q.tenant.clone(), user_key: user_key.clone(), session_key: session_key.clone(), metrics: metrics.clone() };
-    out_tx.send(Message::Text(sys_authed_json(&q.tenant, &user_id, &sid, &trace_id))).await.map_err(|_| WsPrismError::Internal("closed".into()))?;
+    let _cleanup = SessionCleanup {
+        core: core.clone(),
+        tenant_id: q.tenant.clone(),
+        user_key: user_key.clone(),
+        session_key: session_key.clone(),
+        metrics: metrics.clone(),
+    };
+    out_tx
+        .send(Message::Text(sys_authed_json(
+            &q.tenant, &user_id, &sid, &trace_id,
+        )))
+        .await
+        .map_err(|_| WsPrismError::Internal("closed".into()))?;
 
     let gw = &app.cfg().gateway;
     let mut ping_tick = tokio::time::interval(Duration::from_millis(gw.ping_interval_ms));
     let mut idle_tick = tokio::time::interval(Duration::from_millis(1000));
     let idle_timeout = Duration::from_millis(gw.idle_timeout_ms);
     let writer_timeout = Duration::from_millis(gw.writer_send_timeout_ms);
-    let mut sess = SessionState { active_room: None, last_activity: Instant::now(), conn_limiter: policy.new_connection_limiter() };
-    
+    let mut sess = SessionState {
+        active_room: None,
+        last_activity: Instant::now(),
+        conn_limiter: policy.new_connection_limiter(),
+    };
+
     // Sampling Counter
     let mut hot_op_counter: u64 = 0;
 
@@ -197,16 +277,16 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                     Inbound::Close => break,
                     Inbound::Text { env, bytes_len } => {
                         if let Some(lim) = sess.conn_limiter.as_mut() {
-                            if !lim.allow() { 
+                            if !lim.allow() {
                                 metrics.policy_decisions.inc(&[("tenant", &q.tenant), ("lane", "ext"), ("decision", "drop"), ("reason", "conn_rate_limit")]);
-                                continue; 
+                                continue;
                             }
                         }
                         match policy.check_text(bytes_len, &env.svc, &env.msg_type) {
                             PolicyDecision::Pass => {},
-                            PolicyDecision::Drop => { 
+                            PolicyDecision::Drop => {
                                 metrics.policy_decisions.inc(&[("tenant", &q.tenant), ("lane", "ext"), ("decision", "drop"), ("reason", "policy")]);
-                                continue; 
+                                continue;
                             },
                             PolicyDecision::Reject { code, msg } => {
                                 // SAFE LABEL: code.as_str()
@@ -257,9 +337,9 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                     Inbound::Hot { frame, bytes_len } => {
                          match policy.check_hot(bytes_len, frame.svc_id, frame.opcode) {
                             PolicyDecision::Pass => {},
-                            PolicyDecision::Drop => { 
+                            PolicyDecision::Drop => {
                                 metrics.policy_decisions.inc(&[("tenant", &q.tenant), ("lane", "hot"), ("decision", "drop"), ("reason", "policy")]);
-                                continue; 
+                                continue;
                             },
                             PolicyDecision::Reject { code, msg } => {
                                 metrics.policy_decisions.inc(&[("tenant", &q.tenant), ("lane", "hot"), ("decision", "reject"), ("reason", code.as_str())]);
@@ -283,12 +363,12 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                              continue;
                          }
                          let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), trace_id.clone(), sess.active_room.clone(), core.clone());
-                         
+
                          // Hot Lane Sampling (1/1024)
                          hot_op_counter = hot_op_counter.wrapping_add(1);
                          let should_sample = (hot_op_counter & 1023) == 0;
                          let start = if should_sample { Some(Instant::now()) } else { None };
-                         
+
                          let res = dispatcher.dispatch_hot(ctx, frame).await;
                          if let Some(s) = start {
                              metrics.dispatch_duration.observe(&[("tenant", &q.tenant), ("lane", "hot")], s.elapsed());

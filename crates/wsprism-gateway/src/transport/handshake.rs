@@ -10,9 +10,9 @@
 use std::net::IpAddr;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use crate::config::schema::HandshakeConfig;
 use dashmap::DashMap;
 use tokio::sync::Mutex;
-use crate::config::schema::HandshakeConfig;
 
 /// Simple leaky bucket (capacity/refill, best-effort).
 #[derive(Debug)]
@@ -116,7 +116,7 @@ impl HandshakeDefender {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .subsec_nanos();
-            
+
             // ~10% chance to run cleanup when over limit
             if nanos % 100 < 10 {
                 // Clear roughly 10% of entries (arbitrary batch)
@@ -126,7 +126,10 @@ impl HandshakeDefender {
                 // Fallback: Remove every 10th item (conceptually).
                 // Or just:
                 self.per_ip.retain(|_, _| {
-                    let n = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_nanos();
+                    let n = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .subsec_nanos();
                     n % 10 != 0 // Drop ~10%
                 });
                 tracing::warn!(len = self.per_ip.len(), "handshake defender ip map trimmed");

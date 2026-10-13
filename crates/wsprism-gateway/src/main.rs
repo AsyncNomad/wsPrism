@@ -4,8 +4,8 @@
 //! starts the WebSocket server.
 
 use std::net::SocketAddr;
-use tracing_subscriber::{fmt, EnvFilter};
 use tokio::time::Instant;
+use tracing_subscriber::{fmt, EnvFilter};
 
 use wsprism_gateway::{app_state, config, router};
 
@@ -25,14 +25,16 @@ async fn main() {
     let app = router::build_router(state.clone());
 
     tracing::info!(%listen, "wsprism-gateway starting");
-    let listener = tokio::net::TcpListener::bind(listen).await.expect("failed to bind");
+    let listener = tokio::net::TcpListener::bind(listen)
+        .await
+        .expect("failed to bind");
 
     let drain_grace_ms = state.cfg().gateway.drain_grace_ms;
-    
+
     // Sprint 5: Enable ConnectInfo for HandshakeDefender
     axum::serve(
-        listener, 
-        app.into_make_service_with_connect_info::<SocketAddr>()
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(async move {
         shutdown_signal().await;

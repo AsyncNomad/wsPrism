@@ -55,15 +55,20 @@ impl SessionRegistry {
         user_key: String,
         session_key: String,
         conn: Connection,
-        max_total: u64
+        max_total: u64,
     ) -> Result<()> {
-        let counter = self.tenant_counts.entry(tenant_id.clone()).or_insert_with(|| AtomicU64::new(0));
+        let counter = self
+            .tenant_counts
+            .entry(tenant_id.clone())
+            .or_insert_with(|| AtomicU64::new(0));
 
         // Strict enforcement
         if max_total > 0 {
             let current = counter.load(Ordering::Relaxed);
             if current >= max_total {
-                 return Err(WsPrismError::ResourceExhausted("tenant session limit reached".into()));
+                return Err(WsPrismError::ResourceExhausted(
+                    "tenant session limit reached".into(),
+                ));
             }
         }
 
@@ -74,7 +79,9 @@ impl SessionRegistry {
         if max_total > 0 {
             if counter.load(Ordering::Relaxed) > max_total {
                 counter.fetch_sub(1, Ordering::Relaxed);
-                return Err(WsPrismError::ResourceExhausted("tenant session limit reached (race)".into()));
+                return Err(WsPrismError::ResourceExhausted(
+                    "tenant session limit reached (race)".into(),
+                ));
             }
         }
 
@@ -84,7 +91,14 @@ impl SessionRegistry {
             .insert(session_key.clone());
 
         let created_seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        self.sessions.insert(session_key, SessionEntry { conn, created_seq, tenant_id });
+        self.sessions.insert(
+            session_key,
+            SessionEntry {
+                conn,
+                created_seq,
+                tenant_id,
+            },
+        );
 
         Ok(())
     }
@@ -110,11 +124,15 @@ impl SessionRegistry {
     }
 
     pub fn get_session(&self, session_key: &str) -> Option<Connection> {
-        self.sessions.get(session_key).map(|r| r.value().conn.clone())
+        self.sessions
+            .get(session_key)
+            .map(|r| r.value().conn.clone())
     }
 
     pub fn get_user_sessions(&self, user_key: &str) -> Vec<Connection> {
-        let Some(set) = self.user_index.get(user_key) else { return vec![]; };
+        let Some(set) = self.user_index.get(user_key) else {
+            return vec![];
+        };
         set.iter()
             .filter_map(|sid| self.get_session(sid.key()))
             .collect()
@@ -126,7 +144,10 @@ impl SessionRegistry {
 
     // Sprint 5: O(1) Tenant Counter Lookup
     pub fn count_tenant_sessions(&self, tenant_id: &str) -> u64 {
-        self.tenant_counts.get(tenant_id).map(|c| c.load(Ordering::Relaxed)).unwrap_or(0)
+        self.tenant_counts
+            .get(tenant_id)
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0)
     }
 
     /// Snapshot of all active sessions.

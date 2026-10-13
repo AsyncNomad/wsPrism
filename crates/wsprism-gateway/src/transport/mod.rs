@@ -4,5 +4,5 @@
 //! they reach policy/dispatcher layers.
 
 pub mod codec;
-pub mod ws;
 pub mod handshake;
+pub mod ws;

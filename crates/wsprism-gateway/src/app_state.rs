@@ -9,11 +9,11 @@ use std::sync::Arc;
 
 use wsprism_core::error::{Result, WsPrismError};
 
-use crate::{config::GatewayConfig, policy};
 use crate::dispatch::Dispatcher;
-use crate::realtime::RealtimeCore;
 use crate::obs::metrics::GatewayMetrics;
+use crate::realtime::RealtimeCore;
 use crate::services::{ChatService, EchoBinaryService};
+use crate::{config::GatewayConfig, policy};
 // Sprint 5
 use crate::transport::handshake::HandshakeDefender;
 
@@ -48,17 +48,14 @@ impl AppState {
         // 1) Compile tenant policy runtimes
         let mut tenant_policy = HashMap::new();
         for t in &cfg.tenants {
-            let runtime = policy::TenantPolicyRuntime::new(
-                t.id.clone(),
-                t.limits.max_frame_bytes,
-                &t.policy,
-            )
-            .map_err(|e| {
-                WsPrismError::BadRequest(format!(
-                    "tenant policy compile failed (tenant={}): {e}",
-                    t.id
-                ))
-            })?;
+            let runtime =
+                policy::TenantPolicyRuntime::new(t.id.clone(), t.limits.max_frame_bytes, &t.policy)
+                    .map_err(|e| {
+                        WsPrismError::BadRequest(format!(
+                            "tenant policy compile failed (tenant={}): {e}",
+                            t.id
+                        ))
+                    })?;
 
             tenant_policy.insert(t.id.clone(), Arc::new(runtime));
         }
@@ -82,7 +79,9 @@ impl AppState {
                 // ext rules: "svc:type"
                 for rule in &t.policy.ext_allowlist {
                     if let Some((svc, _ty)) = rule.split_once(':') {
-                        if exempt_text.contains(&svc) { continue; }
+                        if exempt_text.contains(&svc) {
+                            continue;
+                        }
                         if !text_svcs.contains(&svc) {
                             tracing::warn!(tenant=%t.id, rule=%rule, "ext_allowlist refers to unregistered text service");
                             if FAIL_FAST_ON_MISMATCH {

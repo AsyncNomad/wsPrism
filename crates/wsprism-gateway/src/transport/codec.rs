@@ -13,9 +13,15 @@ use wsprism_core::{
 #[derive(Debug)]
 pub enum Inbound {
     /// Ext lane JSON envelope with captured byte length (for policy).
-    Text { env: text::Envelope, bytes_len: usize },
+    Text {
+        env: text::Envelope,
+        bytes_len: usize,
+    },
     /// Hot lane binary frame with captured byte length (for policy).
-    Hot { frame: hot::HotFrame, bytes_len: usize },
+    Hot {
+        frame: hot::HotFrame,
+        bytes_len: usize,
+    },
     /// WS ping payload.
     Ping(Vec<u8>),
     /// WS pong payload.

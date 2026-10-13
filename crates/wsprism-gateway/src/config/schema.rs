@@ -33,10 +33,15 @@ impl GatewayConfig {
             let mut seen = HashSet::new();
             for t in &self.tenants {
                 if t.id.trim().is_empty() {
-                    return Err(WsPrismError::BadRequest("tenant.id must not be empty".into()));
+                    return Err(WsPrismError::BadRequest(
+                        "tenant.id must not be empty".into(),
+                    ));
                 }
                 if !seen.insert(t.id.clone()) {
-                    return Err(WsPrismError::BadRequest(format!("duplicate tenant id: {}", t.id)));
+                    return Err(WsPrismError::BadRequest(format!(
+                        "duplicate tenant id: {}",
+                        t.id
+                    )));
                 }
                 t.validate()?;
             }
@@ -120,11 +125,21 @@ impl Default for HandshakeConfig {
 }
 
 // Handshake defaults
-fn default_hs_global_burst() -> u32 { 200 }
-fn default_hs_global_rps() -> u32 { 100 }
-fn default_hs_ip_burst() -> u32 { 50 }
-fn default_hs_ip_rps() -> u32 { 10 }
-fn default_hs_max_entries() -> usize { 50_000 }
+fn default_hs_global_burst() -> u32 {
+    200
+}
+fn default_hs_global_rps() -> u32 {
+    100
+}
+fn default_hs_ip_burst() -> u32 {
+    50
+}
+fn default_hs_ip_rps() -> u32 {
+    10
+}
+fn default_hs_max_entries() -> usize {
+    50_000
+}
 
 impl Default for GatewaySection {
     fn default() -> Self {
@@ -170,11 +185,21 @@ impl GatewaySection {
     }
 }
 
-fn default_listen() -> String { "0.0.0.0:8080".into() }
-fn default_ping_interval_ms() -> u64 { 20000 }
-fn default_idle_timeout_ms() -> u64 { 60000 }
-fn default_writer_send_timeout_ms() -> u64 { 1500 }
-fn default_drain_grace_ms() -> u64 { 2000 }
+fn default_listen() -> String {
+    "0.0.0.0:8080".into()
+}
+fn default_ping_interval_ms() -> u64 {
+    20000
+}
+fn default_idle_timeout_ms() -> u64 {
+    60000
+}
+fn default_writer_send_timeout_ms() -> u64 {
+    1500
+}
+fn default_drain_grace_ms() -> u64 {
+    2000
+}
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
@@ -193,7 +218,9 @@ pub struct TenantConfig {
 impl TenantConfig {
     pub fn validate(&self) -> Result<()> {
         if self.limits.max_frame_bytes == 0 {
-            return Err(WsPrismError::BadRequest("limits.max_frame_bytes must be > 0".into()));
+            return Err(WsPrismError::BadRequest(
+                "limits.max_frame_bytes must be > 0".into(),
+            ));
         }
         self.policy.validate()?;
         Ok(())
@@ -203,25 +230,25 @@ impl TenantConfig {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct TenantLimits {
-/// Maximum allowed frame size for this tenant (bytes).
-#[serde(default = "default_max_frame_bytes")]
-pub max_frame_bytes: usize,
+    /// Maximum allowed frame size for this tenant (bytes).
+    #[serde(default = "default_max_frame_bytes")]
+    pub max_frame_bytes: usize,
 
-// Sprint 5: Resource Governance
-/// Max concurrent sessions for the entire tenant. 0 = unlimited.
-/// Lock-free best-effort: under extreme contention a tiny overshoot is possible.
-#[serde(default)]
-pub max_sessions_total: u64,
-/// Max active rooms for the tenant. 0 = unlimited.
-/// A room counts as "active" if it has at least one session.
-#[serde(default)]
-pub max_rooms_total: u64,
-/// Max users allowed in a single room. 0 = unlimited.
-#[serde(default)]
-pub max_users_per_room: u64,
-/// Max unique rooms a single user can join. 0 = unlimited.
-#[serde(default)]
-pub max_rooms_per_user: u64,
+    // Sprint 5: Resource Governance
+    /// Max concurrent sessions for the entire tenant. 0 = unlimited.
+    /// Lock-free best-effort: under extreme contention a tiny overshoot is possible.
+    #[serde(default)]
+    pub max_sessions_total: u64,
+    /// Max active rooms for the tenant. 0 = unlimited.
+    /// A room counts as "active" if it has at least one session.
+    #[serde(default)]
+    pub max_rooms_total: u64,
+    /// Max users allowed in a single room. 0 = unlimited.
+    #[serde(default)]
+    pub max_users_per_room: u64,
+    /// Max unique rooms a single user can join. 0 = unlimited.
+    #[serde(default)]
+    pub max_rooms_per_user: u64,
 }
 
 impl Default for TenantLimits {
@@ -236,7 +263,9 @@ impl Default for TenantLimits {
     }
 }
 
-fn default_max_frame_bytes() -> usize { 4096 }
+fn default_max_frame_bytes() -> usize {
+    4096
+}
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -246,7 +275,9 @@ pub enum RateLimitScope {
     Both,
 }
 
-fn default_rate_limit_scope() -> RateLimitScope { RateLimitScope::Connection }
+fn default_rate_limit_scope() -> RateLimitScope {
+    RateLimitScope::Connection
+}
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -255,7 +286,9 @@ pub enum HotErrorMode {
     Silent,
 }
 
-fn default_hot_error_mode() -> HotErrorMode { HotErrorMode::SysError }
+fn default_hot_error_mode() -> HotErrorMode {
+    HotErrorMode::SysError
+}
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
@@ -284,9 +317,15 @@ pub struct SessionPolicy {
     pub on_exceed: OnExceed,
 }
 
-fn default_session_mode() -> SessionMode { SessionMode::Multi }
-fn default_max_sessions_per_user() -> u32 { 4 }
-fn default_on_exceed() -> OnExceed { OnExceed::Deny }
+fn default_session_mode() -> SessionMode {
+    SessionMode::Multi
+}
+fn default_max_sessions_per_user() -> u32 {
+    4
+}
+fn default_on_exceed() -> OnExceed {
+    OnExceed::Deny
+}
 
 impl Default for SessionPolicy {
     fn default() -> Self {
@@ -336,7 +375,9 @@ pub struct TenantPolicy {
     pub hot_requires_active_room: bool,
 }
 
-fn default_hot_requires_active_room() -> bool { true }
+fn default_hot_requires_active_room() -> bool {
+    true
+}
 
 impl Default for TenantPolicy {
     fn default() -> Self {
@@ -381,8 +422,12 @@ impl TenantPolicy {
     }
 }
 
-fn default_rate_limit_rps() -> u32 { 200 }
-fn default_rate_limit_burst() -> u32 { 400 }
+fn default_rate_limit_rps() -> u32 {
+    200
+}
+fn default_rate_limit_burst() -> u32 {
+    400
+}
 fn default_ext_allowlist() -> Vec<String> {
     vec!["room:join".into(), "room:leave".into()]
 }
