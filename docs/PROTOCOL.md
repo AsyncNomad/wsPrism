@@ -101,5 +101,6 @@ there is one) and then a close frame:
 | 1008 | `too_many_sessions` | `sys.error TOO_MANY_SESSIONS` | Per-user session limit with `on_exceed: deny` |
 | 1008 | `max_sessions_exceeded` | `sys.kicked` | Evicted by a newer session (`on_exceed: kick_oldest`) |
 | 1008 | `replaced` | `sys.kicked` | Another connection reused this `sid` |
+| 1008 | `slow_consumer` | `sys.error SLOW_CONSUMER` (best effort) | Outbound queue full when replying to the client's request |
 | 1009 | `message too big` | — | Message exceeded the tenant `max_frame_bytes` |
 | 1013 | `capacity` | `sys.error RESOURCE_EXHAUSTED` | Tenant capacity reached during admission |

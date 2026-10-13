@@ -88,6 +88,12 @@ pub struct GatewaySection {
     #[serde(default = "default_drain_grace_ms")]
     pub drain_grace_ms: u64,
 
+    /// Capacity of each session's outbound message queue. When it is full,
+    /// lossy publishes to the session are dropped and replies to the
+    /// session's own requests close it as a slow consumer (C9).
+    #[serde(default = "default_session_queue_capacity")]
+    pub session_queue_capacity: usize,
+
     // Sprint 5: Handshake Defender Configuration
     #[serde(default)]
     pub handshake_limit: HandshakeConfig,
@@ -156,6 +162,7 @@ impl Default for GatewaySection {
             idle_timeout_ms: default_idle_timeout_ms(),
             writer_send_timeout_ms: default_writer_send_timeout_ms(),
             drain_grace_ms: default_drain_grace_ms(),
+            session_queue_capacity: default_session_queue_capacity(),
             handshake_limit: HandshakeConfig::default(),
         }
     }
@@ -183,6 +190,11 @@ impl GatewaySection {
                 "gateway.writer_send_timeout_ms must be between 50 and 60000".into(),
             ));
         }
+        if !(1..=1_048_576).contains(&self.session_queue_capacity) {
+            return Err(WsPrismError::BadRequest(
+                "gateway.session_queue_capacity must be between 1 and 1048576".into(),
+            ));
+        }
         if self.drain_grace_ms > 600000 {
             return Err(WsPrismError::BadRequest(
                 "gateway.drain_grace_ms must be <= 600000".into(),
@@ -203,6 +215,9 @@ fn default_idle_timeout_ms() -> u64 {
 }
 fn default_writer_send_timeout_ms() -> u64 {
     1500
+}
+fn default_session_queue_capacity() -> usize {
+    1024
 }
 fn default_drain_grace_ms() -> u64 {
     2000

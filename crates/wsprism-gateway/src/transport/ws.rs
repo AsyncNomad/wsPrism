@@ -30,7 +30,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio::time::{timeout, Duration, Instant};
 use wsprism_core::error::{Result, WsPrismError};
 
@@ -59,9 +59,6 @@ const CLOSE_LINGER: Duration = Duration::from_millis(500);
 
 /// How long to wait for the peer's close frame after sending ours (C3).
 const CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(1);
-
-/// Capacity of each session's outbound queue.
-const SESSION_QUEUE_CAPACITY: usize = 1024;
 
 /// True if the read failed because the frame/message exceeded the configured
 /// codec limit (see `max_message_size` in `ws_upgrade`).
@@ -248,6 +245,40 @@ enum Exit {
     TooBig,
 }
 
+/// Queue a reply from the session's own loop without awaiting (C9). This loop
+/// is the queue's only consumer, so awaiting a full queue would freeze the
+/// session forever. A full queue means the client can't keep up with its own
+/// replies plus broadcasts, so the session is closed as a slow consumer.
+fn queue_reply(
+    out_tx: &mpsc::Sender<Message>,
+    msg: Message,
+    metrics: &GatewayMetrics,
+    tenant: &str,
+    trace_id: &str,
+) -> Option<Exit> {
+    match out_tx.try_send(msg) {
+        Ok(()) => None,
+        Err(TrySendError::Full(_)) => {
+            metrics.policy_decisions.inc(&[
+                ("tenant", tenant),
+                ("lane", "transport"),
+                ("decision", "close"),
+                ("reason", "slow_consumer"),
+            ]);
+            Some(Exit::Close(CloseSpec::new(
+                close_code::POLICY,
+                "slow_consumer",
+                Some(sys_error_json(
+                    "SLOW_CONSUMER",
+                    "outbound queue full",
+                    trace_id,
+                )),
+            )))
+        }
+        Err(TrySendError::Closed(_)) => Some(Exit::Abort),
+    }
+}
+
 /// Close politely (C3): flush what is already queued (so the notice is not
 /// reordered ahead of earlier messages), send the notice and the close frame,
 /// then wait briefly for the peer's close so the TCP teardown is clean.
@@ -317,7 +348,7 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
     let session_key = format!("{}::{}::{}#{:x}", q.tenant, user_id, sid, conn_id);
     let span = tracing::info_span!("ws", %trace_id, t=%q.tenant, u=%user_id, s=%sid);
     let _enter = span.enter();
-    let (out_tx, mut out_rx) = mpsc::channel(SESSION_QUEUE_CAPACITY);
+    let (out_tx, mut out_rx) = mpsc::channel(gw.session_queue_capacity);
     let (ctl_tx, mut ctl_rx) = mpsc::channel::<CloseSpec>(1);
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -400,12 +431,12 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
         session_key: session_key.clone(),
         metrics: metrics.clone(),
     };
+    // The queue is empty and only this task consumes it, so this cannot be full.
     out_tx
-        .send(Message::Text(sys_authed_json(
+        .try_send(Message::Text(sys_authed_json(
             &q.tenant, &user_id, &sid, &trace_id,
         )))
-        .await
-        .map_err(|_| WsPrismError::Internal("closed".into()))?;
+        .map_err(|_| WsPrismError::Internal("outbound queue unavailable".into()))?;
 
     let mut ping_tick = tokio::time::interval(Duration::from_millis(gw.ping_interval_ms));
     let mut idle_tick = tokio::time::interval(Duration::from_millis(1000));
@@ -418,6 +449,15 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
 
     // Sampling Counter
     let mut hot_op_counter: u64 = 0;
+
+    // Replies from inside the loop: never await our own queue (C9).
+    macro_rules! reply {
+        ($msg:expr) => {
+            if let Some(exit) = queue_reply(&out_tx, $msg, &metrics, &q.tenant, &trace_id) {
+                break exit;
+            }
+        };
+    }
 
     let exit = loop {
         tokio::select! {
@@ -468,7 +508,8 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
                     }
                 };
                 match decoded {
-                    Inbound::Ping(p) => { let _ = out_tx.send(Message::Pong(p)).await; },
+                    // tungstenite answers pings itself; replying again would double-pong.
+                    Inbound::Ping(_) => {},
                     Inbound::Pong(_) => {},
                     Inbound::Close => break Exit::Peer,
                     Inbound::Text { env, bytes_len } => {
@@ -487,7 +528,7 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
                             PolicyDecision::Reject { code, msg } => {
                                 // SAFE LABEL: code.as_str()
                                 metrics.policy_decisions.inc(&[("tenant", &q.tenant), ("lane", "ext"), ("decision", "reject"), ("reason", code.as_str())]);
-                                let _ = out_tx.send(Message::Text(sys_error_json(code.as_str(), msg, &trace_id))).await;
+                                reply!(Message::Text(sys_error_json(code.as_str(), msg, &trace_id)));
                                 continue;
                             },
                             PolicyDecision::Close { code, msg } => {
@@ -506,11 +547,11 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
                             match ctx.join_room_with_limits(&room, &t_cfg.limits) {
                                 Ok(_) => {
                                     sess.active_room = Some(room.clone());
-                                    let _ = out_tx.send(Message::Text(sys_joined_json(&room, &trace_id))).await;
+                                    reply!(Message::Text(sys_joined_json(&room, &trace_id)));
                                 },
                                 Err(e) => {
                                     metrics.service_errors.inc(&[("tenant", &q.tenant), ("svc", "room"), ("type", "join_failed")]);
-                                    let _ = out_tx.send(Message::Text(sys_error_json(e.client_code().as_str(), &e.to_string(), &trace_id))).await;
+                                    reply!(Message::Text(sys_error_json(e.client_code().as_str(), &e.to_string(), &trace_id)));
                                 }
                             }
                             continue;
@@ -520,7 +561,7 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
                                 let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), session_key.clone(), trace_id.clone(), None, core.clone());
                                 ctx.leave_room(&room);
                             }
-                            let _ = out_tx.send(Message::Text(sys_left_json(&trace_id))).await;
+                            reply!(Message::Text(sys_left_json(&trace_id)));
                             continue;
                         }
                         let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), session_key.clone(), trace_id.clone(), sess.active_room.clone(), core.clone());
@@ -530,7 +571,7 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
                         metrics.dispatch_duration.observe(&[("tenant", &q.tenant), ("lane", "ext")], start.elapsed());
                         if let Err(e) = res {
                              metrics.service_errors.inc(&[("tenant", &q.tenant), ("lane", "ext")]);
-                             let _ = out_tx.send(Message::Text(sys_error_json(e.client_code().as_str(), &e.to_string(), &trace_id))).await;
+                             reply!(Message::Text(sys_error_json(e.client_code().as_str(), &e.to_string(), &trace_id)));
                         }
                     },
                     Inbound::Hot { frame, bytes_len } => {
@@ -550,7 +591,7 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
                             PolicyDecision::Reject { code, msg } => {
                                 metrics.policy_decisions.inc(&[("tenant", &q.tenant), ("lane", "hot"), ("decision", "reject"), ("reason", code.as_str())]);
                                 if let HotErrorMode::SysError = policy.hot_error_mode() {
-                                    let _ = out_tx.send(Message::Text(sys_error_json(code.as_str(), msg, &trace_id))).await;
+                                    reply!(Message::Text(sys_error_json(code.as_str(), msg, &trace_id)));
                                 }
                                 continue;
                             },
@@ -565,7 +606,7 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
                          }
                          if policy.hot_requires_active_room() && sess.active_room.is_none() {
                              if let HotErrorMode::SysError = policy.hot_error_mode() {
-                                 let _ = out_tx.send(Message::Text(sys_error_json("BAD_REQUEST", "no active room", &trace_id))).await;
+                                 reply!(Message::Text(sys_error_json("BAD_REQUEST", "no active room", &trace_id)));
                              }
                              continue;
                          }
@@ -583,13 +624,14 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
                          if let Err(e) = res {
                              metrics.service_errors.inc(&[("tenant", &q.tenant), ("lane", "hot")]);
                              if let HotErrorMode::SysError = policy.hot_error_mode() {
-                                 let _ = out_tx.send(Message::Text(sys_error_json(e.client_code().as_str(), &e.to_string(), &trace_id))).await;
+                                 reply!(Message::Text(sys_error_json(e.client_code().as_str(), &e.to_string(), &trace_id)));
                              }
                          }
                     }
                 }
             }
-            _ = ping_tick.tick() => { let _ = out_tx.send(Message::Ping(Vec::new())).await; }
+            // Keep-alive ping is optional: skip it if the queue is full (C9).
+            _ = ping_tick.tick() => { let _ = out_tx.try_send(Message::Ping(Vec::new())); }
             _ = idle_tick.tick() => {
                 if sess.last_activity.elapsed() >= idle_timeout {
                     break Exit::Close(CloseSpec::new(

@@ -39,6 +39,12 @@ gateway:
   # type: integer (ms)
   drain_grace_ms: 5000
 
+  # Per-session outbound queue capacity (messages).
+  # When full, lossy publishes to that session are dropped, and a reply to the
+  # session's own request closes it as a slow consumer (close 1008 "slow_consumer").
+  # type: integer (1..=1048576), default 1024
+  session_queue_capacity: 1024
+
 
   # ----------------------------------------------------------------------------
   # 2. Handshake Defender (DoS Protection)

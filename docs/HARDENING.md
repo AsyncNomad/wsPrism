@@ -99,14 +99,24 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 
 | ID | 상태 | 내용 | 위치 |
 |---|---|---|---|
-| C1 | ☐ | Reliable 발행이 발신 세션 루프를 최대 timeout×1 동안 블로킹 (head-of-line) | `services/chat.rs`, `realtime/core/realtime.rs` |
+| C1 | ☐ | Reliable 발행이 발신 세션 루프를 최대 timeout×1 동안 블로킹 (head-of-line). 발신자 자신도 룸 멤버라 **자기 큐**를 최대 1.5s 기다리는 경우 포함(C9의 유한 버전) | `services/chat.rs`, `realtime/core/realtime.rs` |
 | C2 | ☑ | kick_oldest 시 `ws_active_sessions` 게이지 이중 감소 | `transport/ws.rs` |
 | C3 | ☑ | "에러를 큐에 넣고 `break`"하는 모든 경로에서 에러가 클라이언트에 도달하지 않음: `on_exceed: deny`(writer 루프 시작 전 큐잉), policy `Close`, 디코드 오류, idle 타임아웃(큐잉 직후 루프 탈출 → out 큐 미플러시). 인증 실패도 업그레이드 *후* 판정 | `transport/ws.rs` |
 | C4 | ☐ | `room:leave`가 active_room만 떠남 → 다른 룸 탈출 불가 | `transport/ws.rs` |
 | C5 | ☐ | "빈 집합이면 제거" 경쟁: empty 판정과 `remove` 사이에 다른 스레드가 추가하면 그 항목이 함께 소실. Presence `leave`(신규 join 멤버십 소실)와 `SessionRegistry::remove_session`의 `user_index`(신규 세션이 user 색인에서 누락) 두 곳 | `realtime/core/presence.rs`, `realtime/core/session_registry.rs` |
 | C8 | ☑ | 강제 종료(kick/replace)된 세션의 루프가 클라이언트가 닫을 때까지 계속 돈다 → Presence에선 지워졌지만 로컬 `active_room`으로 Hot 발행·재join 가능. 서버 측 종료 신호 필요 | `transport/ws.rs`, `realtime/core/session_registry.rs` |
-| C9 | ☐ | 세션 루프가 자기 응답을 자기 송신 큐에 `send().await` — 큐를 비우는 것도 같은 루프라 큐가 가득 차면(느린 클라이언트 + 브로드캐스트) **세션이 영구 정지**. idle 검사도 같은 루프라 동작 안 함 | `transport/ws.rs` |
-| C6 | ☐ | 경미: span guard를 await 너머로 유지, Ext `v` 미검증, ping 이중 응답, 토큰버킷 소수 시간 버림 | 여러 곳 |
+| C9 | ☑ | 세션 루프가 자기 응답을 자기 송신 큐에 `send().await` — 큐를 비우는 것도 같은 루프라 큐가 가득 차면(느린 클라이언트 + 브로드캐스트) **세션이 영구 정지**. idle 검사도 같은 루프라 동작 안 함 | `transport/ws.rs` |
+| C6 | ◐ | 경미: span guard를 await 너머로 유지, Ext `v` 미검증, ~~ping 이중 응답~~(C9에서 제거), 토큰버킷 소수 시간 버림 | 여러 곳 |
+
+#### C9 결정 기록
+
+- **재현**: `session_queue_capacity: 1`로 요청 50개를 파이프라이닝하면 6/6회 응답 1~14개 후 세션이 영구 정지. 느린 클라이언트가 아니어도, 브로드캐스트로 큐가 *순간적으로* 찬 시점에 요청이 오면 같은 일이 생긴다. writer 타임아웃은 쓰기 arm에서만 동작해 이를 못 잡는다.
+- **수정**: 루프 내 응답은 `reply!` 매크로(`queue_reply`, `try_send`)로만 넣는다. 큐가 차 있으면 `SLOW_CONSUMER` 통지 + 1008 `slow_consumer`로 종료하고 `policy_decisions{lane="transport",reason="slow_consumer"}` 증가. keep-alive ping은 큐가 차 있으면 이번 회차만 건너뛴다.
+  - 기각: *응답을 버리기* — `sys.joined` 같은 응답을 조용히 잃으면 클라이언트 상태가 서버와 어긋난다.
+  - 기각: *응답 전용 무제한 큐* — 메모리 상한이 사라지고 메시지 순서가 섞인다.
+- **오탐 여유**: 기본 용량 1024에 연결당 레이트리밋(기본 burst 400)이 있어, 정상 클라이언트가 자기 응답만으로 큐를 채우기는 어렵다.
+- **설정 추가**: `gateway.session_queue_capacity`(기본 1024, 1..=1048576). 테스트에서 결정적 재현을 위해 필요했고 운영에서도 조정할 만한 값이라 노출.
+- **부수 정리(C6 일부)**: 클라이언트 Ping에 대한 수동 Pong 제거. tungstenite 0.24가 이미 자동 응답함을 소스로 확인(`protocol/mod.rs`의 `OpCtl::Ping` 처리).
 
 #### C3 · C8 결정 기록
 
