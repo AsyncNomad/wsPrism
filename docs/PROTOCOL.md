@@ -75,3 +75,31 @@ Hot Lane routing:
 
 ## 4) Ping/Pong & Idle timeout
 Gateway periodically pings; client must pong. Idle connections are closed.
+
+---
+
+## 5) Rejections & close codes
+
+Before the upgrade (plain HTTP responses):
+
+| HTTP | When |
+|---|---|
+| 400 | Unknown tenant |
+| 401 | Invalid ticket |
+| 429 + `Retry-After` | Handshake rate limit |
+| 503 (+ `Retry-After`) | Draining, or tenant session capacity reached |
+
+After the upgrade, the gateway sends an explanatory `sys.*` message (when
+there is one) and then a close frame:
+
+| Close code | Reason string | Preceded by | When |
+|---|---|---|---|
+| 1000 | `idle_timeout` | `sys.error TIMEOUT` | No inbound activity within `idle_timeout_ms` |
+| 1001 | `draining` | — | Gateway shutting down |
+| 1002 | `decode_error` | `sys.error BAD_REQUEST` / `UNSUPPORTED_VERSION` | Malformed envelope or hot frame |
+| 1008 | `policy` | `sys.error` (Hot Lane: only in `sys_error` mode) | Policy decided to close |
+| 1008 | `too_many_sessions` | `sys.error TOO_MANY_SESSIONS` | Per-user session limit with `on_exceed: deny` |
+| 1008 | `max_sessions_exceeded` | `sys.kicked` | Evicted by a newer session (`on_exceed: kick_oldest`) |
+| 1008 | `replaced` | `sys.kicked` | Another connection reused this `sid` |
+| 1009 | `message too big` | — | Message exceeded the tenant `max_frame_bytes` |
+| 1013 | `capacity` | `sys.error RESOURCE_EXHAUSTED` | Tenant capacity reached during admission |

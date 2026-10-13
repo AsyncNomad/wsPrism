@@ -7,11 +7,9 @@
 
 use crate::config::schema::TenantLimits;
 use crate::realtime::core::{Presence, SessionRegistry};
-use crate::realtime::types::{Outgoing, PreparedMsg, QoS};
-use axum::extract::ws::{CloseFrame, Message};
+use crate::realtime::types::{close_code, CloseSpec, Outgoing, PreparedMsg, QoS};
 use futures_util::stream::FuturesUnordered;
 use futures_util::StreamExt;
-use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
@@ -50,18 +48,15 @@ impl RealtimeCore {
         }
     }
 
-    /// Send Close frames to all sessions during draining (best-effort).
+    /// Ask every session to close with 1001 during draining (best-effort).
     pub fn best_effort_shutdown_all(&self, reason: &str) {
         let sessions = self.sessions.all_sessions();
         for (session_key, conn) in sessions {
-            let frame = CloseFrame {
-                code: 1001,
-                reason: Cow::from(reason.to_string()),
-            };
-            if conn.tx.try_send(Message::Close(Some(frame))).is_err() {
+            let spec = CloseSpec::new(close_code::GOING_AWAY, reason, None);
+            if conn.ctl.try_send(spec).is_err() {
                 let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
                 if sample_every_1024(n) {
-                    tracing::warn!(%session_key, drops=%n, "egress drop while draining");
+                    tracing::warn!(%session_key, drops=%n, "close request dropped while draining");
                 }
             }
         }

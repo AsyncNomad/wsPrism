@@ -11,6 +11,7 @@ use crate::policy::engine::{ConnRateLimiter, HotErrorMode, OnExceed, PolicyDecis
 use crate::realtime::core::Connection;
 use crate::realtime::RealtimeCore;
 use crate::realtime::RealtimeCtx;
+use crate::realtime::{close_code, CloseSpec};
 use crate::transport::codec::{decode, Inbound};
 use crate::transport::handshake::retry_after_header;
 use axum::{
@@ -21,6 +22,7 @@ use axum::{
     http::{header::RETRY_AFTER, HeaderMap, StatusCode},
     response::IntoResponse,
 };
+use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
@@ -52,11 +54,14 @@ fn gen_trace() -> String {
 /// Fixed `tenant` label for requests naming a tenant that isn't configured.
 const UNKNOWN_TENANT_LABEL: &str = "_unknown";
 
-/// RFC 6455 close code 1009: message too big to process.
-const CLOSE_MESSAGE_TOO_BIG: u16 = 1009;
-
 /// How long to keep the socket open after sending close 1009 (see S2).
 const CLOSE_LINGER: Duration = Duration::from_millis(500);
+
+/// How long to wait for the peer's close frame after sending ours (C3).
+const CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// Capacity of each session's outbound queue.
+const SESSION_QUEUE_CAPACITY: usize = 1024;
 
 /// True if the read failed because the frame/message exceeded the configured
 /// codec limit (see `max_message_size` in `ws_upgrade`).
@@ -150,13 +155,12 @@ fn evict_session(
     };
     core.presence.cleanup_session(tenant, user_key, victim_key);
     metrics.ws_active_sessions.dec(&[("tenant", tenant)]);
-    let _ = conn
-        .tx
-        .try_send(Message::Text(sys_kicked_json(reason, trace_id)));
-    let _ = conn.tx.try_send(Message::Close(Some(CloseFrame {
-        code: 1008,
-        reason: reason.to_owned().into(),
-    })));
+    // C8: ask the victim's loop to stop and close itself (notice + 1008).
+    let _ = conn.ctl.try_send(CloseSpec::new(
+        close_code::POLICY,
+        reason,
+        Some(sys_kicked_json(reason, trace_id)),
+    ));
 }
 
 pub async fn ws_upgrade(
@@ -185,6 +189,17 @@ pub async fn ws_upgrade(
             .handshake_rejections
             .inc(&[("tenant", tenant_label), ("reason", "unknown_tenant")]);
         return (StatusCode::BAD_REQUEST, "Unknown Tenant").into_response();
+    };
+    // C3: authenticate before upgrading, so unauthenticated clients get a
+    // proper HTTP 401 and never consume a socket task.
+    let user_id = match app.resolve_ticket(&q.ticket) {
+        Ok(u) => u,
+        Err(_) => {
+            app.metrics()
+                .handshake_rejections
+                .inc(&[("tenant", tenant_label), ("reason", "auth_failed")]);
+            return (StatusCode::UNAUTHORIZED, "Unauthorized").into_response();
+        }
     };
     // S2: enforce the tenant frame limit in the WS codec itself, so oversized
     // payloads are rejected before they are buffered in full or decoded.
@@ -215,17 +230,80 @@ pub async fn ws_upgrade(
     ws.max_message_size(max_frame_bytes)
         .max_frame_size(max_frame_bytes)
         .on_upgrade(move |socket| async move {
-            if let Err(e) = run_session(app, q, socket).await {
+            if let Err(e) = run_session(app, q, user_id, socket).await {
                 tracing::error!("session error: {}", e);
             }
         })
 }
 
-async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()> {
+/// Why a session's main loop ended, i.e. how its socket must be closed.
+enum Exit {
+    /// The peer closed (or the stream ended): just flush our close reply.
+    Peer,
+    /// The socket is unusable (write stalled or read failed): drop it.
+    Abort,
+    /// Server-initiated close with a reason, optionally preceded by a notice.
+    Close(CloseSpec),
+    /// Oversized frame (S2): close 1009, then linger (input can't be drained).
+    TooBig,
+}
+
+/// Close politely (C3): flush what is already queued (so the notice is not
+/// reordered ahead of earlier messages), send the notice and the close frame,
+/// then wait briefly for the peer's close so the TCP teardown is clean.
+/// Writes share one `writer_timeout` budget; a stalled peer is abandoned.
+async fn close_session(
+    ws_tx: &mut SplitSink<WebSocket, Message>,
+    ws_rx: &mut SplitStream<WebSocket>,
+    out_rx: &mut mpsc::Receiver<Message>,
+    spec: CloseSpec,
+    writer_timeout: Duration,
+) {
+    out_rx.close(); // no new messages from here on
+    let mut outgoing = Vec::new();
+    while let Ok(m) = out_rx.try_recv() {
+        if !matches!(m, Message::Close(_)) {
+            outgoing.push(m);
+        }
+    }
+    outgoing.extend(spec.notice.map(Message::Text));
+    outgoing.push(Message::Close(Some(CloseFrame {
+        code: spec.code,
+        reason: spec.reason.into(),
+    })));
+
+    let deadline = Instant::now() + writer_timeout;
+    for m in outgoing {
+        if !matches!(
+            tokio::time::timeout_at(deadline, ws_tx.send(m)).await,
+            Ok(Ok(()))
+        ) {
+            return; // stalled or broken peer: give up
+        }
+    }
+
+    let _ = timeout(CLOSE_HANDSHAKE_TIMEOUT, async {
+        while let Some(Ok(m)) = ws_rx.next().await {
+            if matches!(m, Message::Close(_)) {
+                break;
+            }
+        }
+    })
+    .await;
+}
+
+async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSocket) -> Result<()> {
     let policy = app
         .tenant_policy(&q.tenant)
         .ok_or(WsPrismError::BadRequest("unknown tenant".into()))?;
-    let user_id = app.resolve_ticket(&q.ticket)?;
+    let t_cfg = app
+        .cfg()
+        .tenants
+        .iter()
+        .find(|t| t.id == q.tenant)
+        .ok_or_else(|| WsPrismError::BadRequest("unknown tenant".into()))?;
+    let gw = &app.cfg().gateway;
+    let writer_timeout = Duration::from_millis(gw.writer_send_timeout_ms);
     let sid = q.sid.unwrap_or_else(gen_sid);
     let trace_id = gen_trace();
     let core = app.realtime();
@@ -239,7 +317,8 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
     let session_key = format!("{}::{}::{}#{:x}", q.tenant, user_id, sid, conn_id);
     let span = tracing::info_span!("ws", %trace_id, t=%q.tenant, u=%user_id, s=%sid);
     let _enter = span.enter();
-    let (out_tx, mut out_rx) = mpsc::channel(1024);
+    let (out_tx, mut out_rx) = mpsc::channel(SESSION_QUEUE_CAPACITY);
+    let (ctl_tx, mut ctl_rx) = mpsc::channel::<CloseSpec>(1);
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // S4: a reconnect with an in-use sid takes over: the old connection is
@@ -262,13 +341,16 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
         ]);
         match sp.on_exceed {
             OnExceed::Deny => {
-                let _ = out_tx
-                    .send(Message::Text(sys_error_json(
+                let spec = CloseSpec::new(
+                    close_code::POLICY,
+                    "too_many_sessions",
+                    Some(sys_error_json(
                         "TOO_MANY_SESSIONS",
                         "limit exceeded",
                         &trace_id,
-                    )))
-                    .await;
+                    )),
+                );
+                close_session(&mut ws_tx, &mut ws_rx, &mut out_rx, spec, writer_timeout).await;
                 return Ok(());
             }
             OnExceed::KickOldest => {
@@ -287,20 +369,29 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
         }
     }
 
-    let t_cfg = app
-        .cfg()
-        .tenants
-        .iter()
-        .find(|t| t.id == q.tenant)
-        .ok_or_else(|| WsPrismError::BadRequest("unknown tenant".into()))?;
-    core.sessions.try_insert(
+    if let Err(e) = core.sessions.try_insert(
         q.tenant.clone(),
         user_key.clone(),
         session_key.clone(),
         sid.clone(),
-        Connection { tx: out_tx.clone() },
+        Connection {
+            tx: out_tx.clone(),
+            ctl: ctl_tx,
+        },
         t_cfg.limits.max_sessions_total,
-    )?;
+    ) {
+        let spec = CloseSpec::new(
+            close_code::TRY_AGAIN_LATER,
+            "capacity",
+            Some(sys_error_json(
+                e.client_code().as_str(),
+                &e.to_string(),
+                &trace_id,
+            )),
+        );
+        close_session(&mut ws_tx, &mut ws_rx, &mut out_rx, spec, writer_timeout).await;
+        return Ok(());
+    }
     metrics.ws_active_sessions.inc(&[("tenant", &q.tenant)]);
     let _cleanup = SessionCleanup {
         core: core.clone(),
@@ -316,11 +407,9 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
         .await
         .map_err(|_| WsPrismError::Internal("closed".into()))?;
 
-    let gw = &app.cfg().gateway;
     let mut ping_tick = tokio::time::interval(Duration::from_millis(gw.ping_interval_ms));
     let mut idle_tick = tokio::time::interval(Duration::from_millis(1000));
     let idle_timeout = Duration::from_millis(gw.idle_timeout_ms);
-    let writer_timeout = Duration::from_millis(gw.writer_send_timeout_ms);
     let mut sess = SessionState {
         active_room: None,
         last_activity: Instant::now(),
@@ -330,17 +419,23 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
     // Sampling Counter
     let mut hot_op_counter: u64 = 0;
 
-    loop {
+    let exit = loop {
         tokio::select! {
+            // C8: kick / replace / drain requests from other tasks.
+            Some(spec) = ctl_rx.recv() => break Exit::Close(spec),
             maybe_out = out_rx.recv() => {
                 match maybe_out {
                     Some(m) => {
-                        if timeout(writer_timeout, ws_tx.send(m)).await.is_err() {
-                             metrics.writer_timeouts.inc(&[("tenant", &q.tenant)]);
-                             break;
+                        match timeout(writer_timeout, ws_tx.send(m)).await {
+                            Ok(Ok(())) => {}
+                            Ok(Err(_)) => break Exit::Abort,
+                            Err(_) => {
+                                metrics.writer_timeouts.inc(&[("tenant", &q.tenant)]);
+                                break Exit::Abort;
+                            }
                         }
                     }
-                    None => break,
+                    None => break Exit::Abort,
                 }
             }
             incoming = ws_rx.next() => {
@@ -354,35 +449,28 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                                 ("decision", "close"),
                                 ("reason", "frame_too_large"),
                             ]);
-                            let close = Message::Close(Some(CloseFrame {
-                                code: CLOSE_MESSAGE_TOO_BIG,
-                                reason: "message too big".into(),
-                            }));
-                            let _ = timeout(writer_timeout, ws_tx.send(close)).await;
-                            // The oversized payload is still unread in the kernel
-                            // buffer (tungstenite rejects on the header and cannot
-                            // skip the body). Closing now would make the kernel send
-                            // RST, and the peer may discard our close frame. Linger
-                            // briefly so the client can read it first.
-                            tokio::time::sleep(CLOSE_LINGER).await;
+                            break Exit::TooBig;
                         }
-                        break;
+                        break Exit::Abort;
                     }
-                    None => break,
+                    None => break Exit::Peer,
                 };
                 sess.last_activity = Instant::now();
                 let decoded = match decode(msg) {
                     Ok(d) => d,
                     Err(e) => {
                         metrics.decode_errors.inc(&[("tenant", &q.tenant)]);
-                        let _ = out_tx.send(Message::Text(sys_error_json(e.client_code().as_str(), &e.to_string(), &trace_id))).await;
-                        break;
+                        break Exit::Close(CloseSpec::new(
+                            close_code::PROTOCOL_ERROR,
+                            "decode_error",
+                            Some(sys_error_json(e.client_code().as_str(), &e.to_string(), &trace_id)),
+                        ));
                     }
                 };
                 match decoded {
                     Inbound::Ping(p) => { let _ = out_tx.send(Message::Pong(p)).await; },
                     Inbound::Pong(_) => {},
-                    Inbound::Close => break,
+                    Inbound::Close => break Exit::Peer,
                     Inbound::Text { env, bytes_len } => {
                         if let Some(lim) = sess.conn_limiter.as_mut() {
                             if !lim.allow() {
@@ -405,8 +493,11 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                             PolicyDecision::Close { code, msg } => {
                                 // SAFE LABEL: code.as_str()
                                 metrics.policy_decisions.inc(&[("tenant", &q.tenant), ("lane", "ext"), ("decision", "close"), ("reason", code.as_str())]);
-                                let _ = out_tx.send(Message::Text(sys_error_json(code.as_str(), msg, &trace_id))).await;
-                                break;
+                                break Exit::Close(CloseSpec::new(
+                                    close_code::POLICY,
+                                    "policy",
+                                    Some(sys_error_json(code.as_str(), msg, &trace_id)),
+                                ));
                             }
                         }
                         if env.svc == "room" && env.msg_type == "join" {
@@ -465,10 +556,11 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                             },
                             PolicyDecision::Close { code, msg } => {
                                 metrics.policy_decisions.inc(&[("tenant", &q.tenant), ("lane", "hot"), ("decision", "close"), ("reason", code.as_str())]);
-                                if let HotErrorMode::SysError = policy.hot_error_mode() {
-                                    let _ = out_tx.send(Message::Text(sys_error_json(code.as_str(), msg, &trace_id))).await;
-                                }
-                                break;
+                                let notice = match policy.hot_error_mode() {
+                                    HotErrorMode::SysError => Some(sys_error_json(code.as_str(), msg, &trace_id)),
+                                    HotErrorMode::Silent => None,
+                                };
+                                break Exit::Close(CloseSpec::new(close_code::POLICY, "policy", notice));
                             }
                          }
                          if policy.hot_requires_active_room() && sess.active_room.is_none() {
@@ -500,10 +592,39 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
             _ = ping_tick.tick() => { let _ = out_tx.send(Message::Ping(Vec::new())).await; }
             _ = idle_tick.tick() => {
                 if sess.last_activity.elapsed() >= idle_timeout {
-                    let _ = out_tx.send(Message::Text(sys_error_json("TIMEOUT", "idle", &trace_id))).await;
-                    break;
+                    break Exit::Close(CloseSpec::new(
+                        close_code::NORMAL,
+                        "idle_timeout",
+                        Some(sys_error_json("TIMEOUT", "idle", &trace_id)),
+                    ));
                 }
             }
+        }
+    };
+
+    // The session stays registered until the close completes: the drain
+    // logic in main waits on the registry, and anything routed to us meanwhile
+    // is rejected by the closed queue. `_cleanup` unregisters on return.
+    match exit {
+        Exit::Peer => {
+            // Flush tungstenite's queued close reply.
+            let _ = timeout(writer_timeout, ws_tx.close()).await;
+        }
+        Exit::Abort => {}
+        Exit::Close(spec) => {
+            close_session(&mut ws_tx, &mut ws_rx, &mut out_rx, spec, writer_timeout).await;
+        }
+        Exit::TooBig => {
+            let close = Message::Close(Some(CloseFrame {
+                code: close_code::MESSAGE_TOO_BIG,
+                reason: "message too big".into(),
+            }));
+            let _ = timeout(writer_timeout, ws_tx.send(close)).await;
+            // The oversized payload is still unread in the kernel buffer
+            // (tungstenite rejects on the header and cannot skip the body).
+            // Closing now would make the kernel send RST, and the peer may
+            // discard our close frame. Linger briefly so it can read it first.
+            tokio::time::sleep(CLOSE_LINGER).await;
         }
     }
     Ok(())

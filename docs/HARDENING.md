@@ -101,11 +101,25 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 |---|---|---|---|
 | C1 | ☐ | Reliable 발행이 발신 세션 루프를 최대 timeout×1 동안 블로킹 (head-of-line) | `services/chat.rs`, `realtime/core/realtime.rs` |
 | C2 | ☑ | kick_oldest 시 `ws_active_sessions` 게이지 이중 감소 | `transport/ws.rs` |
-| C3 | ☐ | "에러를 큐에 넣고 `break`"하는 모든 경로에서 에러가 클라이언트에 도달하지 않음: `on_exceed: deny`(writer 루프 시작 전 큐잉), policy `Close`, 디코드 오류, idle 타임아웃(큐잉 직후 루프 탈출 → out 큐 미플러시). 인증 실패도 업그레이드 *후* 판정 | `transport/ws.rs` |
+| C3 | ☑ | "에러를 큐에 넣고 `break`"하는 모든 경로에서 에러가 클라이언트에 도달하지 않음: `on_exceed: deny`(writer 루프 시작 전 큐잉), policy `Close`, 디코드 오류, idle 타임아웃(큐잉 직후 루프 탈출 → out 큐 미플러시). 인증 실패도 업그레이드 *후* 판정 | `transport/ws.rs` |
 | C4 | ☐ | `room:leave`가 active_room만 떠남 → 다른 룸 탈출 불가 | `transport/ws.rs` |
 | C5 | ☐ | "빈 집합이면 제거" 경쟁: empty 판정과 `remove` 사이에 다른 스레드가 추가하면 그 항목이 함께 소실. Presence `leave`(신규 join 멤버십 소실)와 `SessionRegistry::remove_session`의 `user_index`(신규 세션이 user 색인에서 누락) 두 곳 | `realtime/core/presence.rs`, `realtime/core/session_registry.rs` |
-| C8 | ☐ | 강제 종료(kick/replace)된 세션의 루프가 클라이언트가 닫을 때까지 계속 돈다 → Presence에선 지워졌지만 로컬 `active_room`으로 Hot 발행·재join 가능. 서버 측 종료 신호 필요 | `transport/ws.rs`, `realtime/core/session_registry.rs` |
+| C8 | ☑ | 강제 종료(kick/replace)된 세션의 루프가 클라이언트가 닫을 때까지 계속 돈다 → Presence에선 지워졌지만 로컬 `active_room`으로 Hot 발행·재join 가능. 서버 측 종료 신호 필요 | `transport/ws.rs`, `realtime/core/session_registry.rs` |
+| C9 | ☐ | 세션 루프가 자기 응답을 자기 송신 큐에 `send().await` — 큐를 비우는 것도 같은 루프라 큐가 가득 차면(느린 클라이언트 + 브로드캐스트) **세션이 영구 정지**. idle 검사도 같은 루프라 동작 안 함 | `transport/ws.rs` |
 | C6 | ☐ | 경미: span guard를 await 너머로 유지, Ext `v` 미검증, ping 이중 응답, 토큰버킷 소수 시간 버림 | 여러 곳 |
+
+#### C3 · C8 결정 기록
+
+- **구조**: 세션 루프가 `break` 대신 종료 사유 `Exit`(`Peer` / `Abort` / `Close(CloseSpec)` / `TooBig`)를 반환하고, 종료 처리는 루프 밖 한 곳에서 한다.
+- **정중한 종료 `close_session`**: ① 송신 큐를 닫고 이미 쌓인 메시지를 순서대로 전송 → ② 사유 통지(`sys.error`/`sys.kicked`) → ③ close 프레임 → ④ 피어의 close를 최대 1s 대기(깨끗한 TCP 종료). 쓰기는 `writer_send_timeout_ms` 하나의 예산을 공유하며, 막힌 피어는 포기한다.
+  - 큐 플러시를 먼저 하는 이유: 통지가 그보다 먼저 큐에 들어간 메시지를 앞지르지 않게(순서 보장).
+- **C8 — 제어 채널**: `Connection`에 `ctl: mpsc::Sender<CloseSpec>`(용량 1)을 추가. kick/replace/drain은 메시지 큐에 Close를 넣는 대신 `ctl`로 종료를 요청하고, 루프는 즉시 빠져나와 `close_session`을 실행한다. 피어가 close에 응답하지 않아도 최대 ~(writer timeout + 1s) 안에 끝난다(이전: idle 타임아웃까지 루프가 계속 돌며 메시지 처리 가능).
+- **등록 해제 시점**: 종료가 끝날 때까지 세션은 레지스트리에 남는다. `main`의 drain 대기가 레지스트리를 보고 있어서, 먼저 해제하면 종료 핸드셰이크가 끝나기 전에 프로세스가 내려간다. 그 사이 라우팅된 메시지는 닫힌 큐가 거절한다(egress drop 카운트에 잡힘).
+- **인증은 업그레이드 전**: 티켓 검증 실패 → HTTP **401** + `handshake_rejections{reason="auth_failed"}`. 인증 안 된 클라이언트에게 소켓 task를 할당하지 않는다.
+  - 트레이드오프: 브라우저 `WebSocket` API는 실패한 핸드셰이크의 HTTP 상태를 읽을 수 없다(1006만 보임). 티켓은 보통 REST로 미리 발급받으므로 오류 처리는 그 단계에서 하는 게 일반적이라 판단.
+  - 반면 **세션 한도 초과(deny)는 업그레이드 후 in-band**(`sys.error TOO_MANY_SESSIONS` + 1008): 이미 인증된 사용자에게 "다른 곳에서 접속 중" 같은 이유를 보여줄 수 있어야 하므로.
+- **종료 코드**: 정상/idle 1000, drain 1001, 디코드 오류 1002, 정책·kick·replace·세션 한도 1008, 크기 초과 1009, 테넌트 용량 경합 1013. `docs/PROTOCOL.md`에 표로 정리.
+- **C9는 별도**: 루프 내 응답이 여전히 `out_tx.send().await`를 쓴다. 다음 커밋에서 처리.
 
 #### C2 결정 기록
 

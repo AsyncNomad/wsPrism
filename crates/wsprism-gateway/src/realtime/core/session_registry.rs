@@ -5,10 +5,16 @@ use tokio::sync::mpsc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wsprism_core::error::{Result, WsPrismError};
 
-/// One session's outbound queue sender.
+use crate::realtime::types::CloseSpec;
+
+/// Handles to one live session.
 #[derive(Clone)]
 pub struct Connection {
+    /// Outbound message queue (drained by the session's writer loop).
     pub tx: mpsc::Sender<Message>,
+    /// Control channel: asks the session to close itself (kick, replace,
+    /// drain). The session ends promptly even if its peer never answers (C8).
+    pub ctl: mpsc::Sender<CloseSpec>,
 }
 
 #[derive(Clone)]

@@ -70,3 +70,40 @@ impl PreparedMsg {
         }
     }
 }
+
+/// RFC 6455 close codes used by the gateway.
+pub mod close_code {
+    /// Normal closure (e.g. idle timeout).
+    pub const NORMAL: u16 = 1000;
+    /// Server going away (draining / shutdown).
+    pub const GOING_AWAY: u16 = 1001;
+    /// Malformed input the gateway cannot decode.
+    pub const PROTOCOL_ERROR: u16 = 1002;
+    /// Policy violation (kicked, replaced, session limit, policy close).
+    pub const POLICY: u16 = 1008;
+    /// Message exceeded the tenant frame limit.
+    pub const MESSAGE_TOO_BIG: u16 = 1009;
+    /// Temporary capacity problem; the client may retry later.
+    pub const TRY_AGAIN_LATER: u16 = 1013;
+}
+
+/// How a session should be closed: close frame code/reason, optionally
+/// preceded by a `sys.*` notice explaining why.
+#[derive(Debug, Clone)]
+pub struct CloseSpec {
+    pub code: u16,
+    /// Short machine-readable reason (sent in the close frame, <= 123 bytes).
+    pub reason: String,
+    /// Optional text message (e.g. `sys.error` / `sys.kicked`) sent first.
+    pub notice: Option<String>,
+}
+
+impl CloseSpec {
+    pub fn new(code: u16, reason: impl Into<String>, notice: Option<String>) -> Self {
+        Self {
+            code,
+            reason: reason.into(),
+            notice,
+        }
+    }
+}
