@@ -47,6 +47,23 @@ fn gen_trace() -> String {
     format!("{:x}-{:x}", now, seq)
 }
 
+/// RFC 6455 close code 1009: message too big to process.
+const CLOSE_MESSAGE_TOO_BIG: u16 = 1009;
+
+/// How long to keep the socket open after sending close 1009 (see S2).
+const CLOSE_LINGER: Duration = Duration::from_millis(500);
+
+/// True if the read failed because the frame/message exceeded the configured
+/// codec limit (see `max_message_size` in `ws_upgrade`).
+fn is_message_too_long(e: axum::Error) -> bool {
+    matches!(
+        e.into_inner().downcast_ref::<tungstenite::Error>(),
+        Some(tungstenite::Error::Capacity(
+            tungstenite::error::CapacityError::MessageTooLong { .. }
+        ))
+    )
+}
+
 /// WebSocket upgrade query parameters.
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
@@ -122,7 +139,13 @@ pub async fn ws_upgrade(
     if app.is_draining() {
         return (StatusCode::SERVICE_UNAVAILABLE, "draining").into_response();
     }
-    if let Some(t_cfg) = app.cfg().tenants.iter().find(|t| t.id == q.tenant) {
+    let Some(t_cfg) = app.cfg().tenants.iter().find(|t| t.id == q.tenant) else {
+        return (StatusCode::BAD_REQUEST, "Unknown Tenant").into_response();
+    };
+    // S2: enforce the tenant frame limit in the WS codec itself, so oversized
+    // payloads are rejected before they are buffered in full or decoded.
+    let max_frame_bytes = t_cfg.limits.max_frame_bytes;
+    {
         let limit = t_cfg.limits.max_sessions_total;
         if limit > 0 {
             let current = app.realtime().sessions.count_tenant_sessions(&q.tenant);
@@ -140,18 +163,18 @@ pub async fn ws_upgrade(
                     .into_response();
             }
         }
-    } else {
-        return (StatusCode::BAD_REQUEST, "Unknown Tenant").into_response();
     }
 
     app.metrics()
         .ws_upgrades
         .inc(&[("tenant", &q.tenant), ("status", "ok")]);
-    ws.on_upgrade(move |socket| async move {
-        if let Err(e) = run_session(app, q, socket).await {
-            tracing::error!("session error: {}", e);
-        }
-    })
+    ws.max_message_size(max_frame_bytes)
+        .max_frame_size(max_frame_bytes)
+        .on_upgrade(move |socket| async move {
+            if let Err(e) = run_session(app, q, socket).await {
+                tracing::error!("session error: {}", e);
+            }
+        })
 }
 
 async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()> {
@@ -265,7 +288,32 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                 }
             }
             incoming = ws_rx.next() => {
-                let Some(Ok(msg)) = incoming else { break; };
+                let msg = match incoming {
+                    Some(Ok(msg)) => msg,
+                    Some(Err(e)) => {
+                        if is_message_too_long(e) {
+                            metrics.policy_decisions.inc(&[
+                                ("tenant", &q.tenant),
+                                ("lane", "transport"),
+                                ("decision", "close"),
+                                ("reason", "frame_too_large"),
+                            ]);
+                            let close = Message::Close(Some(CloseFrame {
+                                code: CLOSE_MESSAGE_TOO_BIG,
+                                reason: "message too big".into(),
+                            }));
+                            let _ = timeout(writer_timeout, ws_tx.send(close)).await;
+                            // The oversized payload is still unread in the kernel
+                            // buffer (tungstenite rejects on the header and cannot
+                            // skip the body). Closing now would make the kernel send
+                            // RST, and the peer may discard our close frame. Linger
+                            // briefly so the client can read it first.
+                            tokio::time::sleep(CLOSE_LINGER).await;
+                        }
+                        break;
+                    }
+                    None => break,
+                };
                 sess.last_activity = Instant::now();
                 let decoded = match decode(msg) {
                     Ok(d) => d,

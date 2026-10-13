@@ -36,10 +36,21 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 | ID | 상태 | 내용 | 위치 |
 |---|---|---|---|
 | S1 | ☐ | Hot Lane에 연결 단위 레이트리밋 미적용 (Text 분기에서만 검사) | `transport/ws.rs` |
-| S2 | ☐ | WS `max_message_size` 미설정(axum 기본 64MB) + `check_len`이 디코드 *후* 실행 → 대용량 JSON 파싱 DoS | `transport/ws.rs`, `transport/codec.rs` |
+| S2 | ☑ | WS `max_message_size` 미설정(axum 기본 64MB) + `check_len`이 디코드 *후* 실행 → 대용량 JSON 파싱 DoS | `transport/ws.rs`, `transport/codec.rs` |
 | S3 | ☐ | `chat.send`가 발신자의 룸 멤버십을 검사하지 않음 | `services/chat.rs` |
 | S4 | ☐ | 클라이언트 지정 `sid` 충돌 시 기존 세션 덮어쓰기 → 테넌트 카운터 누수, 기존 연결 고아화 | `realtime/core/session_registry.rs` |
 | S5 | ☐ | 핸드셰이크 거절 메트릭 라벨에 미검증 `tenant` 사용 → 라벨 카디널리티 폭발(메모리 DoS) | `transport/ws.rs` |
+
+#### S2 결정 기록
+
+- **수정**: 업그레이드 시 `max_message_size`/`max_frame_size`를 테넌트 `max_frame_bytes`로 설정. 초과 시 tungstenite가 *헤더만 보고* 거절하므로 본문 버퍼링·JSON 파싱이 일어나지 않는다. 기존 `check_len`은 2차 방어로 유지.
+- **클라이언트 통지**: 초과 시 RFC 6455 close **1009**(Message Too Big)를 보내고 `policy_decisions{lane="transport",reason="frame_too_large"}`를 증가.
+- **에러 판별**: `axum::Error` → `tungstenite::Error::Capacity(MessageTooLong)` downcast. 이를 위해 gateway가 `tungstenite = "0.24"`를 직접 의존한다. **axum이 쓰는 버전과 반드시 같아야 한다** — 다르면 downcast가 조용히 실패하고 1009 대신 그냥 끊긴다. `tests/s2_message_size.rs`가 이를 잡는다(`Cargo.lock`에 tungstenite가 1개 버전만 있어야 함).
+- **Lingering close (500ms)**: 처음 구현에선 테스트가 약 1/6 확률로 실패했다(close 프레임 대신 연결 리셋). 원인: tungstenite는 초과 프레임의 헤더만 소비하고 본문을 건너뛰지 못해 이후 읽기도 같은 에러만 반복한다. 미수신 데이터가 남은 소켓을 닫으면 커널이 FIN 대신 RST를 보내 피어가 close 프레임을 버릴 수 있다. close 전송 후 500ms 대기로 해결(60/60 통과).
+  - 기각: *본문 드레인* — axum이 raw 소켓을 노출하지 않고 tungstenite가 본문 skip을 지원하지 않음.
+  - 기각: *정상 close 핸드셰이크 대기* — 위와 같은 이유로 피어의 close 응답을 읽을 수 없음.
+  - 비용: 초과 전송 연결마다 task가 500ms 더 산다. 읽지 않으므로 메모리는 TCP 흐름제어로 묶이고, 연결 수는 핸드셰이크 리미터가 묶는다.
+- **테스트 장치**: `tests/common/mod.rs` — 실제 게이트웨이를 임시 포트에 띄우고 `tokio-tungstenite` 클라이언트로 붙는다. 이후 결함 재현 테스트도 이 장치를 쓴다.
 
 ### Phase 2 — 정확성
 
@@ -47,7 +58,7 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 |---|---|---|---|
 | C1 | ☐ | Reliable 발행이 발신 세션 루프를 최대 timeout×1 동안 블로킹 (head-of-line) | `services/chat.rs`, `realtime/core/realtime.rs` |
 | C2 | ☐ | kick_oldest 시 `ws_active_sessions` 게이지 이중 감소 | `transport/ws.rs` |
-| C3 | ☐ | `on_exceed: deny` 에러 메시지가 writer 루프 시작 전에 큐잉되어 유실 / 인증 실패가 업그레이드 후 판정 | `transport/ws.rs` |
+| C3 | ☐ | "에러를 큐에 넣고 `break`"하는 모든 경로에서 에러가 클라이언트에 도달하지 않음: `on_exceed: deny`(writer 루프 시작 전 큐잉), policy `Close`, 디코드 오류, idle 타임아웃(큐잉 직후 루프 탈출 → out 큐 미플러시). 인증 실패도 업그레이드 *후* 판정 | `transport/ws.rs` |
 | C4 | ☐ | `room:leave`가 active_room만 떠남 → 다른 룸 탈출 불가 | `transport/ws.rs` |
 | C5 | ☐ | Presence `leave`의 empty 판정과 `remove` 사이 경쟁 → 신규 join 멤버십 소실 | `realtime/core/presence.rs` |
 | C6 | ☐ | 경미: span guard를 await 너머로 유지, Ext `v` 미검증, ping 이중 응답, 토큰버킷 소수 시간 버림 | 여러 곳 |

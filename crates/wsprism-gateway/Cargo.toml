@@ -19,3 +19,10 @@ serde_json = { workspace = true }
 
 dashmap = { workspace = true }
 async-trait = { workspace = true }
+# Must match the tungstenite version axum's `ws` feature uses: we downcast
+# axum::Error to tungstenite::Error to detect oversize frames (S2). The S2
+# integration tests fail if the versions drift apart.
+tungstenite = "0.24"
+
+[dev-dependencies]
+tokio-tungstenite = "0.24"
