@@ -39,7 +39,7 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 | S1 | ☑ | Hot Lane에 연결 단위 레이트리밋 미적용 (Text 분기에서만 검사) | `transport/ws.rs` |
 | S2 | ☑ | WS `max_message_size` 미설정(axum 기본 64MB) + `check_len`이 디코드 *후* 실행 → 대용량 JSON 파싱 DoS | `transport/ws.rs`, `transport/codec.rs` |
 | S3 | ☑ | `chat.send`가 발신자의 룸 멤버십을 검사하지 않음 | `services/chat.rs` |
-| S4 | ☐ | 클라이언트 지정 `sid` 충돌 시 기존 세션 덮어쓰기 → 테넌트 카운터 누수, 기존 연결 고아화 | `realtime/core/session_registry.rs` |
+| S4 | ☑ | 클라이언트 지정 `sid` 충돌 시 기존 세션 덮어쓰기 → 테넌트 카운터 누수, 기존 연결 고아화 | `realtime/core/session_registry.rs` |
 | S5 | ☑ | 핸드셰이크 거절 메트릭 라벨에 미검증 `tenant` 사용 → 라벨 카디널리티 폭발(메모리 DoS) | `transport/ws.rs` |
 
 #### S3 결정 기록
@@ -47,6 +47,17 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 - **수정**: `chat.send`는 발신 *세션*이 해당 룸에 join한 경우에만 발행하고, 아니면 `NOT_ALLOWED`. `Presence::is_member` / `RealtimeCtx::is_in_room` 추가.
 - **세션 단위 vs 유저 단위**: 세션 단위로 판정한다. 라우팅(Presence)이 세션 단위이고, 같은 유저의 다른 탭이 join했다고 이 탭이 그 룸에 말할 수 있게 하면 "받지 못하는 룸에 쓰기"가 가능해진다.
 - Hot Lane(echo)은 join 성공 시에만 설정되는 `active_room`으로만 발행하므로 별도 검사 불필요. 단, 강제 종료(kick)된 세션이 루프를 계속 도는 동안 로컬 `active_room`으로 발행할 수 있는 문제는 C8로 별도 추적.
+
+#### S4 결정 기록
+
+- **원인 확인**: 수정 전 동작을 임시 테스트로 관찰했다. 같은 `sid` 재접속 후 예전 연결이 끊기면 그 정리 코드가 **살아 있는 새 연결의 레지스트리 항목을 삭제**했다(연결은 붙어 있는데 서버는 모르는 고아 상태). 테넌트 카운터도 +1 누수.
+- **근본 수정 — 내부 키 분리**: 레지스트리/Presence 키를 `tenant::user::sid#<conn_id>`로 바꿔 연결마다 유일하게 만든다. 클라이언트가 고르는 `sid`는 표시용 식별자로만 남는다(`RealtimeCtx::session_id()`). 키 공유 자체가 불가능해지므로 정리 순서·타이밍과 무관하게 안전하다.
+  - 기각: *세대 번호로 정리 조건부 실행* — 레지스트리는 막을 수 있지만, kick된 예전 루프가 같은 키로 다시 join하면 Presence에서 새 연결의 키로 섞여 들어간다(C8과 결합). 키를 분리하는 쪽이 문제를 원천 제거.
+- **정책 — 같은 sid는 교체(takeover)**: 같은 user가 사용 중인 `sid`로 접속하면 예전 연결을 `sys.kicked{reason:"replaced"}` + close 1008로 내보내고 새 연결을 받는다. 세션 한도 평가 *전에* 교체하므로 교체가 한도를 소모하지 않는다.
+  - 기각: *거부* — 네트워크 단절 후 재접속하는 탭이 흔한 정상 사례인데, 예전 연결이 idle 타임아웃(기본 60s)으로 정리될 때까지 재접속이 막힌다.
+  - 전제: 현재 인증 스텁에선 모든 클라이언트가 `user:dev`라 서로의 sid를 교체할 수 있다. 실제 인증(Phase 4) 후엔 *같은 유저*만 교체 가능.
+- **강제 종료 경로 통합**: kick_oldest와 replace가 `evict_session` 하나를 공유한다(레지스트리 제거 → Presence 정리 → 게이지 감소(C2 원칙) → 통지·close).
+- **프로토콜 변화**: 강제 종료 close 프레임의 reason이 고정 `"kicked"`에서 사유 문자열(`max_sessions_exceeded` / `replaced`)로 바뀌었다. `sys.kicked.data.reason`은 기존과 동일 형식.
 
 #### S5 결정 기록
 
@@ -92,7 +103,7 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 | C2 | ☑ | kick_oldest 시 `ws_active_sessions` 게이지 이중 감소 | `transport/ws.rs` |
 | C3 | ☐ | "에러를 큐에 넣고 `break`"하는 모든 경로에서 에러가 클라이언트에 도달하지 않음: `on_exceed: deny`(writer 루프 시작 전 큐잉), policy `Close`, 디코드 오류, idle 타임아웃(큐잉 직후 루프 탈출 → out 큐 미플러시). 인증 실패도 업그레이드 *후* 판정 | `transport/ws.rs` |
 | C4 | ☐ | `room:leave`가 active_room만 떠남 → 다른 룸 탈출 불가 | `transport/ws.rs` |
-| C5 | ☐ | Presence `leave`의 empty 판정과 `remove` 사이 경쟁 → 신규 join 멤버십 소실 | `realtime/core/presence.rs` |
+| C5 | ☐ | "빈 집합이면 제거" 경쟁: empty 판정과 `remove` 사이에 다른 스레드가 추가하면 그 항목이 함께 소실. Presence `leave`(신규 join 멤버십 소실)와 `SessionRegistry::remove_session`의 `user_index`(신규 세션이 user 색인에서 누락) 두 곳 | `realtime/core/presence.rs`, `realtime/core/session_registry.rs` |
 | C8 | ☐ | 강제 종료(kick/replace)된 세션의 루프가 클라이언트가 닫을 때까지 계속 돈다 → Presence에선 지워졌지만 로컬 `active_room`으로 Hot 발행·재join 가능. 서버 측 종료 신호 필요 | `transport/ws.rs`, `realtime/core/session_registry.rs` |
 | C6 | ☐ | 경미: span guard를 await 너머로 유지, Ext `v` 미검증, ping 이중 응답, 토큰버킷 소수 시간 버림 | 여러 곳 |
 

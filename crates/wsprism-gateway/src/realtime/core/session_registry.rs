@@ -17,6 +17,8 @@ struct SessionEntry {
     created_seq: u64,
     // Sprint 5: store tenant here to facilitate cleanup without looking up other maps
     tenant_id: String,
+    /// Client-facing session id (may be client-provided; not unique).
+    sid: String,
 }
 
 /// Session registry:
@@ -54,6 +56,7 @@ impl SessionRegistry {
         tenant_id: String,
         user_key: String,
         session_key: String,
+        sid: String,
         conn: Connection,
         max_total: u64,
     ) -> Result<()> {
@@ -95,6 +98,7 @@ impl SessionRegistry {
                 conn,
                 created_seq,
                 tenant_id,
+                sid,
             },
         );
 
@@ -163,26 +167,42 @@ impl SessionRegistry {
         self.sessions.len()
     }
 
-    /// Evict the oldest session for this user.
-    /// Returns (victim_session_key, victim_connection).
-    pub fn evict_oldest(&self, user_key: &str) -> Option<(String, Connection)> {
-        let set = self.user_index.get(user_key)?;
-        let keys: Vec<String> = set.iter().map(|s| s.key().to_string()).collect();
-        drop(set);
+    /// Session key of this user's oldest live session.
+    pub fn oldest_session(&self, user_key: &str) -> Option<String> {
+        self.user_sessions_where(user_key, |_| true)
+            .into_iter()
+            .min_by_key(|(_, seq)| *seq)
+            .map(|(k, _)| k)
+    }
 
-        let mut victim_key: Option<String> = None;
-        let mut victim_seq: u64 = u64::MAX;
-        for k in &keys {
-            if let Some(e) = self.sessions.get(k) {
-                if e.value().created_seq < victim_seq {
-                    victim_seq = e.value().created_seq;
-                    victim_key = Some(k.clone());
-                }
-            }
-        }
+    /// Session key of this user's live session using client-facing `sid`.
+    pub fn find_session_by_sid(&self, user_key: &str, sid: &str) -> Option<String> {
+        self.user_sessions_where(user_key, |e| e.sid == sid)
+            .into_iter()
+            .next()
+            .map(|(k, _)| k)
+    }
 
-        let victim_key = victim_key?;
-        let conn = self.remove_session(user_key, &victim_key)?;
-        Some((victim_key, conn))
+    /// (session_key, created_seq) of the user's sessions matching `pred`.
+    fn user_sessions_where(
+        &self,
+        user_key: &str,
+        pred: impl Fn(&SessionEntry) -> bool,
+    ) -> Vec<(String, u64)> {
+        // Snapshot keys first so no user_index guard is held while reading `sessions`.
+        let keys: Vec<String> = match self.user_index.get(user_key) {
+            Some(set) => set.iter().map(|k| k.key().clone()).collect(),
+            None => return Vec::new(),
+        };
+        keys.into_iter()
+            .filter_map(|k| {
+                let seq = self
+                    .sessions
+                    .get(&k)
+                    .filter(|e| pred(e.value()))
+                    .map(|e| e.value().created_seq)?;
+                Some((k, seq))
+            })
+            .collect()
     }
 }

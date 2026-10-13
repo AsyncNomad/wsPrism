@@ -166,10 +166,14 @@ pub struct RealtimeCtx {
 
 impl RealtimeCtx {
     /// Construct a per-message context with immutable identity and trace fields.
+    ///
+    /// `session_key` is the gateway-internal, per-connection unique key (see
+    /// S4 in docs/HARDENING.md); `session_id` is the client-facing sid.
     pub fn new(
         tenant: impl Into<Arc<str>>,
         user: impl Into<Arc<str>>,
         session_id: impl Into<Arc<str>>,
+        session_key: impl Into<Arc<str>>,
         trace_id: impl Into<Arc<str>>,
         active_room: Option<String>,
         core: Arc<RealtimeCore>,
@@ -178,14 +182,13 @@ impl RealtimeCtx {
         let user = user.into();
         let session_id = session_id.into();
         let user_key: Arc<str> = Arc::from(format!("{}::{}", tenant, user));
-        let session_key: Arc<str> = Arc::from(format!("{}::{}::{}", tenant, user, session_id));
 
         Self {
             tenant,
             user,
             user_key,
             session_id,
-            session_key,
+            session_key: session_key.into(),
             trace_id: trace_id.into(),
             active_room: active_room.map(Arc::from),
             core,

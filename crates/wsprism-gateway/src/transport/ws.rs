@@ -34,6 +34,8 @@ use wsprism_core::error::{Result, WsPrismError};
 
 static NEXT_SID: AtomicU64 = AtomicU64::new(1);
 static NEXT_TRACE: AtomicU64 = AtomicU64::new(1);
+/// Per-connection counter making internal session keys unique (S4).
+static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
 
 fn gen_sid() -> String {
     format!("{:x}", NEXT_SID.fetch_add(1, Ordering::Relaxed))
@@ -132,6 +134,31 @@ impl Drop for SessionCleanup {
     }
 }
 
+/// Evict a live session: unregister it (owning the gauge decrement, see C2),
+/// clear its presence, then tell it why and close it.
+fn evict_session(
+    core: &RealtimeCore,
+    metrics: &GatewayMetrics,
+    tenant: &str,
+    user_key: &str,
+    victim_key: &str,
+    reason: &str,
+    trace_id: &str,
+) {
+    let Some(conn) = core.sessions.remove_session(user_key, victim_key) else {
+        return; // already gone (raced with its own cleanup or another evictor)
+    };
+    core.presence.cleanup_session(tenant, user_key, victim_key);
+    metrics.ws_active_sessions.dec(&[("tenant", tenant)]);
+    let _ = conn
+        .tx
+        .try_send(Message::Text(sys_kicked_json(reason, trace_id)));
+    let _ = conn.tx.try_send(Message::Close(Some(CloseFrame {
+        code: 1008,
+        reason: reason.to_owned().into(),
+    })));
+}
+
 pub async fn ws_upgrade(
     State(app): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -205,11 +232,23 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
     let dispatcher = app.dispatcher();
     let metrics = app.metrics();
     let user_key = format!("{}::{}", q.tenant, user_id);
-    let session_key = format!("{}::{}::{}", q.tenant, user_id, sid);
+    // S4: the internal key is unique per connection. The client-facing `sid`
+    // is client-controlled and may repeat (e.g. a reconnecting tab), so it must
+    // never be the registry/presence key, or two connections would alias.
+    let conn_id = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
+    let session_key = format!("{}::{}::{}#{:x}", q.tenant, user_id, sid, conn_id);
     let span = tracing::info_span!("ws", %trace_id, t=%q.tenant, u=%user_id, s=%sid);
     let _enter = span.enter();
     let (out_tx, mut out_rx) = mpsc::channel(1024);
     let (mut ws_tx, mut ws_rx) = socket.split();
+
+    // S4: a reconnect with an in-use sid takes over: the old connection is
+    // evicted before the session limit is evaluated.
+    if let Some(prev) = core.sessions.find_session_by_sid(&user_key, &sid) {
+        evict_session(
+            &core, &metrics, &q.tenant, &user_key, &prev, "replaced", &trace_id,
+        );
+    }
 
     let sp = policy.session_policy();
     let max_user_sessions = sp.max_sessions_per_user as usize;
@@ -233,17 +272,16 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                 return Ok(());
             }
             OnExceed::KickOldest => {
-                if let Some((victim, victim_conn)) = core.sessions.evict_oldest(&user_key) {
-                    let _ = victim_conn.tx.try_send(Message::Text(sys_kicked_json(
+                if let Some(victim) = core.sessions.oldest_session(&user_key) {
+                    evict_session(
+                        &core,
+                        &metrics,
+                        &q.tenant,
+                        &user_key,
+                        &victim,
                         "max_sessions_exceeded",
                         &trace_id,
-                    )));
-                    let _ = victim_conn.tx.try_send(Message::Close(Some(CloseFrame {
-                        code: 1008,
-                        reason: "kicked".into(),
-                    })));
-                    core.presence.cleanup_session(&q.tenant, &user_key, &victim);
-                    metrics.ws_active_sessions.dec(&[("tenant", &q.tenant)]);
+                    );
                 }
             }
         }
@@ -259,6 +297,7 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
         q.tenant.clone(),
         user_key.clone(),
         session_key.clone(),
+        sid.clone(),
         Connection { tx: out_tx.clone() },
         t_cfg.limits.max_sessions_total,
     )?;
@@ -372,7 +411,7 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                         }
                         if env.svc == "room" && env.msg_type == "join" {
                             let room = env.room.clone().unwrap_or_else(|| "default".to_string());
-                            let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), trace_id.clone(), sess.active_room.clone(), core.clone());
+                            let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), session_key.clone(), trace_id.clone(), sess.active_room.clone(), core.clone());
                             match ctx.join_room_with_limits(&room, &t_cfg.limits) {
                                 Ok(_) => {
                                     sess.active_room = Some(room.clone());
@@ -387,13 +426,13 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                         }
                         if env.svc == "room" && env.msg_type == "leave" {
                             if let Some(room) = sess.active_room.take() {
-                                let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), trace_id.clone(), None, core.clone());
+                                let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), session_key.clone(), trace_id.clone(), None, core.clone());
                                 ctx.leave_room(&room);
                             }
                             let _ = out_tx.send(Message::Text(sys_left_json(&trace_id))).await;
                             continue;
                         }
-                        let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), trace_id.clone(), sess.active_room.clone(), core.clone());
+                        let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), session_key.clone(), trace_id.clone(), sess.active_room.clone(), core.clone());
                         let start = Instant::now();
                         let res = dispatcher.dispatch_text(ctx, env).await;
                         // Always measure Ext lane
@@ -438,7 +477,7 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                              }
                              continue;
                          }
-                         let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), trace_id.clone(), sess.active_room.clone(), core.clone());
+                         let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), session_key.clone(), trace_id.clone(), sess.active_room.clone(), core.clone());
 
                          // Hot Lane Sampling (1/1024)
                          hot_op_counter = hot_op_counter.wrapping_add(1);
