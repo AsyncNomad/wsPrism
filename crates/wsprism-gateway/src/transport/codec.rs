@@ -6,7 +6,7 @@
 
 use axum::extract::ws::Message;
 use wsprism_core::{
-    error::{Result, WsPrismError},
+    error::Result,
     protocol::{hot, text},
 };
 
@@ -34,8 +34,7 @@ pub fn decode(msg: Message) -> Result<Inbound> {
     match msg {
         Message::Text(s) => {
             let bytes_len = s.len();
-            let env: text::Envelope = serde_json::from_str(&s)
-                .map_err(|e| WsPrismError::BadRequest(format!("invalid envelope json: {e}")))?;
+            let env = text::decode_envelope(&s)?;
             Ok(Inbound::Text { env, bytes_len })
         }
         Message::Binary(b) => {

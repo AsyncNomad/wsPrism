@@ -6,7 +6,7 @@
 
 use std::fs;
 
-use wsprism_core::protocol::text::Envelope;
+use wsprism_core::protocol::text::{decode_envelope, Envelope};
 
 fn load(name: &str) -> String {
     fs::read_to_string(format!("tests/vectors/{name}")).unwrap()
@@ -32,4 +32,16 @@ fn parse_envelope_full() {
     assert_eq!(env.room.as_deref(), Some("party:1"));
     let raw = env.data.unwrap();
     assert!(raw.get().contains("\"text\""));
+}
+
+#[test]
+fn reject_unsupported_envelope_version() {
+    let err = decode_envelope(r#"{"v":2,"svc":"chat","type":"send"}"#).unwrap_err();
+    assert_eq!(err.client_code().as_str(), "UNSUPPORTED_VERSION");
+}
+
+#[test]
+fn decode_envelope_accepts_v1() {
+    let env = decode_envelope(&load("envelope_full.json")).unwrap();
+    assert_eq!(env.v, 1);
 }
