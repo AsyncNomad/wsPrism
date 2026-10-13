@@ -387,6 +387,13 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
                         }
                     },
                     Inbound::Hot { frame, bytes_len } => {
+                        // S1: same per-connection budget as the Ext lane.
+                        if let Some(lim) = sess.conn_limiter.as_mut() {
+                            if !lim.allow() {
+                                metrics.policy_decisions.inc(&[("tenant", &q.tenant), ("lane", "hot"), ("decision", "drop"), ("reason", "conn_rate_limit")]);
+                                continue;
+                            }
+                        }
                          match policy.check_hot(bytes_len, frame.svc_id, frame.opcode) {
                             PolicyDecision::Pass => {},
                             PolicyDecision::Drop => {

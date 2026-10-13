@@ -35,11 +35,17 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 
 | ID | 상태 | 내용 | 위치 |
 |---|---|---|---|
-| S1 | ☐ | Hot Lane에 연결 단위 레이트리밋 미적용 (Text 분기에서만 검사) | `transport/ws.rs` |
+| S1 | ☑ | Hot Lane에 연결 단위 레이트리밋 미적용 (Text 분기에서만 검사) | `transport/ws.rs` |
 | S2 | ☑ | WS `max_message_size` 미설정(axum 기본 64MB) + `check_len`이 디코드 *후* 실행 → 대용량 JSON 파싱 DoS | `transport/ws.rs`, `transport/codec.rs` |
 | S3 | ☐ | `chat.send`가 발신자의 룸 멤버십을 검사하지 않음 | `services/chat.rs` |
 | S4 | ☐ | 클라이언트 지정 `sid` 충돌 시 기존 세션 덮어쓰기 → 테넌트 카운터 누수, 기존 연결 고아화 | `realtime/core/session_registry.rs` |
 | S5 | ☐ | 핸드셰이크 거절 메트릭 라벨에 미검증 `tenant` 사용 → 라벨 카디널리티 폭발(메모리 DoS) | `transport/ws.rs` |
+
+#### S1 결정 기록
+
+- **수정**: Hot 분기에도 연결 단위 토큰버킷 검사 추가. 초과 시 조용히 drop하고 `policy_decisions{lane="hot",reason="conn_rate_limit"}` 증가(Ext와 동일한 처리).
+- **버킷 공유**: Ext와 Hot이 연결당 **하나의** 버킷을 공유한다. 설정에 `rate_limit_rps`가 하나뿐이고, 테넌트 스코프 리미터도 이미 두 레인이 공유하기 때문이다. 레인별 예산이 필요해지면 `hot_rate_limit_rps` 같은 별도 설정으로 확장한다. 공유 동작은 `hot_and_ext_share_one_connection_budget` 테스트가 고정한다.
+- 참고: `select!` 매크로 내부는 rustfmt가 포맷하지 않아 들여쓰기가 고르지 않다. `run_session` 분해(Phase 3) 때 해소한다.
 
 #### S2 결정 기록
 
