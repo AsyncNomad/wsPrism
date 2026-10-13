@@ -227,8 +227,11 @@ impl TokenBucket {
     }
 
     fn allow(&mut self) -> bool {
-        self.refill();
+        self.allow_at(Instant::now())
+    }
 
+    fn allow_at(&mut self, now: Instant) -> bool {
+        self.refill_at(now);
         if self.tokens == 0 {
             return false;
         }
@@ -236,17 +239,69 @@ impl TokenBucket {
         true
     }
 
-    fn refill(&mut self) {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last);
-        if elapsed < Duration::from_millis(50) {
+    /// Add the tokens earned since `last`. Only the time actually converted
+    /// into tokens is consumed, so fractional progress carries over (C6: the
+    /// old version reset `last = now` and lost up to one token interval per
+    /// refill). A full bucket banks no extra time.
+    fn refill_at(&mut self, now: Instant) {
+        const NANOS_PER_SEC: u128 = 1_000_000_000;
+        let rps = u128::from(self.rps);
+        let elapsed = now.saturating_duration_since(self.last).as_nanos();
+        let add = elapsed * rps / NANOS_PER_SEC;
+        if add == 0 {
             return;
         }
-
-        let add = (elapsed.as_millis() as u64 * self.rps as u64 / 1000) as u32;
-        if add > 0 {
-            self.tokens = (self.tokens + add).min(self.capacity);
+        let total = u128::from(self.tokens) + add;
+        if total >= u128::from(self.capacity) {
+            self.tokens = self.capacity;
             self.last = now;
+        } else {
+            self.tokens = total as u32;
+            let used = add * NANOS_PER_SEC / rps;
+            self.last += Duration::from_nanos(used as u64);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn drained(rps: u32, burst: u32) -> (TokenBucket, Instant) {
+        let mut b = TokenBucket::new(rps, burst);
+        let t0 = b.last;
+        while b.allow_at(t0) {}
+        (b, t0)
+    }
+
+    #[test]
+    fn fractional_refill_time_carries_over() {
+        let (mut b, t0) = drained(10, 5); // one token per 100ms
+        assert!(b.allow_at(t0 + Duration::from_millis(199))); // 1 token, 99ms credit
+        assert!(b.allow_at(t0 + Duration::from_millis(200))); // credit completes token 2
+        assert!(!b.allow_at(t0 + Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn full_bucket_does_not_bank_extra_time() {
+        let (mut b, t0) = drained(10, 2);
+        let later = t0 + Duration::from_secs(10); // would be 100 tokens uncapped
+        assert!(b.allow_at(later));
+        assert!(b.allow_at(later));
+        assert!(!b.allow_at(later));
+        assert!(!b.allow_at(later + Duration::from_millis(99)));
+        assert!(b.allow_at(later + Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn sustained_rate_matches_rps() {
+        // burst 2 so the bucket never hits its cap between polls (with burst
+        // 1, time spent full is correctly not banked, giving ~95).
+        let (mut b, t0) = drained(10, 2);
+        // Poll every 15ms for 10s: should admit 100 (10/s), not fewer.
+        let admitted = (1..=667)
+            .filter(|i| b.allow_at(t0 + Duration::from_millis(15 * i)))
+            .count();
+        assert_eq!(admitted, 100);
     }
 }
