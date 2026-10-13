@@ -114,11 +114,10 @@ impl SessionRegistry {
     pub fn remove_session(&self, user_key: &str, session_key: &str) -> Option<Connection> {
         if let Some(set) = self.user_index.get(user_key) {
             set.remove(session_key);
-            if set.is_empty() {
-                drop(set);
-                self.user_index.remove(user_key);
-            }
         }
+        // C5: drop the user's set only if it is still empty under the shard
+        // lock; inserts go through `entry` and hold the same lock.
+        self.user_index.remove_if(user_key, |_, set| set.is_empty());
 
         if let Some((_, entry)) = self.sessions.remove(session_key) {
             // Sprint 5: Decrement tenant counter
@@ -210,5 +209,48 @@ impl SessionRegistry {
                 Some((k, seq))
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    fn conn() -> Connection {
+        let (tx, _) = mpsc::channel(1);
+        let (ctl, _) = mpsc::channel(1);
+        Connection { tx, ctl }
+    }
+
+    /// C5: removing one of a user's sessions must never drop a concurrently
+    /// inserted sibling from the user index.
+    #[test]
+    fn concurrent_insert_remove_keeps_user_index_consistent() {
+        let r = SessionRegistry::new();
+        let lost = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            for who in ["a", "b"] {
+                let (r, lost) = (&r, &lost);
+                s.spawn(move || {
+                    let sk = format!("t::u::{who}");
+                    for _ in 0..40_000 {
+                        r.try_insert("t".into(), "t::u".into(), sk.clone(), who.into(), conn(), 0)
+                            .unwrap();
+                        if r.find_session_by_sid("t::u", who).is_none() {
+                            lost.store(true, Ordering::Relaxed);
+                        }
+                        r.remove_session("t::u", &sk);
+                    }
+                });
+            }
+        });
+        assert!(
+            !lost.load(Ordering::Relaxed),
+            "a session vanished from user_index"
+        );
+        assert!(r.user_index.is_empty());
+        assert_eq!(r.count_tenant_sessions("t"), 0);
     }
 }

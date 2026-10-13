@@ -1,13 +1,40 @@
 use crate::config::schema::TenantLimits;
+use dashmap::mapref::entry::Entry;
 use dashmap::{DashMap, DashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use wsprism_core::error::{Result, WsPrismError};
 
+/// Atomically replace the value with `f(value)` (CAS loop); `None` from `f`
+/// aborts without writing. Returns the previous value on success.
+/// (Explicit loop rather than `fetch_update`, which newer toolchains deprecate
+/// in favour of `try_update`; this keeps the MSRV unchanged.)
+fn cas_update(a: &AtomicU64, f: impl Fn(u64) -> Option<u64>) -> std::result::Result<u64, u64> {
+    let mut cur = a.load(Ordering::Relaxed);
+    loop {
+        let Some(next) = f(cur) else {
+            return Err(cur);
+        };
+        match a.compare_exchange_weak(cur, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(prev) => return Ok(prev),
+            Err(actual) => cur = actual,
+        }
+    }
+}
+
+/// Remove `item` from the set at `key`, dropping the set if that left it
+/// empty. The emptiness check and the removal are one atomic step under the
+/// shard lock, so an insert racing with us is never lost (C5).
+fn remove_from_set(map: &DashMap<String, DashSet<String>>, key: &str, item: &str) {
+    if let Some(set) = map.get(key) {
+        set.remove(item);
+    }
+    map.remove_if(key, |_, set| set.is_empty());
+}
+
 /// Room presence: `room_key -> sessions`, `session_key -> rooms`.
 ///
 /// Sprint 5: Added user-level indexing and tenant counters for governance.
-/// Lock-free best-effort design: under heavy contention, limits can be
-/// temporarily exceeded by a small margin to preserve throughput.
+/// See `try_join` for which limits are exact and which are best-effort.
 #[derive(Default)]
 pub struct Presence {
     // Routing indices
@@ -39,12 +66,14 @@ impl Presence {
 
     /// Attempt to join a room with per-tenant/user/room limits enforced.
     ///
-    /// Concurrency note: This uses lock-free counters and map lookups for
-    /// performance. The check (e.g., `current < limit`) and the subsequent
-    /// insert are not atomic across threads, so at high contention the limit
-    /// may be exceeded by a small margin (acceptable trade-off for throughput).
-    /// Do not rely on this for exact “hard” ceilings; it is designed for fast
-    /// best-effort enforcement in a single-node gateway.
+    /// Concurrency (C5): every "create" and "remove if empty" on a set-valued
+    /// index happens under that key's DashMap shard write lock (`entry` /
+    /// `remove_if`), so a leave can never delete a set that a concurrent join
+    /// just added to. The tenant room counter moves only when a room set is
+    /// actually created/removed, and the `max_rooms_total` cap is exact.
+    /// `max_users_per_room` / `max_rooms_per_user` remain best-effort: their
+    /// checks read the governance indices without locking them, so heavy
+    /// contention can overshoot them slightly.
     pub fn try_join(
         &self,
         tenant_id: &str,
@@ -76,47 +105,30 @@ impl Presence {
             }
         }
 
-        // --- 3. Check Tenant Total Rooms ---
-        // We only increment if the room is NEW (currently has no sessions).
-        // Note: This is a slight approximation. A room exists if it has sessions.
-        let is_new_room = !self.room_to_sessions.contains_key(room_key);
-        if is_new_room && limits.max_rooms_total > 0 {
-            let counter = self
-                .tenant_room_counts
-                .entry(tenant_id.to_string())
-                .or_insert_with(|| AtomicU64::new(0));
-            if counter.load(Ordering::Relaxed) >= limits.max_rooms_total {
-                return Err(WsPrismError::ResourceExhausted(
-                    "tenant room limit reached".into(),
-                ));
+        // --- 3. Routing. Creating the room set reserves a tenant room slot
+        //        atomically, under the room's shard lock.
+        match self.room_to_sessions.entry(room_key.to_string()) {
+            Entry::Occupied(room) => {
+                room.get().insert(session_key.to_string());
             }
-            // Increment
-            counter.fetch_add(1, Ordering::Relaxed);
-        } else if is_new_room {
-            self.tenant_room_counts
-                .entry(tenant_id.to_string())
-                .or_default()
-                .fetch_add(1, Ordering::Relaxed);
+            Entry::Vacant(slot) => {
+                self.reserve_room_slot(tenant_id, limits.max_rooms_total)?;
+                let sessions = DashSet::new();
+                sessions.insert(session_key.to_string());
+                slot.insert(sessions);
+            }
         }
-
-        // --- 4. Perform Join (Order: Routing -> Governance) ---
-
-        // A. Routing
-        self.room_to_sessions
-            .entry(room_key.to_string())
-            .or_default()
-            .insert(session_key.to_string());
         self.session_to_rooms
             .entry(session_key.to_string())
             .or_default()
             .insert(room_key.to_string());
 
-        // B. Governance (Ref counting for multi-session support)
+        // --- 4. Governance (ref-counted per user+room for multi-session).
+        //        The user indices are updated while holding the ref entry, so
+        //        join/leave of the same user+room are serialized.
         let ref_key = format!("{}::{}", user_key, room_key);
         let mut refs = self.user_room_refs.entry(ref_key).or_insert(0);
         *refs += 1;
-
-        // If this is the first session for this user in this room, add to user indices
         if *refs == 1 {
             self.room_to_users
                 .entry(room_key.to_string())
@@ -131,62 +143,47 @@ impl Presence {
         Ok(())
     }
 
+    /// Count a new room against the tenant, failing if `max_total` (0 =
+    /// unlimited) is reached. Exact: the check and increment are one CAS.
+    fn reserve_room_slot(&self, tenant_id: &str, max_total: u64) -> Result<()> {
+        let counter = self
+            .tenant_room_counts
+            .entry(tenant_id.to_string())
+            .or_default();
+        cas_update(&counter, |n| {
+            (max_total == 0 || n < max_total).then_some(n + 1)
+        })
+        .map(|_| ())
+        .map_err(|_| WsPrismError::ResourceExhausted("tenant room limit reached".into()))
+    }
+
     pub fn leave(&self, tenant_id: &str, room_key: &str, user_key: &str, session_key: &str) {
-        // 1. Remove from routing
-        let mut room_empty = false;
+        // 1. Routing. Removing the room set and releasing its tenant slot
+        //    only happens if it is still empty under the shard lock (C5).
         if let Some(set) = self.room_to_sessions.get(room_key) {
             set.remove(session_key);
-            room_empty = set.is_empty();
         }
-        // Cleanup empty routing set outside lock
-        if room_empty {
-            self.room_to_sessions.remove(room_key);
-        }
-
-        if let Some(set) = self.session_to_rooms.get(session_key) {
-            set.remove(room_key);
-            if set.is_empty() {
-                drop(set);
-                self.session_to_rooms.remove(session_key);
-            }
-        }
-
-        // 2. Remove from governance (Ref counting)
-        let ref_key = format!("{}::{}", user_key, room_key);
-        let mut remove_user_mapping = false;
-
-        if let Some(mut refs) = self.user_room_refs.get_mut(&ref_key) {
-            *refs -= 1;
-            if *refs == 0 {
-                remove_user_mapping = true;
-            }
-        }
-        if remove_user_mapping {
-            self.user_room_refs.remove(&ref_key);
-
-            // Remove from user_to_rooms
-            if let Some(set) = self.user_to_rooms.get(user_key) {
-                set.remove(room_key);
-                if set.is_empty() {
-                    drop(set);
-                    self.user_to_rooms.remove(user_key);
-                }
-            }
-
-            // Remove from room_to_users
-            if let Some(set) = self.room_to_users.get(room_key) {
-                set.remove(user_key);
-                if set.is_empty() {
-                    drop(set);
-                    self.room_to_users.remove(room_key);
-                }
-            }
-        }
-
-        // 3. Decrement Tenant Room Count if room empty
-        if room_empty {
+        if self
+            .room_to_sessions
+            .remove_if(room_key, |_, set| set.is_empty())
+            .is_some()
+        {
             if let Some(counter) = self.tenant_room_counts.get(tenant_id) {
-                counter.fetch_sub(1, Ordering::Relaxed);
+                let _ = cas_update(&counter, |n| n.checked_sub(1));
+            }
+        }
+        remove_from_set(&self.session_to_rooms, session_key, room_key);
+
+        // 2. Governance: drop the user<->room link when this user's last
+        //    session leaves, still holding the ref entry (see try_join).
+        let ref_key = format!("{}::{}", user_key, room_key);
+        if let Entry::Occupied(mut refs) = self.user_room_refs.entry(ref_key) {
+            let n = refs.get_mut();
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                remove_from_set(&self.user_to_rooms, user_key, room_key);
+                remove_from_set(&self.room_to_users, room_key, user_key);
+                refs.remove();
             }
         }
     }
@@ -214,5 +211,102 @@ impl Presence {
                 self.leave(tenant_id, room_key, user_key, session_key);
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+
+    const ITERS: usize = 40_000;
+
+    fn limits() -> TenantLimits {
+        TenantLimits::default()
+    }
+
+    /// C5: two sessions churn join/leave on the same room. A leave that sees
+    /// the room momentarily empty must never delete the other's fresh join.
+    #[test]
+    fn concurrent_join_leave_never_loses_a_membership() {
+        let p = Presence::new();
+        let lost = AtomicBool::new(false);
+        std::thread::scope(|s| {
+            for who in ["a", "b"] {
+                let (p, lost) = (&p, &lost);
+                s.spawn(move || {
+                    let sk = format!("t::{who}::s");
+                    let uk = format!("t::{who}");
+                    for _ in 0..ITERS {
+                        p.try_join("t", "t::r", &uk, &sk, &limits()).unwrap();
+                        if !p.sessions_in("t::r").contains(&sk) {
+                            lost.store(true, Ordering::Relaxed);
+                        }
+                        p.leave("t", "t::r", &uk, &sk);
+                    }
+                });
+            }
+        });
+        assert!(
+            !lost.load(Ordering::Relaxed),
+            "a join was wiped by a concurrent leave"
+        );
+    }
+
+    /// C5: after any interleaving of joins/leaves that ends with everyone
+    /// gone, every index and counter must be back to empty/zero.
+    #[test]
+    fn concurrent_churn_leaves_no_residue() {
+        let p = Presence::new();
+        std::thread::scope(|s| {
+            for i in 0..4 {
+                let p = &p;
+                s.spawn(move || {
+                    // Two sessions of the same user share the user<->room index.
+                    let uk = format!("t::u{}", i % 2);
+                    let sk = format!("{uk}::s{i}");
+                    for n in 0..ITERS / 4 {
+                        let rk = format!("t::r{}", n % 3);
+                        p.try_join("t", &rk, &uk, &sk, &limits()).unwrap();
+                        p.leave("t", &rk, &uk, &sk);
+                    }
+                });
+            }
+        });
+        assert!(p.room_to_sessions.is_empty(), "room_to_sessions residue");
+        assert!(p.session_to_rooms.is_empty(), "session_to_rooms residue");
+        assert!(p.room_to_users.is_empty(), "room_to_users residue");
+        assert!(p.user_to_rooms.is_empty(), "user_to_rooms residue");
+        assert!(p.user_room_refs.is_empty(), "user_room_refs residue");
+        let rooms = p
+            .tenant_room_counts
+            .get("t")
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0);
+        assert_eq!(rooms, 0, "tenant room counter drifted");
+    }
+
+    /// The tenant room cap is exact even under concurrent room creation.
+    #[test]
+    fn tenant_room_cap_is_never_exceeded() {
+        let p = Presence::new();
+        let lim = TenantLimits {
+            max_rooms_total: 5,
+            ..TenantLimits::default()
+        };
+        std::thread::scope(|s| {
+            for i in 0..8 {
+                let (p, lim) = (&p, &lim);
+                s.spawn(move || {
+                    let uk = format!("t::u{i}");
+                    let sk = format!("{uk}::s");
+                    for n in 0..50 {
+                        let _ = p.try_join("t", &format!("t::r{i}-{n}"), &uk, &sk, lim);
+                    }
+                });
+            }
+        });
+        assert_eq!(p.room_to_sessions.len(), 5);
     }
 }

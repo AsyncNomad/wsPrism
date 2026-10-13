@@ -103,10 +103,26 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 | C2 | ☑ | kick_oldest 시 `ws_active_sessions` 게이지 이중 감소 | `transport/ws.rs` |
 | C3 | ☑ | "에러를 큐에 넣고 `break`"하는 모든 경로에서 에러가 클라이언트에 도달하지 않음: `on_exceed: deny`(writer 루프 시작 전 큐잉), policy `Close`, 디코드 오류, idle 타임아웃(큐잉 직후 루프 탈출 → out 큐 미플러시). 인증 실패도 업그레이드 *후* 판정 | `transport/ws.rs` |
 | C4 | ☐ | `room:leave`가 active_room만 떠남 → 다른 룸 탈출 불가 | `transport/ws.rs` |
-| C5 | ☐ | "빈 집합이면 제거" 경쟁: empty 판정과 `remove` 사이에 다른 스레드가 추가하면 그 항목이 함께 소실. Presence `leave`(신규 join 멤버십 소실)와 `SessionRegistry::remove_session`의 `user_index`(신규 세션이 user 색인에서 누락) 두 곳 | `realtime/core/presence.rs`, `realtime/core/session_registry.rs` |
+| C5 | ☑ | "빈 집합이면 제거" 경쟁: empty 판정과 `remove` 사이에 다른 스레드가 추가하면 그 항목이 함께 소실. Presence `leave`(신규 join 멤버십 소실)와 `SessionRegistry::remove_session`의 `user_index`(신규 세션이 user 색인에서 누락) 두 곳 | `realtime/core/presence.rs`, `realtime/core/session_registry.rs` |
 | C8 | ☑ | 강제 종료(kick/replace)된 세션의 루프가 클라이언트가 닫을 때까지 계속 돈다 → Presence에선 지워졌지만 로컬 `active_room`으로 Hot 발행·재join 가능. 서버 측 종료 신호 필요 | `transport/ws.rs`, `realtime/core/session_registry.rs` |
 | C9 | ☑ | 세션 루프가 자기 응답을 자기 송신 큐에 `send().await` — 큐를 비우는 것도 같은 루프라 큐가 가득 차면(느린 클라이언트 + 브로드캐스트) **세션이 영구 정지**. idle 검사도 같은 루프라 동작 안 함 | `transport/ws.rs` |
 | C6 | ◐ | 경미: span guard를 await 너머로 유지, Ext `v` 미검증, ~~ping 이중 응답~~(C9에서 제거), 토큰버킷 소수 시간 버림 | 여러 곳 |
+
+#### C5 결정 기록
+
+- **재현**: 단위 스트레스 테스트(스레드 2~4개가 같은 룸/유저에서 join·leave 4만 회 반복)로 5/5 재현.
+  - leave가 순간적으로 빈 룸 집합을 지우면서 동시 join의 멤버십이 소실.
+  - `user_index`에서 같은 유저의 동시 삽입 세션이 소실.
+  - **테넌트 룸 카운터가 음수로 드리프트**(u64 wrap → 약 1.8e19). `max_rooms_total`을 쓰는 테넌트는 이후 **새 룸을 영구히 만들 수 없게 된다**.
+- **수정**:
+  - "비었으면 제거"를 `remove_if`로 원자화(`remove_from_set` 헬퍼). 삽입은 모두 `entry`(같은 샤드 쓰기 락)를 거치므로 두 연산이 직렬화된다.
+  - 룸 집합 *생성*(`Entry::Vacant`)과 *제거*(`remove_if` 성공) 시점에만 테넌트 룸 카운터를 증감. 기존 `contains_key` 선판단 제거.
+  - `max_rooms_total`은 CAS로 검사+증가를 한 번에 하여 **정확한 상한**이 됐다. (`tenant_room_cap_is_never_exceeded`는 수정 전에도 통과했으므로 과거 초과의 증거가 아니라 회귀 방지용.)
+  - 유저↔룸 색인은 해당 user+room 참조 카운트 엔트리를 잡은 채로 갱신(join·leave 모두). 마지막 세션이 나갈 때의 색인 제거와 새 join이 섞이지 않는다.
+  - 감소는 `checked_sub`로 0 아래로 내려가지 않게 한다.
+- **락 순서**: `user_room_refs` → (`room_to_users`, `user_to_rooms`), `room_to_sessions` → `tenant_room_counts`. 역순으로 잡는 경로 없음.
+- **여전히 best-effort**: `max_users_per_room`, `max_rooms_per_user` 검사는 색인을 잠그지 않고 읽는다. 정확하게 하려면 거버넌스 갱신을 라우팅보다 먼저 하고 실패 시 롤백해야 해서 보류.
+- **CAS 헬퍼**: `AtomicU64::fetch_update`는 Rust 1.99에서 deprecated(`try_update`로 개명). MSRV를 더 올리지 않으려고 `compare_exchange_weak` 루프(`cas_update`)를 직접 쓴다.
 
 #### C9 결정 기록
 
