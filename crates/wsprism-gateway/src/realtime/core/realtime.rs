@@ -226,6 +226,12 @@ impl RealtimeCtx {
         )
     }
 
+    /// True if this session has joined `room`.
+    pub fn is_in_room(&self, room: &str) -> bool {
+        let rk = self.room_key(room);
+        self.core.presence.is_member(&rk, self.session_key())
+    }
+
     pub fn leave_room(&self, room: &str) {
         let rk = self.room_key(room);
         self.core

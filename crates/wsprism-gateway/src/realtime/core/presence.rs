@@ -191,6 +191,13 @@ impl Presence {
         }
     }
 
+    /// True if `session_key` has joined `room_key`.
+    pub fn is_member(&self, room_key: &str, session_key: &str) -> bool {
+        self.session_to_rooms
+            .get(session_key)
+            .is_some_and(|rooms| rooms.contains(room_key))
+    }
+
     pub fn sessions_in(&self, room_key: &str) -> Vec<String> {
         self.room_to_sessions
             .get(room_key)

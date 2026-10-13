@@ -38,9 +38,15 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 | S6 | ☑ | **HandshakeDefender 교착**: DashMap 엔트리 guard를 쥔 채 `per_ip.len()` 호출 → 핸드셰이크 리미터를 켜면(`wsprism.yaml` 기본값) 첫 허용 연결에서 워커 스레드 영구 정지. 추가로 전역→IP 순서라 IP 하나가 전역 예산 고갈 가능, 무작위 축출이 공격자 버킷 리셋 | `transport/handshake.rs` |
 | S1 | ☑ | Hot Lane에 연결 단위 레이트리밋 미적용 (Text 분기에서만 검사) | `transport/ws.rs` |
 | S2 | ☑ | WS `max_message_size` 미설정(axum 기본 64MB) + `check_len`이 디코드 *후* 실행 → 대용량 JSON 파싱 DoS | `transport/ws.rs`, `transport/codec.rs` |
-| S3 | ☐ | `chat.send`가 발신자의 룸 멤버십을 검사하지 않음 | `services/chat.rs` |
+| S3 | ☑ | `chat.send`가 발신자의 룸 멤버십을 검사하지 않음 | `services/chat.rs` |
 | S4 | ☐ | 클라이언트 지정 `sid` 충돌 시 기존 세션 덮어쓰기 → 테넌트 카운터 누수, 기존 연결 고아화 | `realtime/core/session_registry.rs` |
 | S5 | ☑ | 핸드셰이크 거절 메트릭 라벨에 미검증 `tenant` 사용 → 라벨 카디널리티 폭발(메모리 DoS) | `transport/ws.rs` |
+
+#### S3 결정 기록
+
+- **수정**: `chat.send`는 발신 *세션*이 해당 룸에 join한 경우에만 발행하고, 아니면 `NOT_ALLOWED`. `Presence::is_member` / `RealtimeCtx::is_in_room` 추가.
+- **세션 단위 vs 유저 단위**: 세션 단위로 판정한다. 라우팅(Presence)이 세션 단위이고, 같은 유저의 다른 탭이 join했다고 이 탭이 그 룸에 말할 수 있게 하면 "받지 못하는 룸에 쓰기"가 가능해진다.
+- Hot Lane(echo)은 join 성공 시에만 설정되는 `active_room`으로만 발행하므로 별도 검사 불필요. 단, 강제 종료(kick)된 세션이 루프를 계속 도는 동안 로컬 `active_room`으로 발행할 수 있는 문제는 C8로 별도 추적.
 
 #### S5 결정 기록
 
@@ -87,6 +93,7 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 | C3 | ☐ | "에러를 큐에 넣고 `break`"하는 모든 경로에서 에러가 클라이언트에 도달하지 않음: `on_exceed: deny`(writer 루프 시작 전 큐잉), policy `Close`, 디코드 오류, idle 타임아웃(큐잉 직후 루프 탈출 → out 큐 미플러시). 인증 실패도 업그레이드 *후* 판정 | `transport/ws.rs` |
 | C4 | ☐ | `room:leave`가 active_room만 떠남 → 다른 룸 탈출 불가 | `transport/ws.rs` |
 | C5 | ☐ | Presence `leave`의 empty 판정과 `remove` 사이 경쟁 → 신규 join 멤버십 소실 | `realtime/core/presence.rs` |
+| C8 | ☐ | 강제 종료(kick/replace)된 세션의 루프가 클라이언트가 닫을 때까지 계속 돈다 → Presence에선 지워졌지만 로컬 `active_room`으로 Hot 발행·재join 가능. 서버 측 종료 신호 필요 | `transport/ws.rs`, `realtime/core/session_registry.rs` |
 | C6 | ☐ | 경미: span guard를 await 너머로 유지, Ext `v` 미검증, ping 이중 응답, 토큰버킷 소수 시간 버림 | 여러 곳 |
 
 ### Phase 3 — 구조 / 테스트

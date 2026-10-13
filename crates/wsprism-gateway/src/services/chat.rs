@@ -37,6 +37,13 @@ impl TextService for ChatService {
                     .clone()
                     .ok_or_else(|| WsPrismError::BadRequest("chat.send requires room".into()))?;
 
+                // S3: only members may publish into a room.
+                if !ctx.is_in_room(&room) {
+                    return Err(WsPrismError::NotAllowed(
+                        "chat.send requires joining the room first".into(),
+                    ));
+                }
+
                 let raw = env
                     .data
                     .as_ref()
@@ -57,7 +64,6 @@ impl TextService for ChatService {
                     })),
                 };
 
-                // ✅ room은 이미 있으니 그대로 사용
                 ctx.publish_room_reliable(&room, out).await
             }
             _ => Err(WsPrismError::BadRequest("unknown chat type".into())),
