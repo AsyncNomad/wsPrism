@@ -101,8 +101,8 @@ fn sys_joined_json(room: &str, trace_id: &str) -> String {
     json!({ "v": 1, "svc": "sys", "type": "joined", "room": room, "trace_id": trace_id })
         .to_string()
 }
-fn sys_left_json(trace_id: &str) -> String {
-    json!({ "v": 1, "svc": "sys", "type": "left", "trace_id": trace_id }).to_string()
+fn sys_left_json(room: &str, trace_id: &str) -> String {
+    json!({ "v": 1, "svc": "sys", "type": "left", "room": room, "trace_id": trace_id }).to_string()
 }
 
 /// RAII guard that tears down session and presence entries on exit.
@@ -557,11 +557,21 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
                             continue;
                         }
                         if env.svc == "room" && env.msg_type == "leave" {
-                            if let Some(room) = sess.active_room.take() {
-                                let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), session_key.clone(), trace_id.clone(), None, core.clone());
-                                ctx.leave_room(&room);
+                            // C4: leave the named room; without one, the active room.
+                            let target = env.room.clone().or_else(|| sess.active_room.clone());
+                            let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), session_key.clone(), trace_id.clone(), None, core.clone());
+                            match target {
+                                Some(room) if ctx.is_in_room(&room) => {
+                                    ctx.leave_room(&room);
+                                    if sess.active_room.as_deref() == Some(room.as_str()) {
+                                        sess.active_room = None;
+                                    }
+                                    reply!(Message::Text(sys_left_json(&room, &trace_id)));
+                                }
+                                _ => {
+                                    reply!(Message::Text(sys_error_json("BAD_REQUEST", "not a member of that room", &trace_id)));
+                                }
                             }
-                            reply!(Message::Text(sys_left_json(&trace_id)));
                             continue;
                         }
                         let ctx = RealtimeCtx::new(q.tenant.clone(), user_id.clone(), sid.clone(), session_key.clone(), trace_id.clone(), sess.active_room.clone(), core.clone());

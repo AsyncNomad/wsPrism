@@ -78,7 +78,15 @@ Gateway periodically pings; client must pong. Idle connections are closed.
 
 ---
 
-## 5) Rejections & close codes
+## 5) Rooms
+
+- `{"svc":"room","type":"join","room":"<id>"}` → `sys.joined` (`room`). The joined room becomes the session's **active room** (Hot Lane target).
+- `{"svc":"room","type":"leave","room":"<id>"}` → `sys.left` (`room`). Without `room`, leaves the active room. Leaving the active room clears it. Leaving a room the session hasn't joined → `sys.error BAD_REQUEST`.
+- `chat.send` requires the sending session to have joined the target room (`NOT_ALLOWED` otherwise).
+
+---
+
+## 6) Rejections & close codes
 
 Before the upgrade (plain HTTP responses):
 

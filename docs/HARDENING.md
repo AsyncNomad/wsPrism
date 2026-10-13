@@ -102,11 +102,18 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 | C1 | ☐ | Reliable 발행이 발신 세션 루프를 최대 timeout×1 동안 블로킹 (head-of-line). 발신자 자신도 룸 멤버라 **자기 큐**를 최대 1.5s 기다리는 경우 포함(C9의 유한 버전) | `services/chat.rs`, `realtime/core/realtime.rs` |
 | C2 | ☑ | kick_oldest 시 `ws_active_sessions` 게이지 이중 감소 | `transport/ws.rs` |
 | C3 | ☑ | "에러를 큐에 넣고 `break`"하는 모든 경로에서 에러가 클라이언트에 도달하지 않음: `on_exceed: deny`(writer 루프 시작 전 큐잉), policy `Close`, 디코드 오류, idle 타임아웃(큐잉 직후 루프 탈출 → out 큐 미플러시). 인증 실패도 업그레이드 *후* 판정 | `transport/ws.rs` |
-| C4 | ☐ | `room:leave`가 active_room만 떠남 → 다른 룸 탈출 불가 | `transport/ws.rs` |
+| C4 | ☑ | `room:leave`가 active_room만 떠남 → 다른 룸 탈출 불가 | `transport/ws.rs` |
 | C5 | ☑ | "빈 집합이면 제거" 경쟁: empty 판정과 `remove` 사이에 다른 스레드가 추가하면 그 항목이 함께 소실. Presence `leave`(신규 join 멤버십 소실)와 `SessionRegistry::remove_session`의 `user_index`(신규 세션이 user 색인에서 누락) 두 곳 | `realtime/core/presence.rs`, `realtime/core/session_registry.rs` |
 | C8 | ☑ | 강제 종료(kick/replace)된 세션의 루프가 클라이언트가 닫을 때까지 계속 돈다 → Presence에선 지워졌지만 로컬 `active_room`으로 Hot 발행·재join 가능. 서버 측 종료 신호 필요 | `transport/ws.rs`, `realtime/core/session_registry.rs` |
 | C9 | ☑ | 세션 루프가 자기 응답을 자기 송신 큐에 `send().await` — 큐를 비우는 것도 같은 루프라 큐가 가득 차면(느린 클라이언트 + 브로드캐스트) **세션이 영구 정지**. idle 검사도 같은 루프라 동작 안 함 | `transport/ws.rs` |
 | C6 | ◐ | 경미: span guard를 await 너머로 유지, Ext `v` 미검증, ~~ping 이중 응답~~(C9에서 제거), 토큰버킷 소수 시간 버림 | 여러 곳 |
+
+#### C4 결정 기록
+
+- **수정**: `room:leave`는 `room`이 있으면 그 룸을, 없으면 active room을 떠난다(기존 클라이언트 호환). 떠난 룸이 active room이면 active room을 비운다(다른 룸으로 자동 전환하지 않음 — Hot Lane 대상이 암묵적으로 바뀌는 것을 피하려고).
+- **응답**: `sys.left`에 `room` 필드 추가.
+- **동작 변화**: 가입하지 않은 룸(또는 active room이 없는데 `room` 생략)을 떠나려 하면 `sys.error BAD_REQUEST`. 이전엔 무조건 `sys.left`를 돌려줘 클라이언트 버그를 가렸다.
+- 테스트 주의: "한도 슬롯이 풀린다"만 보면 수정 전에도 통과한다(엉뚱한 active room이 빠져도 슬롯은 생김). 그래서 r2 멤버십이 유지되는지까지 확인한다.
 
 #### C5 결정 기록
 
