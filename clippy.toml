@@ -1,0 +1,7 @@
+# Types that must never be held across an `.await` (clippy::await_holding_invalid_type).
+await-holding-invalid-types = [
+  # A span guard held across .await attributes other tasks' events to this
+  # span on a multi-threaded runtime. Use `Instrument::instrument` instead.
+  { path = "tracing::span::Entered", reason = "use `.instrument(span)` for async code" },
+  { path = "tracing::span::EnteredSpan", reason = "use `.instrument(span)` for async code" },
+]

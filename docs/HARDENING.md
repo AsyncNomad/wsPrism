@@ -106,7 +106,13 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 | C5 | ☑ | "빈 집합이면 제거" 경쟁: empty 판정과 `remove` 사이에 다른 스레드가 추가하면 그 항목이 함께 소실. Presence `leave`(신규 join 멤버십 소실)와 `SessionRegistry::remove_session`의 `user_index`(신규 세션이 user 색인에서 누락) 두 곳 | `realtime/core/presence.rs`, `realtime/core/session_registry.rs` |
 | C8 | ☑ | 강제 종료(kick/replace)된 세션의 루프가 클라이언트가 닫을 때까지 계속 돈다 → Presence에선 지워졌지만 로컬 `active_room`으로 Hot 발행·재join 가능. 서버 측 종료 신호 필요 | `transport/ws.rs`, `realtime/core/session_registry.rs` |
 | C9 | ☑ | 세션 루프가 자기 응답을 자기 송신 큐에 `send().await` — 큐를 비우는 것도 같은 루프라 큐가 가득 차면(느린 클라이언트 + 브로드캐스트) **세션이 영구 정지**. idle 검사도 같은 루프라 동작 안 함 | `transport/ws.rs` |
-| C6 | ◐ | 경미: span guard를 await 너머로 유지, ~~Ext `v` 미검증~~(core `decode_envelope`), ~~ping 이중 응답~~(C9에서 제거), ~~토큰버킷 소수 시간 버림~~(이월 처리) | 여러 곳 |
+| C6 | ☑ | 경미: ~~span guard를 await 너머로 유지~~(`.instrument` + clippy.toml 금지), ~~Ext `v` 미검증~~(core `decode_envelope`), ~~ping 이중 응답~~(C9에서 제거), ~~토큰버킷 소수 시간 버림~~(이월 처리) | 여러 곳 |
+
+#### C6 결정 기록
+
+- **Ext 버전**: 검증을 core로 올렸다(`protocol::text::decode_envelope`, `EXT_PROTOCOL_VERSION`). Hot Lane과 같은 계층에서 프로토콜 계약을 강제하고, gateway codec은 이를 호출만 한다. v≠1 → `UNSUPPORTED_VERSION` + 1002.
+- **토큰버킷**: 토큰으로 바뀐 시간만 소비하고 나머지는 이월. 가득 찬 버킷은 추가 시간을 적립하지 않는다(표준 토큰버킷). 테스트 작성 중 "burst=1이면 10s에 95개"를 버그로 오인했으나, 상한에 닿아 있는 동안 적립하지 않는 것이 정의상 맞다 — 지속율 테스트는 burst=2로 상한 영향을 배제. 구 로직으로 돌려 2개 테스트가 실패함을 확인.
+- **Span**: `run_session` 안에서 `span.enter()` guard를 await 너머로 쥐던 것을, 업그레이드 클로저에서 span을 만들고 세션 future 전체를 `.instrument(span)`으로 감싸도록 변경. 재발 방지로 `clippy.toml`의 `await-holding-invalid-types`에 `tracing::span::Entered`/`EnteredSpan` 등록 → CI clippy가 차단(도입 시 기존 위반을 정확히 잡는 것 확인). 실제 바이너리 로그에 `ws{trace_id=.. t=.. u=.. s=..}` 필드가 붙음을 확인.
 
 #### C1 결정 기록
 

@@ -32,6 +32,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio::time::{timeout, Duration, Instant};
+use tracing::Instrument;
 use wsprism_core::error::{Result, WsPrismError};
 
 static NEXT_SID: AtomicU64 = AtomicU64::new(1);
@@ -226,10 +227,18 @@ pub async fn ws_upgrade(
         .inc(&[("tenant", &q.tenant), ("status", "ok")]);
     ws.max_message_size(max_frame_bytes)
         .max_frame_size(max_frame_bytes)
-        .on_upgrade(move |socket| async move {
-            if let Err(e) = run_session(app, q, user_id, socket).await {
-                tracing::error!("session error: {}", e);
+        .on_upgrade(move |socket| {
+            let sid = q.sid.clone().unwrap_or_else(gen_sid);
+            let trace_id = gen_trace();
+            // C6: instrument the whole session future instead of entering the
+            // span across awaits (clippy.toml bans holding span guards there).
+            let span = tracing::info_span!("ws", %trace_id, t=%q.tenant, u=%user_id, s=%sid);
+            async move {
+                if let Err(e) = run_session(app, q, user_id, sid, trace_id, socket).await {
+                    tracing::error!("session error: {}", e);
+                }
             }
+            .instrument(span)
         })
 }
 
@@ -323,7 +332,14 @@ async fn close_session(
     .await;
 }
 
-async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSocket) -> Result<()> {
+async fn run_session(
+    app: AppState,
+    q: WsQuery,
+    user_id: String,
+    sid: String,
+    trace_id: String,
+    socket: WebSocket,
+) -> Result<()> {
     let policy = app
         .tenant_policy(&q.tenant)
         .ok_or(WsPrismError::BadRequest("unknown tenant".into()))?;
@@ -335,8 +351,6 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
         .ok_or_else(|| WsPrismError::BadRequest("unknown tenant".into()))?;
     let gw = &app.cfg().gateway;
     let writer_timeout = Duration::from_millis(gw.writer_send_timeout_ms);
-    let sid = q.sid.unwrap_or_else(gen_sid);
-    let trace_id = gen_trace();
     let core = app.realtime();
     let dispatcher = app.dispatcher();
     let metrics = app.metrics();
@@ -346,8 +360,6 @@ async fn run_session(app: AppState, q: WsQuery, user_id: String, socket: WebSock
     // never be the registry/presence key, or two connections would alias.
     let conn_id = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let session_key = format!("{}::{}::{}#{:x}", q.tenant, user_id, sid, conn_id);
-    let span = tracing::info_span!("ws", %trace_id, t=%q.tenant, u=%user_id, s=%sid);
-    let _enter = span.enter();
     let (out_tx, mut out_rx) = mpsc::channel(gw.session_queue_capacity);
     let (ctl_tx, mut ctl_rx) = mpsc::channel::<CloseSpec>(1);
     let (mut ws_tx, mut ws_rx) = socket.split();
