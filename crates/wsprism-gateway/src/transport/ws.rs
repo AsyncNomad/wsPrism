@@ -128,7 +128,7 @@ pub async fn ws_upgrade(
     ws: WebSocketUpgrade,
     Query(q): Query<WsQuery>,
 ) -> impl IntoResponse {
-    if let Err(wait_secs) = app.handshake().check(addr.ip()).await {
+    if let Err(wait_secs) = app.handshake().check(addr.ip()) {
         app.metrics()
             .handshake_rejections
             .inc(&[("tenant", &q.tenant), ("reason", "rate_limit")]);

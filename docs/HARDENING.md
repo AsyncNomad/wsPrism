@@ -35,11 +35,24 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 
 | ID | 상태 | 내용 | 위치 |
 |---|---|---|---|
+| S6 | ☑ | **HandshakeDefender 교착**: DashMap 엔트리 guard를 쥔 채 `per_ip.len()` 호출 → 핸드셰이크 리미터를 켜면(`wsprism.yaml` 기본값) 첫 허용 연결에서 워커 스레드 영구 정지. 추가로 전역→IP 순서라 IP 하나가 전역 예산 고갈 가능, 무작위 축출이 공격자 버킷 리셋 | `transport/handshake.rs` |
 | S1 | ☑ | Hot Lane에 연결 단위 레이트리밋 미적용 (Text 분기에서만 검사) | `transport/ws.rs` |
 | S2 | ☑ | WS `max_message_size` 미설정(axum 기본 64MB) + `check_len`이 디코드 *후* 실행 → 대용량 JSON 파싱 DoS | `transport/ws.rs`, `transport/codec.rs` |
 | S3 | ☐ | `chat.send`가 발신자의 룸 멤버십을 검사하지 않음 | `services/chat.rs` |
 | S4 | ☐ | 클라이언트 지정 `sid` 충돌 시 기존 세션 덮어쓰기 → 테넌트 카운터 누수, 기존 연결 고아화 | `realtime/core/session_registry.rs` |
 | S5 | ☐ | 핸드셰이크 거절 메트릭 라벨에 미검증 `tenant` 사용 → 라벨 카디널리티 폭발(메모리 DoS) | `transport/ws.rs` |
+
+#### S6 결정 기록 (S5 재현 테스트 작성 중 발견)
+
+- **원인**: `entry(ip).or_insert_with(..)`가 돌려준 `RefMut`(샤드 쓰기 락)이 `self.per_ip.len()`(전 샤드 읽기 락) 호출 시점까지 살아 있었다. 같은 스레드의 자기 교착이며, async가 아닌 블로킹 락이라 tokio 워커 스레드 자체가 멈춘다. `tokio::Mutex`를 샤드 락 안에서 `.await`하는 것도 같은 위험이 있었다.
+- **수정**:
+  - `check()`를 동기 함수로 바꾸고 DashMap guard는 **한 표현식 안에서만** 쓴다. `if let` 조건식에 guard를 두지 않는다(edition 2021에서는 else 블록까지 살아 있음).
+  - 짧은 임계 구역이라 `tokio::Mutex` → `std::Mutex`. poison은 버킷이 단순 데이터이므로 `into_inner()`로 복구.
+  - 검사 순서 **IP → 전역**: 한 IP의 폭주가 자기 버킷에서 막혀 전역 예산을 소모하지 못한다(이전엔 IP 거절 전에 전역 토큰을 먼저 소비).
+  - 메모리 상한: `max_ip_entries` 하드캡. 캡에서 새 IP가 오면 (최대 초당 1회) *버킷이 가득 찬* 엔트리만 축출(새 엔트리와 구별 불가 → 무손실). 그래도 자리가 없으면 그 IP는 추적하지 않고 전역 버킷만 적용.
+  - 기각: 기존 무작위 10% 축출 — 공격자 엔트리가 지워지면 burst가 리셋되어 우회 가능.
+- **테스트 장치 변경**: 서버를 별도 OS 스레드·런타임에서 띄우고 핸드셰이크에 타임아웃을 건다. 서버가 멈추면 테스트가 *걸리는* 대신 *실패*한다.
+- **동일 패턴 감사**: `SessionRegistry`, `Presence`, `obs::metrics`의 DashMap 사용을 점검. guard는 문장 단위로 해제되거나 명시적 `drop` 후 재접근하며, 맵 간 락 순서 역전 경로도 없음.
 
 #### S1 결정 기록
 

@@ -40,21 +40,33 @@ pub struct Gateway {
 }
 
 /// Boot a gateway from YAML on 127.0.0.1:0.
+///
+/// The server runs on its own OS thread and multi-thread runtime, isolated
+/// from the test's (client) runtime. If the server deadlocks or blocks a
+/// worker, the client side still times out and the test *fails* instead of
+/// hanging forever.
 pub async fn spawn(yaml: &str) -> Gateway {
     let cfg = config::load_from_str(yaml).expect("test config must parse");
     let state = AppState::new(cfg).expect("app state");
     let app = router::build_router(state.clone());
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    listener.set_nonblocking(true).expect("nonblocking");
     let addr = listener.local_addr().expect("local addr");
-    tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .await
-        .expect("serve");
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("server runtime");
+        rt.block_on(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .expect("serve");
+        });
     });
     Gateway { addr, state }
 }
@@ -69,12 +81,28 @@ pub fn ws_url(addr: SocketAddr, tenant: &str, ticket: &str, sid: Option<&str>) -
 
 /// Connect and consume the `sys.authed` greeting.
 pub async fn connect(addr: SocketAddr, tenant: &str, sid: Option<&str>) -> Ws {
-    let (mut ws, _) = tokio_tungstenite::connect_async(ws_url(addr, tenant, "dev", sid))
+    let (mut ws, _) = try_connect_url(&ws_url(addr, tenant, "dev", sid))
         .await
         .expect("ws connect");
     match next_event(&mut ws).await {
         Event::Json(v) if v["svc"] == "sys" && v["type"] == "authed" => ws,
         other => panic!("expected sys.authed, got {other:?}"),
+    }
+}
+
+/// Attempt a WS handshake, bounded by `WAIT` (a hung server fails the test).
+pub async fn try_connect_url(
+    url: &str,
+) -> Result<
+    (
+        Ws,
+        tokio_tungstenite::tungstenite::handshake::client::Response,
+    ),
+    String,
+> {
+    match tokio::time::timeout(WAIT, tokio_tungstenite::connect_async(url)).await {
+        Err(_) => Err("handshake timed out (server hung?)".into()),
+        Ok(r) => r.map_err(|e| e.to_string()),
     }
 }
 
