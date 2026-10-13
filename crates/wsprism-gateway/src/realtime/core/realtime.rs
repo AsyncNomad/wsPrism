@@ -35,6 +35,12 @@ pub struct RealtimeCore {
     pub presence: Arc<Presence>,
 }
 
+impl Default for RealtimeCore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RealtimeCore {
     /// Create a new realtime core with fresh registries.
     pub fn new() -> Self {

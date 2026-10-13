@@ -15,6 +15,12 @@
 //! The gateway is designed for panic-free operation: upstream errors surface as
 //! structured `WsPrismError` responses instead of crashing the process.
 //! This crate is consumed by the binary (`main.rs`) and by integration tests.
+//! Like `wsprism-core`, panics/`unwrap`/`expect` are denied in library code
+//! (enforced by `cargo clippy` in CI). The binary entrypoint is exempt.
+
+#![deny(clippy::unwrap_used)]
+#![deny(clippy::expect_used)]
+#![deny(clippy::panic)]
 
 pub mod app_state;
 pub mod config;

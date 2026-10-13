@@ -92,9 +92,7 @@ impl HandshakeDefender {
         // 1) Global
         {
             let mut g = self.global.lock().await;
-            if let Err(ra) = g.try_take(1) {
-                return Err(ra);
-            }
+            g.try_take(1)?;
         }
 
         // 2) Per-IP
@@ -103,9 +101,7 @@ impl HandshakeDefender {
         });
         {
             let mut b = entry.value().lock().await;
-            if let Err(ra) = b.try_take(1) {
-                return Err(ra);
-            }
+            b.try_take(1)?;
         }
 
         // Best-effort size control (Lazy Cleanup)
@@ -130,7 +126,7 @@ impl HandshakeDefender {
                         .duration_since(UNIX_EPOCH)
                         .unwrap_or_default()
                         .subsec_nanos();
-                    n % 10 != 0 // Drop ~10%
+                    !n.is_multiple_of(10) // Drop ~10%
                 });
                 tracing::warn!(len = self.per_ip.len(), "handshake defender ip map trimmed");
             }
@@ -140,8 +136,7 @@ impl HandshakeDefender {
     }
 }
 
-/// Helper: format Retry-After duration.
-pub fn retry_after_header_secs(secs: u64) -> (String, u64) {
-    let s = secs.max(1);
-    (s.to_string(), s)
+/// Helper: build a `Retry-After` header value (seconds, min 1).
+pub fn retry_after_header(secs: u64) -> axum::http::HeaderValue {
+    axum::http::HeaderValue::from(secs.max(1))
 }

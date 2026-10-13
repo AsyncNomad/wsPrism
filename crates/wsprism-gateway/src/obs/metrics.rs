@@ -144,7 +144,7 @@ impl HistogramVec {
             .collect();
         key.sort();
 
-        let hist = self.map.entry(key).or_insert_with(AtomicHistogram::default);
+        let hist = self.map.entry(key).or_default();
         let micros = duration.as_micros() as u64;
 
         hist.count.fetch_add(1, Ordering::Relaxed);

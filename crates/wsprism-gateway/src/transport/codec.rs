@@ -33,7 +33,7 @@ pub enum Inbound {
 pub fn decode(msg: Message) -> Result<Inbound> {
     match msg {
         Message::Text(s) => {
-            let bytes_len = s.as_bytes().len();
+            let bytes_len = s.len();
             let env: text::Envelope = serde_json::from_str(&s)
                 .map_err(|e| WsPrismError::BadRequest(format!("invalid envelope json: {e}")))?;
             Ok(Inbound::Text { env, bytes_len })

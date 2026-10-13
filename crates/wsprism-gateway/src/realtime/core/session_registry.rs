@@ -76,18 +76,16 @@ impl SessionRegistry {
         counter.fetch_add(1, Ordering::Relaxed);
 
         // Check again (race condition mitigation) - Optional but safer
-        if max_total > 0 {
-            if counter.load(Ordering::Relaxed) > max_total {
-                counter.fetch_sub(1, Ordering::Relaxed);
-                return Err(WsPrismError::ResourceExhausted(
-                    "tenant session limit reached (race)".into(),
-                ));
-            }
+        if max_total > 0 && counter.load(Ordering::Relaxed) > max_total {
+            counter.fetch_sub(1, Ordering::Relaxed);
+            return Err(WsPrismError::ResourceExhausted(
+                "tenant session limit reached (race)".into(),
+            ));
         }
 
         self.user_index
             .entry(user_key)
-            .or_insert_with(DashSet::new)
+            .or_default()
             .insert(session_key.clone());
 
         let created_seq = self.seq.fetch_add(1, Ordering::Relaxed);

@@ -12,7 +12,7 @@ use crate::realtime::core::Connection;
 use crate::realtime::RealtimeCore;
 use crate::realtime::RealtimeCtx;
 use crate::transport::codec::{decode, Inbound};
-use crate::transport::handshake::retry_after_header_secs;
+use crate::transport::handshake::retry_after_header;
 use axum::{
     extract::{
         connect_info::ConnectInfo, ws::CloseFrame, ws::Message, ws::WebSocket,
@@ -115,9 +115,8 @@ pub async fn ws_upgrade(
         app.metrics()
             .handshake_rejections
             .inc(&[("tenant", &q.tenant), ("reason", "rate_limit")]);
-        let (val, _) = retry_after_header_secs(wait_secs);
         let mut headers = HeaderMap::new();
-        headers.insert(RETRY_AFTER, val.parse().unwrap());
+        headers.insert(RETRY_AFTER, retry_after_header(wait_secs));
         return (StatusCode::TOO_MANY_REQUESTS, headers, "Too Many Requests").into_response();
     }
     if app.is_draining() {
@@ -132,7 +131,7 @@ pub async fn ws_upgrade(
                     .handshake_rejections
                     .inc(&[("tenant", &q.tenant), ("reason", "tenant_capacity")]);
                 let mut headers = HeaderMap::new();
-                headers.insert(RETRY_AFTER, "1".parse().unwrap());
+                headers.insert(RETRY_AFTER, retry_after_header(1));
                 return (
                     StatusCode::SERVICE_UNAVAILABLE,
                     headers,
@@ -210,7 +209,12 @@ async fn run_session(app: AppState, q: WsQuery, socket: WebSocket) -> Result<()>
         }
     }
 
-    let t_cfg = app.cfg().tenants.iter().find(|t| t.id == q.tenant).unwrap();
+    let t_cfg = app
+        .cfg()
+        .tenants
+        .iter()
+        .find(|t| t.id == q.tenant)
+        .ok_or_else(|| WsPrismError::BadRequest("unknown tenant".into()))?;
     core.sessions.try_insert(
         q.tenant.clone(),
         user_key.clone(),

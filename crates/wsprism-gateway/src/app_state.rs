@@ -159,7 +159,7 @@ impl AppState {
 
     /// Enter draining mode (idempotent).
     pub fn enter_draining(&self) {
-        let _ = self.metrics.set_draining();
+        self.metrics.set_draining();
     }
 
     /// Extra counters that are owned by other modules (egress drop/timeouts).

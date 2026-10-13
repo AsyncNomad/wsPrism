@@ -8,18 +8,13 @@ use wsprism_core::error::{Result, WsPrismError};
 ///
 /// Chooses between latency-first (drop on backpressure) and reliability-first
 /// (await with optional timeout) behavior.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub enum QoS {
     /// Latency-critical: do not await; if the user's queue is full, drop.
+    #[default]
     Lossy,
     /// Reliability-critical: attempt delivery and optionally time out.
     Reliable { timeout_ms: u64 },
-}
-
-impl Default for QoS {
-    fn default() -> Self {
-        QoS::Lossy
-    }
 }
 
 /// Outgoing payload variants.
