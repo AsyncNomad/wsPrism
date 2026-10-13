@@ -111,16 +111,23 @@ struct SessionCleanup {
 }
 impl Drop for SessionCleanup {
     fn drop(&mut self) {
-        let _ = self
+        // C2: whoever removes the registry entry owns the gauge decrement.
+        // If this session was already evicted (kick), the evictor did it.
+        let removed = self
             .core
             .sessions
-            .remove_session(&self.user_key, &self.session_key);
+            .remove_session(&self.user_key, &self.session_key)
+            .is_some();
+        // Presence cleanup is unconditional: an evicted session may have
+        // re-joined rooms before its loop ended.
         self.core
             .presence
             .cleanup_session(&self.tenant_id, &self.user_key, &self.session_key);
-        self.metrics
-            .ws_active_sessions
-            .dec(&[("tenant", &self.tenant_id)]);
+        if removed {
+            self.metrics
+                .ws_active_sessions
+                .dec(&[("tenant", &self.tenant_id)]);
+        }
         tracing::debug!(s=%self.session_key, "session raii cleanup done");
     }
 }

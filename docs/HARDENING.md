@@ -89,12 +89,18 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 | ID | 상태 | 내용 | 위치 |
 |---|---|---|---|
 | C1 | ☐ | Reliable 발행이 발신 세션 루프를 최대 timeout×1 동안 블로킹 (head-of-line) | `services/chat.rs`, `realtime/core/realtime.rs` |
-| C2 | ☐ | kick_oldest 시 `ws_active_sessions` 게이지 이중 감소 | `transport/ws.rs` |
+| C2 | ☑ | kick_oldest 시 `ws_active_sessions` 게이지 이중 감소 | `transport/ws.rs` |
 | C3 | ☐ | "에러를 큐에 넣고 `break`"하는 모든 경로에서 에러가 클라이언트에 도달하지 않음: `on_exceed: deny`(writer 루프 시작 전 큐잉), policy `Close`, 디코드 오류, idle 타임아웃(큐잉 직후 루프 탈출 → out 큐 미플러시). 인증 실패도 업그레이드 *후* 판정 | `transport/ws.rs` |
 | C4 | ☐ | `room:leave`가 active_room만 떠남 → 다른 룸 탈출 불가 | `transport/ws.rs` |
 | C5 | ☐ | Presence `leave`의 empty 판정과 `remove` 사이 경쟁 → 신규 join 멤버십 소실 | `realtime/core/presence.rs` |
 | C8 | ☐ | 강제 종료(kick/replace)된 세션의 루프가 클라이언트가 닫을 때까지 계속 돈다 → Presence에선 지워졌지만 로컬 `active_room`으로 Hot 발행·재join 가능. 서버 측 종료 신호 필요 | `transport/ws.rs`, `realtime/core/session_registry.rs` |
 | C6 | ☐ | 경미: span guard를 await 너머로 유지, Ext `v` 미검증, ping 이중 응답, 토큰버킷 소수 시간 버림 | 여러 곳 |
+
+#### C2 결정 기록
+
+- **원칙**: 레지스트리에서 세션 항목을 *실제로 제거한 쪽*이 게이지를 1 감소시킨다. kick 경로가 이미 제거·감소했으면 피해 세션의 RAII 정리(`SessionCleanup::drop`)는 `remove_session`이 `None`을 돌려주므로 감소하지 않는다.
+- Presence 정리는 계속 무조건 수행한다. kick된 세션이 루프 종료 전에 다시 join했을 수 있기 때문(C8).
+- 테스트 주의: 버그가 있어도 kick 직후엔 게이지가 1로 보인다. 이중 감소는 피해 세션의 정리가 돈 *뒤에* 일어나므로 테스트는 정리 시간을 기다린 후 판정한다.
 
 ### Phase 3 — 구조 / 테스트
 
