@@ -23,14 +23,14 @@ cargo build --release -p wsprism-loadgen
 
 | 관문 | 상태 | 근거 (결과 파일) |
 |---|---|---|
-| G1 체감 성능 | ⏸ 보류 — 측정 결함(위상 고정·버스트 무효), 재측정 대기 | `v-judgment.jsonl`(결함 있음), BENCHMARKS 「측정 결함」 |
+| G1 체감 성능 | ❌ 사전 등록 기준 실패(단절 조건) / 균등 손실은 크게 통과 — 판정 방식 사용자 결정 대기 | `v2-judgment.jsonl`, BENCHMARKS 「G1 재측정 (v2)」 |
 | G2 호환성 | ⏳ 미측정 — 사용자 필요 | — |
 | G3 안정성 | ✅ 통과 | `v-soak*.{jsonl,log}` |
 | G4 폴백 | ✅ 통과 | `v-fallback.jsonl` |
 | G5 비용 | ❌ 실패 (메모리 2.6~2.9×, CPU는 틱 묶음 시 1.76×) — 오프로드 켠 조건 재측정 대기 | `v-mem-*`, `v-lean`, `v-cpu-scale` |
 | V6 MoQ | ✅ 완료 — MoQ 위 구축 기각 (ADR 0004 개정 3) | `moq-*.jsonl`, `moq-reconnect-*.log` |
 
-G1 재측정 전까지 분기 미정. G1이 유지되면 **"G5만 실패 → 하이브리드"**.
+분기 미정: G1 판정 방식(단절 바닥값 인정 여부)을 사용자가 정해야 한다. 실패로 보면 "G1·G5 모두 실패", 인정하면 "G5만 실패 → 하이브리드".
 
 ## 실험 재개 방법
 
@@ -66,8 +66,8 @@ bench/run-moq.sh moq-judgment 3
 ## 4차 리뷰 후 순서 (사용자 승인 2026-10-14)
 
 1. **측정 수정 → G1·G5 재판정** (아래 R 체크리스트)
-2. 경쟁 게이트웨이(Centrifugo, Sockudo)와 WebSocket 경로 직접 비교 (netlab 안)
-3. 서버 피어 멤버 지정 송신을 설계 §4.6에 반영 (T0 경계 요건)
+2. 경쟁 게이트웨이(Centrifugo, Sockudo)와 WebSocket 경로 직접 비교 (netlab 안) — 도구 완료(`bench/run-compete.sh`, `bench/analyze-compete.py`), 스모크 완료(`compete-smoke.jsonl`), 본 측정·포화 측정 남음
+3. ✅ 서버 피어 멤버 지정 송신을 설계 §4.6에 반영 (T0 경계 요건)
 4. G2 브라우저 실증 (사용자 필요)
 5. 수요 확인은 사용자 판단 영역
 
@@ -78,7 +78,7 @@ bench/run-moq.sh moq-judgment 3
 - [x] R-3 netlab `--outage MEAN_PERIOD_MS:LEN_MS`(양방향 동시 단절, `NETLAB_SEED`) + run-v.sh 손실 조건 `outage:<period>:<len>:<delay>`
 - [x] R-4 netlab `NETLAB_OFFLOAD=on` (손실 없는 비용 측정 전용)
 - [x] R-5 스모크(`v2-smoke.jsonl`, n=1, 틱 0): 손실 0% AoI p50 49.4 / p99 57.8(계단 사라짐). 균등 1% 초과 AoI WT 9.8 vs WSS 53.8(5.5×), 단절 1000:50 초과 2.4×(기준 미달)·끊김 3.1% vs 13.2%
-- [ ] R-6 판정 칸 재측정: 손실 {없음, 균등 1%, 단절 1000:50, 단절 5000:250} × 틱 {0, 60, 30} × {ws, wss, wt} × 3회, 측정 20초 → `v2-judgment.jsonl` (108회, 약 1시간, 재개 가능):
+- [x] R-6 판정 칸 재측정: 손실 {없음, 균등 1%, 단절 1000:50, 단절 5000:250} × 틱 {0, 60, 30} × {ws, wss, wt} × 3회, 측정 20초 → `v2-judgment.jsonl` (108회, 약 1시간, 재개 가능):
   ```bash
   bench/run-v.sh v2-judgment 3 "none:20 uniform:1:20 outage:1000:50:20 outage:5000:250:20" "0 60 30" "ws wss wt" \
     "--rooms 10 --room-size 10 --rate 60 --sample-hz 60 --warmup 3 --duration 20"
@@ -88,6 +88,8 @@ bench/run-moq.sh moq-judgment 3
 - [ ] R-8 G1·G5 재판정 → BENCHMARKS·ADR 0004·이 문서 갱신
 
 ## 열린 항목
+
+- **wsPrism Hot 레인 p99가 Ext보다 나쁨**(compete 스모크: 1.60 vs 0.79 ms, 180k 전달/s) — 손실 허용 경로의 큐·플러시 방식 조사 필요.
 
 - **WT 연결 꼬리**: UDP가 열려 있어도 100명 동시 접속 시 연결 p99 약 1.13초(초기 패킷 손실 + 약 1초 PTO 추정, 가설: 서버 UDP 수신 버퍼). 폴백 예산 1.5초에 가까움 → T 과제.
 - **소크 끊김 비율 6.5%**: 판정 칸보다 큼. 부하 생성기 포화 추정, 미검증.
