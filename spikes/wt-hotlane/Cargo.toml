@@ -1,0 +1,19 @@
+[package]
+name = "wt-hotlane-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "THROWAWAY validation spike (ADR 0004, design §7): one relay, three transports"
+
+# Not part of the product workspace (see ROADMAP: spike code is thrown away).
+[workspace]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.24"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+wtransport = "0.7"
+futures-util = "0.3"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
