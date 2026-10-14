@@ -7,6 +7,7 @@
 
 mod cost;
 mod gateway;
+mod schedule;
 mod statesync;
 
 use clap::{Parser, Subcommand};

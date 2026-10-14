@@ -19,3 +19,5 @@ tokio-tungstenite = "0.24"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 wtransport = { version = "0.7", features = ["dangerous-configuration"] }
+# gateway --target pusher: private-channel auth signatures (HMAC-SHA256)
+ring = "0.17"

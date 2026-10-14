@@ -1,12 +1,16 @@
-//! Gateway fan-out benchmark (wsPrism protocol over WebSocket).
+//! Gateway fan-out benchmark over WebSocket, for wsPrism and competing
+//! gateways (Centrifugo, Pusher-protocol servers such as Sockudo).
 //!
-//! Opens `--conns` WebSocket connections, puts them in `--rooms` rooms, lets
+//! Opens `--conns` connections, puts them in `--rooms` rooms, lets
 //! `--publishers` of them send timestamped probes at `--rate`/s, and reports
-//! end-to-end latency percentiles, throughput and delivery ratio.
-//! See `docs/BENCHMARKS.md` for the gateway config and methodology.
+//! end-to-end latency percentiles, throughput, delivery ratio and — with
+//! `--server-pid` — server CPU per delivered message and RSS per connection.
+//! Only the wire protocol differs per gateway (`protocol/`); the scenario,
+//! timing and report are shared. See `docs/BENCHMARKS.md`.
 
 mod client;
 mod probe;
+mod protocol;
 mod report;
 mod scenario;
 
@@ -16,25 +20,54 @@ use std::time::Duration;
 use tokio::sync::Semaphore;
 use tokio::time::Instant;
 
+use crate::cost;
+use crate::schedule::Schedule;
+use protocol::{Centrifugo, Protocol, Pusher, Wsprism};
 pub use scenario::Args;
+use scenario::Target;
 
 /// Extra time receivers keep reading after publishing stops.
 const GRACE: Duration = Duration::from_secs(2);
 
-/// Run the gateway fan-out benchmark.
+/// Run the gateway fan-out benchmark against `args.target`.
 pub async fn run(args: Args) {
+    let url = args.url.clone();
+    match args.target {
+        Target::Wsprism => {
+            let p = Wsprism {
+                url,
+                tenant: args.tenant.clone(),
+                ticket: args.ticket.clone(),
+                lane: args.lane,
+            };
+            run_with(Arc::new(p), args).await
+        }
+        Target::Centrifugo => run_with(Arc::new(Centrifugo { url }), args).await,
+        Target::Pusher => {
+            let p = Pusher {
+                url,
+                key: args.app_key.clone(),
+                secret: args.app_secret.clone(),
+            };
+            run_with(Arc::new(p), args).await
+        }
+    }
+}
+
+async fn run_with<P: Protocol>(proto: Arc<P>, args: Args) {
     let args = Arc::new(args);
     probe::now_nanos(); // pin the epoch before any probe is sent
+    let rss_before = args.server_pid.and_then(cost::sample).map(|s| s.rss_kb);
 
     // Ramp up: connect + join with bounded concurrency.
     let ramp = Instant::now();
     let gate = Arc::new(Semaphore::new(args.connect_concurrency.max(1)));
     let mut setups = Vec::with_capacity(args.conns);
     for conn in 0..args.conns {
-        let (args, gate) = (args.clone(), gate.clone());
+        let (args, gate, proto) = (args.clone(), gate.clone(), proto.clone());
         setups.push(tokio::spawn(async move {
             let _permit = gate.acquire_owned().await.ok()?;
-            match client::setup(&args.ws_url(conn), &args.ticket, &args.room_of(conn)).await {
+            match proto.setup(conn, &args.room_of(conn)).await {
                 Ok(ws) => Some(ws),
                 Err(e) => {
                     eprintln!("conn {conn}: {e}");
@@ -67,18 +100,35 @@ pub async fn run(args: Args) {
         room_sizes[conn % rooms] += 1;
     }
 
-    // Measure: everyone starts publishing at the same instant.
+    // Measure: publishers start within one send period of `start`, at
+    // per-connection phases (unless --phase aligned).
     let start = Instant::now() + Duration::from_millis(500);
     let end = start + args.duration();
+    let period = Duration::from_nanos(1_000_000_000 / args.rate.max(1));
+    let cost_at = |at: Instant| {
+        let pid = args.server_pid;
+        tokio::spawn(async move {
+            tokio::time::sleep_until(at).await;
+            pid.and_then(cost::sample)
+        })
+    };
+    // Until the end of the grace period: deliveries are counted until then too.
+    let (cost_start, cost_end) = (cost_at(start), cost_at(end + GRACE));
     let mut runs = Vec::with_capacity(conns.len());
     for (conn, ws) in conns.into_iter().enumerate() {
-        let publish = args.is_publisher(conn).then_some((args.rate, args.payload));
+        let me = u32::try_from(conn).expect("conn index fits u32");
+        let publish = args.is_publisher(conn).then(|| client::Publish {
+            first_at: Schedule::new(args.phase, args.seed, me, (start, period), (start, period))
+                .send_start,
+            rate: args.rate,
+            payload: args.payload,
+        });
         runs.push(tokio::spawn(client::run(
+            proto.clone(),
             ws,
-            args.lane,
+            me,
             args.room_of(conn),
             publish,
-            start,
             end,
             GRACE,
         )));
@@ -89,8 +139,13 @@ pub async fn run(args: Args) {
             stats.push(s);
         }
     }
+    let cost = report::Cost {
+        rss_before_kb: rss_before,
+        start: cost_start.await.ok().flatten(),
+        end: cost_end.await.ok().flatten(),
+    };
 
-    let report = report::Report::aggregate(&args, stats, &room_sizes);
+    let report = report::Report::aggregate(&args, stats, &room_sizes, cost);
     if args.json {
         report.print_json(&args);
     } else {

@@ -4,7 +4,18 @@ use std::time::Duration;
 
 use clap::ValueEnum;
 
-/// Which protocol lane the publishers use.
+use crate::schedule::Phase;
+
+/// Which gateway (wire protocol) to drive. See `protocol/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum Target {
+    Wsprism,
+    Centrifugo,
+    /// Pusher protocol 7 (Sockudo).
+    Pusher,
+}
+
+/// Which protocol lane the publishers use (wsPrism only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum Lane {
     /// Binary Hot Lane frames to the echo service (lossy room fan-out).
@@ -15,7 +26,9 @@ pub enum Lane {
 
 #[derive(Debug, clap::Args)]
 pub struct Args {
-    /// Gateway base URL.
+    #[arg(long, value_enum, default_value_t = Target::Wsprism)]
+    pub target: Target,
+    /// Gateway base URL (the protocol adds its own path).
     #[arg(long, default_value = "ws://127.0.0.1:8080")]
     pub url: String,
     #[arg(long, default_value = "bench")]
@@ -42,6 +55,22 @@ pub struct Args {
     pub payload: usize,
     #[arg(long, value_enum, default_value_t = Lane::Hot)]
     pub lane: Lane,
+    /// Pusher app key / secret (`--target pusher`).
+    #[arg(long, default_value = "app-key")]
+    pub app_key: String,
+    #[arg(long, default_value = "app-secret")]
+    pub app_secret: String,
+    /// Publisher start phases (see schedule.rs).
+    #[arg(long, value_enum, default_value_t = Phase::Random)]
+    pub phase: Phase,
+    #[arg(long, default_value_t = 1)]
+    pub seed: u64,
+    /// Server process to sample CPU/RSS from.
+    #[arg(long)]
+    pub server_pid: Option<u32>,
+    /// Free-form label copied into the JSON output.
+    #[arg(long, default_value = "")]
+    pub label: String,
     /// Concurrent handshakes while ramping up.
     #[arg(long, default_value_t = 200)]
     pub connect_concurrency: usize,
@@ -63,13 +92,5 @@ impl Args {
     /// round-robin like everyone else.
     pub fn is_publisher(&self, conn: usize) -> bool {
         conn < self.publishers
-    }
-
-    pub fn ws_url(&self, conn: usize) -> String {
-        format!(
-            "{}/v1/ws?tenant={}&sid=c{conn}",
-            self.url.trim_end_matches('/'),
-            self.tenant
-        )
     }
 }

@@ -8,7 +8,6 @@
 //! and cost come from the **same run and configuration** (G1/G5).
 
 mod aoi;
-mod schedule;
 mod transport;
 mod wire;
 
@@ -20,8 +19,8 @@ use tokio::sync::Semaphore;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
 
 use crate::cost;
+use crate::schedule::{Phase, Schedule};
 use aoi::{new_hist, Aoi};
-use schedule::{Phase, Schedule};
 use transport::Transport;
 
 #[derive(Debug, clap::Args)]

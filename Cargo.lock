@@ -2463,6 +2463,7 @@ dependencies = [
  "clap",
  "futures-util",
  "hdrhistogram",
+ "ring",
  "rustls",
  "serde_json",
  "tokio",
