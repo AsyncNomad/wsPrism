@@ -13,7 +13,10 @@ use crate::dispatch::Dispatcher;
 use crate::obs::metrics::GatewayMetrics;
 use crate::realtime::RealtimeCore;
 use crate::services::{ChatService, EchoBinaryService};
-use crate::{config::GatewayConfig, policy};
+use crate::{
+    config::{GatewayConfig, TenantConfig},
+    policy,
+};
 // Sprint 5
 use crate::transport::handshake::HandshakeDefender;
 
@@ -34,6 +37,8 @@ pub struct AppState {
 struct AppStateInner {
     cfg: GatewayConfig,
     tenant_policy: HashMap<String, Arc<policy::TenantPolicyRuntime>>,
+    /// tenant id -> index into `cfg.tenants` (O(1) lookup per upgrade).
+    tenant_index: HashMap<String, usize>,
 }
 
 impl AppState {
@@ -114,7 +119,16 @@ impl AppState {
         }
 
         Ok(Self {
-            inner: Arc::new(AppStateInner { cfg, tenant_policy }),
+            inner: Arc::new(AppStateInner {
+                tenant_index: cfg
+                    .tenants
+                    .iter()
+                    .enumerate()
+                    .map(|(i, t)| (t.id.clone(), i))
+                    .collect(),
+                cfg,
+                tenant_policy,
+            }),
             realtime,
             dispatcher: Arc::new(dispatcher),
             metrics,
@@ -124,6 +138,12 @@ impl AppState {
 
     pub fn cfg(&self) -> &GatewayConfig {
         &self.inner.cfg
+    }
+
+    /// Configuration of a tenant by id.
+    pub fn tenant(&self, tenant_id: &str) -> Option<&TenantConfig> {
+        let i = *self.inner.tenant_index.get(tenant_id)?;
+        self.inner.cfg.tenants.get(i)
     }
 
     pub fn tenant_policy(&self, tenant_id: &str) -> Option<Arc<policy::TenantPolicyRuntime>> {

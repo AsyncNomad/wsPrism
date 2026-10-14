@@ -167,7 +167,7 @@ pub async fn ws_upgrade(
     ws: WebSocketUpgrade,
     Query(q): Query<WsQuery>,
 ) -> impl IntoResponse {
-    let t_cfg = app.cfg().tenants.iter().find(|t| t.id == q.tenant);
+    let t_cfg = app.tenant(&q.tenant);
     // S5: metric labels must come from config, never from the raw query.
     let tenant_label = t_cfg.map_or(UNKNOWN_TENANT_LABEL, |t| t.id.as_str());
 
@@ -344,10 +344,7 @@ async fn run_session(
         .tenant_policy(&q.tenant)
         .ok_or(WsPrismError::BadRequest("unknown tenant".into()))?;
     let t_cfg = app
-        .cfg()
-        .tenants
-        .iter()
-        .find(|t| t.id == q.tenant)
+        .tenant(&q.tenant)
         .ok_or_else(|| WsPrismError::BadRequest("unknown tenant".into()))?;
     let gw = &app.cfg().gateway;
     let writer_timeout = Duration::from_millis(gw.writer_send_timeout_ms);
