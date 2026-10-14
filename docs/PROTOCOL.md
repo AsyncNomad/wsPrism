@@ -65,6 +65,18 @@ Server (on success):
 
 `data` is stored as RawValue in the core and parsed by services.
 
+### Request correlation
+
+If a request carries `seq`, every response the gateway or a service sends
+**while handling that request** (success like `sys.joined`, or `sys.error`,
+including a policy close notice) includes `"reply_to": <seq>`. Responses to
+requests without `seq` have no `reply_to`. Server-initiated messages (room
+broadcasts, idle timeout, kicks) never carry `reply_to`. Hot Lane frames with
+`SEQ_PRESENT` are correlated the same way (their `sys.error` replies carry the
+frame's `seq`).
+
+Services answer via `RealtimeCtx::reply`, which adds `reply_to` automatically.
+
 ---
 
 ## 3) Hot Lane: Binary Frame

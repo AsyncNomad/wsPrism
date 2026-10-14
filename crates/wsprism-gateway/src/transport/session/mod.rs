@@ -20,6 +20,7 @@ use std::sync::Arc;
 use axum::extract::ws::{Message, WebSocket};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
+use serde_json::Value;
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio::time::{timeout, Duration, Instant};
 use wsprism_core::error::{ClientCode, Result, WsPrismError};
@@ -152,7 +153,7 @@ impl Session {
             return Flow::Break(Exit::Close(CloseSpec::new(
                 close_code::NORMAL,
                 "idle_timeout",
-                Some(sys::error(ClientCode::Timeout, "idle", self.trace_id())),
+                Some(sys::error(ClientCode::Timeout, "idle", self.trace_id()).to_string()),
             )));
         }
         Flow::Continue(())
@@ -162,7 +163,9 @@ impl Session {
     /// loop is the queue's only consumer, so awaiting a full queue would
     /// freeze the session forever. A full queue means the client can't keep up
     /// with its own replies plus broadcasts, so it is closed as a slow consumer.
-    fn reply(&self, text: String) -> Flow {
+    /// Correlated with the request being handled, if it carried a `seq`.
+    fn reply(&self, msg: Value) -> Flow {
+        let text = sys::reply_to(msg, self.ctx.request_seq()).to_string();
         match self.out_tx.try_send(OutFrame::text(text)) {
             Ok(()) => Flow::Continue(()),
             Err(TrySendError::Full(_)) => {
@@ -170,11 +173,14 @@ impl Session {
                 Flow::Break(Exit::Close(CloseSpec::new(
                     close_code::POLICY,
                     "slow_consumer",
-                    Some(sys::error(
-                        ClientCode::SlowConsumer,
-                        "outbound queue full",
-                        self.trace_id(),
-                    )),
+                    Some(
+                        sys::error(
+                            ClientCode::SlowConsumer,
+                            "outbound queue full",
+                            self.trace_id(),
+                        )
+                        .to_string(),
+                    ),
                 )))
             }
             Err(TrySendError::Closed(_)) => Flow::Break(Exit::Abort),

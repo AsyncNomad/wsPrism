@@ -6,7 +6,7 @@ use wsprism_core::error::{Result, WsPrismError};
 use wsprism_core::protocol::text::Envelope;
 
 use crate::dispatch::TextService;
-use crate::realtime::{Outgoing, Payload, QoS, RealtimeCtx};
+use crate::realtime::RealtimeCtx;
 use crate::sys;
 
 /// `room:join` / `room:leave`. The joined room becomes the session's active
@@ -23,7 +23,7 @@ impl RoomService {
         let room = room.unwrap_or_else(|| "default".to_string());
         ctx.join_room(&room)?;
         ctx.set_active_room(Some(&room));
-        reply(ctx, sys::joined(&room, &ctx.trace_id))
+        ctx.reply(sys::joined(&room, &ctx.trace_id))
     }
 
     /// C4: leave the named room; without one, the active room.
@@ -36,17 +36,8 @@ impl RoomService {
         if ctx.active_room() == Some(room.as_str()) {
             ctx.set_active_room(None);
         }
-        reply(ctx, sys::left(&room, &ctx.trace_id))
+        ctx.reply(sys::left(&room, &ctx.trace_id))
     }
-}
-
-/// Answer this session. Reliable: if its queue is full it is closed as a
-/// slow consumer rather than silently missing the reply.
-fn reply(ctx: &RealtimeCtx, text: String) -> Result<()> {
-    ctx.send_to_session(Outgoing {
-        qos: QoS::Reliable,
-        payload: Payload::Utf8Bytes(text.into()),
-    })
 }
 
 #[async_trait]

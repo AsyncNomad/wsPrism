@@ -7,7 +7,7 @@
 
 use crate::config::schema::TenantLimits;
 use crate::realtime::core::{Connection, Presence, SessionRegistry};
-use crate::realtime::types::{close_code, CloseSpec, OutFrame, Outgoing, QoS};
+use crate::realtime::types::{close_code, CloseSpec, OutFrame, Outgoing, Payload, QoS};
 use crate::sys;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -84,7 +84,8 @@ impl RealtimeCore {
                     if sample_every_1024(n) {
                         tracing::warn!(%session_key, closes=%n, "reliable egress: closing slow consumer");
                     }
-                    let notice = sys::error(ClientCode::SlowConsumer, "outbound queue full", "");
+                    let notice =
+                        sys::error(ClientCode::SlowConsumer, "outbound queue full", "").to_string();
                     let _ = conn.ctl.try_send(CloseSpec::new(
                         close_code::POLICY,
                         "slow_consumer",
@@ -170,6 +171,8 @@ pub struct RealtimeCtx {
     session_key: Arc<str>,
     pub trace_id: Arc<str>,
     active_room: Option<Arc<str>>,
+    /// `seq` of the request being handled, for reply correlation.
+    request_seq: Option<u64>,
     limits: Arc<TenantLimits>,
     core: Arc<RealtimeCore>,
 }
@@ -200,6 +203,7 @@ impl RealtimeCtx {
             session_key: session_key.into(),
             trace_id: trace_id.into(),
             active_room: None,
+            request_seq: None,
             limits,
             core,
         }
@@ -230,6 +234,30 @@ impl RealtimeCtx {
 
     fn room_key(&self, room: &str) -> String {
         format!("{}::{}", self.tenant(), room)
+    }
+
+    /// `seq` of the request currently being handled, if the client sent one.
+    pub fn request_seq(&self) -> Option<u64> {
+        self.request_seq
+    }
+
+    /// Set by the session around each inbound request.
+    pub(crate) fn begin_request(&mut self, seq: Option<u64>) {
+        self.request_seq = seq;
+    }
+
+    pub(crate) fn end_request(&mut self) {
+        self.request_seq = None;
+    }
+
+    /// Answer the current request on this session (Reliable). Adds
+    /// `reply_to: <seq>` when the request carried a `seq`, so clients can
+    /// match responses to pipelined requests.
+    pub fn reply(&self, msg: serde_json::Value) -> Result<()> {
+        self.send_to_session(Outgoing {
+            qos: QoS::Reliable,
+            payload: Payload::TextJson(sys::reply_to(msg, self.request_seq)),
+        })
     }
 
     /// Join `room`, enforcing the tenant's room limits.

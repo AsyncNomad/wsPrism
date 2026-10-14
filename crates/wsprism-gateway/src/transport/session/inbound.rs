@@ -39,7 +39,7 @@ impl Session {
                 return Flow::Break(Exit::Close(CloseSpec::new(
                     close_code::PROTOCOL_ERROR,
                     "decode_error",
-                    Some(sys::error_from(&e, self.trace_id())),
+                    Some(sys::error_from(&e, self.trace_id()).to_string()),
                 )));
             }
         };
@@ -47,8 +47,19 @@ impl Session {
             // tungstenite answers pings itself; replying again would double-pong.
             Inbound::Ping(_) | Inbound::Pong(_) => Flow::Continue(()),
             Inbound::Close => Flow::Break(Exit::Peer),
-            Inbound::Text { env, bytes_len } => self.on_text(env, bytes_len).await,
-            Inbound::Hot { frame, bytes_len } => self.on_hot(frame, bytes_len).await,
+            // Replies produced while handling a request carry its seq.
+            Inbound::Text { env, bytes_len } => {
+                self.ctx.begin_request(env.seq);
+                let flow = self.on_text(env, bytes_len).await;
+                self.ctx.end_request();
+                flow
+            }
+            Inbound::Hot { frame, bytes_len } => {
+                self.ctx.begin_request(frame.seq.map(u64::from));
+                let flow = self.on_hot(frame, bytes_len).await;
+                self.ctx.end_request();
+                flow
+            }
         }
     }
 
@@ -88,7 +99,13 @@ impl Session {
             PolicyDecision::Close { code, msg } => {
                 // SAFE LABEL: code.as_str()
                 self.decision(lane, "close", code.as_str());
-                let notice = notify.then(|| sys::error(code, msg, self.trace_id()));
+                let notice = notify.then(|| {
+                    sys::reply_to(
+                        sys::error(code, msg, self.trace_id()),
+                        self.ctx.request_seq(),
+                    )
+                    .to_string()
+                });
                 ControlFlow::Break(Exit::Close(CloseSpec::new(
                     close_code::POLICY,
                     "policy",

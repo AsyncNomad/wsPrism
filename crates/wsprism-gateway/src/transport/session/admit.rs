@@ -76,7 +76,7 @@ fn evict_session(
     let _ = conn.ctl.try_send(CloseSpec::new(
         close_code::POLICY,
         reason,
-        Some(sys::kicked(reason, trace_id)),
+        Some(sys::kicked(reason, trace_id).to_string()),
     ));
 }
 
@@ -132,11 +132,10 @@ impl Session {
                     return Ok(Admission::Rejected(CloseSpec::new(
                         close_code::POLICY,
                         "too_many_sessions",
-                        Some(sys::error(
-                            ClientCode::TooManySessions,
-                            "limit exceeded",
-                            &id.trace_id,
-                        )),
+                        Some(
+                            sys::error(ClientCode::TooManySessions, "limit exceeded", &id.trace_id)
+                                .to_string(),
+                        ),
                     )));
                 }
                 OnExceed::KickOldest => {
@@ -169,7 +168,7 @@ impl Session {
             return Ok(Admission::Rejected(CloseSpec::new(
                 close_code::TRY_AGAIN_LATER,
                 "capacity",
-                Some(sys::error_from(&e, &id.trace_id)),
+                Some(sys::error_from(&e, &id.trace_id).to_string()),
             )));
         }
         metrics.ws_active_sessions.inc(&[("tenant", &id.tenant)]);
@@ -182,12 +181,9 @@ impl Session {
         };
         // The queue is empty and only this task consumes it, so this cannot be full.
         out_tx
-            .try_send(OutFrame::text(sys::authed(
-                &id.tenant,
-                &id.user_id,
-                &id.sid,
-                &id.trace_id,
-            )))
+            .try_send(OutFrame::text(
+                sys::authed(&id.tenant, &id.user_id, &id.sid, &id.trace_id).to_string(),
+            ))
             .map_err(|_| WsPrismError::Internal("outbound queue unavailable".into()))?;
 
         let gw = &app.cfg().gateway;
