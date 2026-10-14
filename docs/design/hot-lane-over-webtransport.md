@@ -1,25 +1,30 @@
 # 설계: Hot Lane over WebTransport
 
-- 상태: 초안 (2026-10-14). 결정 근거는 [ADR 0004](../adr/0004-product-direction.md).
+- 상태: 초안, **개정 1** (2026-10-14: 2차 리뷰 반영 — AoI 주 지표, 비용 관문 G5, MoQ 평가, T0 분리, netns 측정). 결정 근거는 [ADR 0004](../adr/0004-product-direction.md).
 - 범위: ① 목표 아키텍처(단계 T에서 구현), ② 그 전에 수행할 검증 단계 V의 구체 계획.
 
 ## 0. 요약
 
-Hot Lane을 "비신뢰·비순서 전달 클래스"로 재정의한다. WebTransport 세션에서는 **QUIC datagram**으로 보내 TCP head-of-line blocking을 없애고, WebSocket 세션에서는 **키별 최신값 덮어쓰기(conflation)** 로 근사한다. 한 룸에 두 전송의 세션이 섞여도 서비스 코드는 전송을 모른다(ADR 0002의 `OutFrame` 연장). 확정 전에 2~3주 검증(V)으로 성능·호환성·안정성·폴백을 숫자로 확인한다.
+간판은 전송이 아니라 **상태 동기화 의미론**이다: 키별 최신값 유지(conflation), 틱 단위 송신 조절과 묶음 전송, 테넌트 정책, 백엔드 연동. 이를 **가장 좋은 비신뢰 전송** 위에서 제공한다 — WebTransport datagram(직접 구현 또는 MoQ, V에서 결정), 안 되면 WebSocket 폴백. 같은 의미론은 WebSocket 위에서도 동작한다(TCP HOL은 못 없애지만 큐 적체는 줄인다).
+
+순서: ① 검증 V로 체감 성능(AoI)·비용·호환성·안정성·폴백을 숫자로 확인 → ② **T0**: 전송 능력·전달 등급·Hot 슬롯 경계를 WebSocket만으로 구현(M2 공개 트레이트 전에) → ③ M2-lite → ④ **T**: 비신뢰 전송 구현.
+
+대표 시나리오: **모바일·Wi-Fi 환경의 20~60 Hz 웹 멀티플레이 상태 동기화.**
 
 ## 1. 목표와 비목표
 
 **목표**
-- 패킷 손실이 있는 네트워크에서 상태 업데이트의 **꼬리 지연과 신선도**를 WebSocket 대비 크게 개선한다.
-- 같은 서비스·정책 코드가 WebTransport와 WebSocket 세션 모두에서 동작한다(전송 투명성).
-- 브라우저에서 WebTransport가 안 되면 **자동으로 WebSocket 폴백**.
+- 손실이 있는 네트워크에서 **상태 신선도(AoI)의 꼬리와 끊김 비율**을 WebSocket 대비 크게 개선한다.
+- 비용(메시지당 CPU, 연결당 메모리)이 WSS 대비 2배를 넘지 않는다.
+- 같은 서비스·정책 코드가 모든 전송에서 동작한다(전송 투명성).
+- 비신뢰 전송이 안 되면 **자동으로 WebSocket 폴백**.
 - 기존 보안 모델(admission 파이프라인, 테넌트 정책, 메트릭 라벨 원칙) 재사용.
 
 **비목표**
 - 게임 서버 로직(authoritative simulation), 매치메이킹, 계정.
 - datagram 위의 신뢰 전송 재구현(그건 QUIC 스트림이 한다).
 - WebRTC DataChannel 지원.
-- HTTP/3 위의 Ext Lane 이외 기능(파일 전송 등).
+- MoQ의 미디어 기능(코덱·카탈로그 등). MoQ를 쓰더라도 상태 동기화 트랙만.
 
 ## 2. 전달 클래스
 
@@ -108,6 +113,8 @@ trait SessionIo: Send {
 - **Hot 슬롯**: 세션마다 작은 "최신값 맵" `(svc_id, key) → Bytes` + 키 없는 프레임용 짧은 FIFO(기본 64). 발행자는 슬롯에 넣기만 하고(덮어쓰기, 블로킹 없음), 세션 루프가 비울 때마다 `send_unreliable`로 보낸다. 깊은 큐가 없으므로 오래된 상태가 쌓이지 않는다.
 - `OutFrame`에 전달 클래스를 추가한다: `OutFrame::Hot { key: Option<u32>, bytes }`. `RealtimeCore::deliver`가 `QoS::Lossy` 바이너리를 Hot 슬롯으로 보낸다.
 - 슬롯의 동시성(발행자 여러 task ↔ 세션 1개): 처음에는 세션별 `Mutex<작은 맵>` + `Notify`. 마이크로 벤치마크(`publish_room` 수신자당 비용)로 회귀를 측정하고, 문제가 되면 lock-free 구조로 바꾼다.
+- **틱 묶음 전송**: 세션 루프가 테넌트 설정 주기(예: 30/60 Hz)마다 슬롯을 비우며 여러 업데이트를 한 datagram(또는 한 WebSocket 프레임)에 묶는다. 패킷 수를 줄여 QUIC의 패킷당 비용(암호화, 시스템 콜)을 낮추는 핵심 수단이고, G5 판정은 이 기능을 켠 상태로 한다. 묶음 형식: `[count u8]` + `[len u16][hot frame]` 반복.
+- **이 절(4.1·4.2)의 WebSocket 부분은 T0**로 M2 공개 트레이트보다 먼저 구현한다.
 
 ### 4.3 admission 재사용
 
@@ -152,49 +159,68 @@ tenants:
 - QUIC 주소 검증: 핸드셰이크 폭주 시 stateless retry로 증폭 공격 완화(`remote_address_validated`), 기존 IP별 핸드셰이크 리미터 적용.
 - Origin 검사: `SessionRequest::origin()`에 기존 `OriginPolicy` 적용.
 
-## 7. 검증 단계 V (2~3주)
+## 7. 검증 단계 V (약 3주)
 
-산출물 중 **측정 장치(netem 스크립트, 부하 생성기의 전송·신선도 지표)는 유지**하고, **스파이크 서버(`spikes/wt-hotlane/`)는 버린다**. 제품 구현은 단계 T에서 §4 설계로 새로 한다.
+산출물 중 **측정 장치(netns 스크립트, 부하 생성기의 전송·AoI·비용 지표)는 유지**하고, **스파이크 서버(`spikes/wt-hotlane/`)는 버린다**. 제품 구현은 T0·T에서 §4 설계로 새로 한다.
 
 ### 7.1 측정 정의
 
-| 지표 | 정의 |
-|---|---|
-| 수신 지연 | 송신 시각(프로브 내 `ts`) → 수신 시각. 같은 프로세스라 시계 동기 불필요 |
-| **상태 신선도(staleness)** | 수신자가 100 Hz로 표본을 뜰 때 `지금 - (지금까지 받은 가장 새로운 ts)`. 20 Hz 스트림의 이상값은 0~50 ms 톱니 + 지연. TCP HOL이 생기면 이 값이 튄다 — 사용자가 체감하는 "끊김"에 가장 가까운 지표 |
-| 전달률 | 받은 프로브 / (보낸 프로브 × 룸 인원) |
-| CPU/메시지 | 서버 프로세스 CPU 시간 / 전달 메시지 수. **QUIC은 사용자 공간 암호화로 CPU 비용이 더 클 수 있어** 함께 공개한다(관문은 아님) |
+| 지표 | 정의 | 역할 |
+|---|---|---|
+| **상태 신선도 AoI** | 수신자가 **60 Hz 렌더 틱**마다 `지금 - (보유한 가장 새로운 상태의 생성 시각)`을 기록. 유실은 AoI를 키우는 쪽으로 반영되므로 전송 간 공정 | **주 지표** (G1: p99) |
+| **끊김 비율** | AoI > 100 ms인 틱의 비율 | 주 지표 (G1), 버스트 손실에 민감 |
+| 메시지당 지연 | 송신 → 수신 (도착한 메시지만) | 보조 — 유실 패킷이 빠지는 생존 편향이 있어 판정에 쓰지 않는다 |
+| 전달률 | 받은 프로브 / (보낸 프로브 × 룸 인원) | 보조 |
+| **CPU/메시지** | 서버 CPU 시간(`/proc/<pid>/stat`) / 전달 메시지 수 | **G5** |
+| **연결당 메모리** | (RSS − 기준) / 연결 수 | **G5** |
 
-### 7.2 1주차: 측정 장치와 스파이크 서버
+### 7.2 네트워크 에뮬레이션
+
+- **network namespace + veth 쌍**으로 서버와 클라이언트를 분리하고, 각 veth에 **방향별로** netem을 건다(루프백 netem은 양방향에 동시에 걸려 제어가 부정확). `sudo modprobe sch_netem` 필요.
+- 손실 모델: **없음(대조군)**, **균등**(0.5/1/2/5%), **버스트**(Gilbert-Elliott, 평균 손실 1%·평균 버스트 길이 약 4패킷 — 혼잡한 Wi-Fi 근사). 지연: 단방향 0 / 20 ms.
+- 20 Hz 스트림에서 TCP는 빠른 재전송에 필요한 중복 ACK가 늦게 모여 TLP/RTO에 의존할 가능성이 높다 — 비신뢰 전송에 유리한 요인이므로 대조군과 버스트 손실로 비교의 공정성을 지킨다.
+
+### 7.3 비용 비교의 기준선 (G5)
+
+- QUIC은 구조상 게이트웨이가 암호화한다. 공정 비교 기준은 **게이트웨이가 TLS를 처리하는 WSS**다(연결마다 암호화한다는 점에서 같은 조건).
+- 참고값: **LB가 TLS를 종단하는 평문 WS**(한 번 프레이밍한 바이트를 N개 소켓에 그대로 쓸 수 있는, WebSocket에 가장 유리한 배포). 이 차이는 판정에 쓰지 않고 공개한다.
+- 비신뢰 전송 측은 **틱 묶음 전송(§4.2)과 GSO**를 켠 상태로 측정한다.
+- 시나리오: 대표(10명 룸 × 다수, 60 Hz)와 큰 방(1,000명 룸, 20 Hz).
+
+### 7.4 작업 계획
+
+**1주차 — 측정 장치와 스파이크**
 
 | # | 작업 | 산출물 |
 |---|---|---|
-| V1 | `bench/netem.sh on <loss%> <delay_ms> \| off` — 루프백에 손실·지연 주입 (`sudo` 필요, WSL2 커널의 `sch_netem` 모듈 사용) | 스크립트 + 적용 확인(ping RTT·손실) |
-| V2 | `spikes/wt-hotlane/` (워크스페이스 밖 crate): 같은 룸 팬아웃 로직을 가진 **최소 릴레이 2개** — WS(tokio-tungstenite)와 WT(wtransport datagram). 공정 비교를 위해 두 경로의 코드를 대칭으로 | `relay` 바이너리, 자체 서명 인증서 + 해시 출력 |
-| V3 | 부하 생성기: `--transport ws\|wt`, 프로브에 `seq` 추가, **신선도 지표**, CPU 측정(게이트웨이 `/proc/<pid>/stat`) | `wsprism-loadgen` 확장 |
+| V1 | `bench/netns.sh up\|down` (서버·클라이언트 namespace + veth), `bench/netem.sh <dir> none\|uniform <p>\|burst <p> <len> [delay_ms]` | 스크립트 + 적용 확인(ping RTT·손실 방향별) |
+| V2 | `spikes/wt-hotlane/`(워크스페이스 밖): 같은 룸 팬아웃·틱 묶음 로직의 **최소 릴레이 3종** — WS(평문), WSS(rustls), WT datagram(wtransport, GSO 켬). 공정 비교를 위해 대칭 구현 | `relay` 바이너리, 자체 서명 인증서 + 해시 |
+| V3 | 부하 생성기: `--transport ws\|wss\|wt`, 프로브 `seq`, **60 Hz AoI 표본·끊김 비율**, 서버 CPU/RSS 수집 | `wsprism-loadgen` 확장 |
 
-### 7.3 2주차: 실험
-
-| # | 작업 | 산출물 |
-|---|---|---|
-| V4 | 매트릭스: 손실 {0, 0.5, 1, 2, 5}% × 단방향 지연 {0, 20} ms × 송신 {20, 60} Hz, 룸 10개 × 10명, 룸당 발행자 1명, payload 64 B, 각 3회. 참고값으로 **실제 게이트웨이 WS 경로**도 측정 | `bench/results/v-*.jsonl`, BENCHMARKS.md 「V」 절 (**G1 판정**) |
-| V5 | 브라우저 확인 페이지 `spikes/wt-hotlane/web/`: `serverCertificateHashes`로 접속, datagram 왕복, 지연 표시. Windows의 Chrome·Edge·Firefox, Mac의 Safari에서 수동 확인. Safari가 해시 방식을 거부하면 로컬 신뢰 인증서(mkcert)로 재시도 | 체크리스트 결과 (**G2 판정**) |
-| V6 | 노이즈 이웃 격리: 실제 게이트웨이에 테넌트 A·B, A가 B의 10배로 폭주할 때 B의 p99 변화. 같은 시나리오를 **Sockudo**(앱 2개)와 **Centrifugo**(네임스페이스 2개)에 docker로 실행 — 부하 생성기에 최소 Pusher·Centrifugo 프로토콜 어댑터 추가 | BENCHMARKS.md 「격리」 절 (방향 전환 시 근거) |
-
-### 7.4 3주차: 안정성, 폴백, 결정
+**2주차 — 실험**
 
 | # | 작업 | 산출물 |
 |---|---|---|
-| V7 | 소크: WT 세션 1,000개 × 1시간, 20 Hz. RSS·패닉·에러율 | **G3 판정** |
-| V8 | 폴백: UDP 4433 차단(`iptables`, sudo) 상태에서 부하 생성기·브라우저 페이지가 2초 안에 WS로 전환 | **G4 판정** |
-| V9 | 결과 정리: ADR 0004 상태를 "확정" 또는 "전환"으로 갱신, ROADMAP 확정 | ADR·ROADMAP 갱신 |
+| V4 | 매트릭스: 손실 모델 {없음, 균등 0.5/1/2/5%, 버스트} × 지연 {0, 20 ms} × {20, 60} Hz, 대표 시나리오, 각 3회. 참고값으로 실제 게이트웨이 WS | `bench/results/v-*.jsonl`, BENCHMARKS.md 「V」 절 (**G1**) |
+| V5 | 비용: §7.3의 기준선 3종 × 대표·큰 방 시나리오 | BENCHMARKS.md 「비용」 절 (**G5**) |
+| V6 | **MoQ 평가**: moq-rs 릴레이에 대표 시나리오를 얹는다(엔티티별 track, 틱마다 새 group). AoI·끊김 비율·CPU를 같은 조건으로 측정, 테넌트 인증·정책을 얹을 수 있는 지점 조사 | 「직접 구현 vs MoQ 위 vs MoQ 호환」 판단 메모 |
+| V7 | 브라우저 확인 페이지: `serverCertificateHashes`로 접속, datagram 왕복. Windows의 Chrome·Edge·Firefox, Mac의 Safari 수동 확인(Safari가 해시 방식을 거부하면 mkcert 인증서로 재시도) | 체크리스트 결과 (**G2**) |
+
+**3주차 — 안정성, 폴백, 결정**
+
+| # | 작업 | 산출물 |
+|---|---|---|
+| V8 | 소크: 세션 1,000개 × 1시간, 60 Hz. RSS·패닉·에러율 | **G3** |
+| V9 | 폴백: 클라이언트 namespace에서 UDP 차단(`iptables`) 상태로 부하 생성기·브라우저 페이지가 2초 안에 WS 전환 | **G4** |
+| V10 | 결과 정리: ADR 0004 상태 갱신(확정 / 하이브리드 / 전환), ROADMAP 확정 | ADR·ROADMAP 갱신 |
+
+**조건부 (G1 실패 시에만)**: 노이즈 이웃 격리 측정 — wsPrism·Sockudo·Centrifugo. 부하 생성기에 Pusher 프로토콜 어댑터와 private 채널 인증 엔드포인트(클라이언트 이벤트는 private/presence 채널에서만 가능), Centrifugo 프로토콜 어댑터가 필요하다(수일 분량). 전환 방향의 근거로만 쓰이므로 V 본 일정에서 뺀다.
 
 ### 7.5 공정성·한계 메모
 
-- 스파이크 릴레이는 정책·메트릭이 없는 최소 구현이다. 비교는 **같은 최소 구현의 WS 대 WT**로 하고, 실제 게이트웨이 WS는 참고값이다.
-- netem은 루프백의 **양방향**에 적용된다(손실 1% ≈ 각 방향 1%).
-- WSL2에서 측정한다. 절대값보다 **같은 조건에서의 상대 비교**가 판정 근거다. 결과가 경계선이면(2~4배) 리눅스 실기기에서 재측정한다.
-- 1% 손실은 혼잡한 Wi-Fi·모바일에서 흔한 수준이고, 0%에서는 두 전송의 차이가 작을 것으로 예상한다(이것도 그대로 공개).
+- 스파이크 릴레이는 정책·메트릭이 없는 최소 구현이다. 판정은 **같은 최소 구현끼리의 비교**로 하고, 실제 게이트웨이 WS는 참고값이다.
+- WSL2에서 측정한다. 절대값보다 같은 조건의 상대 비교가 판정 근거다. 결과가 경계선(G1 2~4배, G5 1.5~2.5배)이면 리눅스 실기기에서 재측정한다.
+- 손실 0%에서 차이가 작을 것으로 예상하며, 그 결과도 그대로 공개한다.
 
 ## 8. 열린 질문과 위험
 
@@ -206,13 +232,21 @@ tenants:
 | UDP 로드밸런서 뒤에서 클라이언트 IP(PROXY protocol v2) | T |
 | QUIC connection migration이 세션 식별·레이트리밋에 주는 영향 | T |
 | `wtransport` 1.0 이전 API 변경 위험 | 라이브러리 경계를 `WtIo` 한 곳에 가둬 완화 |
+| 직접 구현 vs MoQ 위 vs MoQ 호환 — MoQ의 "최신 그룹"이 키별 상태에 맞는가, 테넌트 정책을 얹을 수 있는가, Cloudflare 릴레이의 무료·가용성 조건 | V6 |
+| QUIC 패킷당 비용을 틱 묶음 + GSO로 G5 안에 넣을 수 있는가 | V5 |
 
-## 9. 단계 T 작업 순서 (V 통과 후)
+## 9. 작업 순서 (V 통과 후)
 
-1. `SessionIo` 추출 — WebSocket만으로 동작 변화 없이 리팩터링(기존 테스트가 안전망).
-2. `OutFrame::Hot` + Hot 슬롯 + conflation — WebSocket에서 먼저(지표: 큐 적체 감소).
-3. Hot 프레임 헤더 확장(KEY/SENDER), `member_id`, `HotRelayService`.
-4. `WtIo` + 설정 + admission 연결 + `transport` 메트릭 라벨.
-5. 1회용 티켓 경로(M2-lite의 발급 API 사용).
-6. TS SDK의 WT 우선·WS 폴백.
-7. 통합 테스트(WT 클라이언트), 퍼징 대상 추가(제어 스트림 프레이밍), 벤치마크 시나리오 표준화.
+**T0 — 경계 (WebSocket만, M2-lite보다 먼저)**: 검증 결과와 무관하게 WebSocket 사용자에게도 이득(큐 적체 감소)이라 버려지지 않는다.
+
+1. `SessionIo` 추출(능력: 순서 스트림 / 비신뢰 datagram, WebSocket은 datagram 능력 없음 → 스트림으로 대체) — 동작 변화 없이 리팩터링, 기존 테스트가 안전망.
+2. 송신 단위에 전달 등급: `OutFrame::Hot { key, bytes }`, `RealtimeCore::deliver`의 Lossy 바이너리 → Hot 슬롯.
+3. Hot 슬롯(키별 최신값 + 짧은 FIFO)과 틱 묶음 전송 — WebSocket에서 먼저. 지표: 큐 적체·드롭·AoI.
+4. Hot 프레임 헤더 확장(KEY/SENDER), `member_id`, `HotRelayService`, 크기 상한(PROTOCOL.md 명시).
+
+**T — 비신뢰 전송 (V6 결정에 따라 WebTransport 직접 구현 또는 MoQ)**
+
+5. `WtIo`(또는 MoQ 어댑터) + 설정 + admission 연결 + `transport` 메트릭 라벨.
+6. 1회용 티켓 경로(M2-lite의 발급 API 사용).
+7. TS SDK의 비신뢰 전송 우선·WS 폴백, `(sender, key, seq)` 신선도 필터.
+8. 통합 테스트(WT 클라이언트), 퍼징 대상 추가(제어 스트림·묶음 프레이밍), 벤치마크 시나리오 표준화(V의 매트릭스를 CI 외 정기 실행).

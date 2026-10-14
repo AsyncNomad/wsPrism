@@ -8,11 +8,12 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 
 ## 포지션 (ADR 0004, 검증 V 후 확정)
 
-> **브라우저에서 진짜 UDP처럼 동작하는 실시간 상태 동기화 — WebTransport datagram, 안 되면 WebSocket 폴백 — 그리고 테넌트별 정책.**
+> **웹·게임을 위한 실시간 상태 동기화 — 키별 최신값·틱 단위 전송·테넌트 정책을 가장 좋은 비신뢰 전송(WebTransport datagram / MoQ) 위에서, 안 되면 WebSocket 폴백. 대기업 수준의 안정성.**
 
-- **간판**: Hot Lane을 비신뢰·비순서 전달 클래스로 만들어, 패킷 손실이 있는 네트워크에서 상태 업데이트의 꼬리 지연과 신선도를 TCP 기반 게이트웨이보다 크게 개선한다. 설계: [Hot Lane over WebTransport](design/hot-lane-over-webtransport.md).
+- **간판**: 전송이 아니라 **상태 동기화 의미론**. "WebTransport로 pub/sub"은 MoQ와 표준 인프라가 채우는 자리라 그 자체로는 차별점이 아니다. 손실이 있는 네트워크에서 상태 신선도(AoI)의 꼬리와 끊김을 TCP 기반 게이트웨이보다 크게 줄이되, 비용(CPU·메모리)은 WSS 대비 2배 이내. 설계: [Hot Lane over WebTransport](design/hot-lane-over-webtransport.md).
+- **대표 시나리오**: 모바일·Wi-Fi 환경의 20~60 Hz 웹 멀티플레이 상태 동기화. 특정 산업 특화는 목표가 아니다.
 - **기반**: 멀티테넌트 정책 엔진(admission 파이프라인, allowlist, 테넌트 한도, 세션 정책, Origin, 티켓 경로). 대기업급 요구사항의 핵심이지만 한 줄 소개는 아니다.
-- **대상 트래픽**: 최신 상태가 이기는 데이터 — 웹 멀티플레이, 협업 커서·화이트보드, 시세·스포츠 틱, IoT·원격 대시보드. 게임 백엔드는 만들지 않는다(사용자 백엔드 앞의 전송 계층).
+- **대상 트래픽**: 최신 상태가 이기는 웹·게임 데이터. 게임 백엔드는 만들지 않는다(사용자 백엔드 앞의 전송 계층).
 - **따라잡기 기능**(프록시, 발행 API, 이력·복구, 멀티 노드)은 "갈아탈 때 막히지 않을 만큼"만.
 
 ## 현재 위치
@@ -26,7 +27,7 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 | 확장성 | 단일 노드 |
 | 성능 | 기준선 측정 완료([BENCHMARKS](BENCHMARKS.md)). TCP_NODELAY 수정으로 p99.9 26.7→3.6 ms. 메시지당 최대 비용은 메트릭(275 ns)과 팬아웃(수신자당 ~200 ns) |
 
-**M0, M1 완료 (브랜치 `m0/engine-prep`). 다음: 검증 단계 V.**
+**M0, M1 완료 (브랜치 `m0/engine-prep`). 다음: 검증 단계 V → T0.**
 
 ## 목표를 측정 가능하게
 
@@ -34,9 +35,10 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 
 | | 내용 |
 |---|---|
-| 비교 대상 | **Sockudo**(Rust, 멀티테넌트 앱, 가장 직접적), Centrifugo(기능 기준선), **Nakama relayed**(게임 릴레이), **geckos.io**(브라우저 UDP via WebRTC), uWS 기반 soketi(원시 처리량), Socket.IO(채택률) |
-| 승부 지표 | **손실 네트워크에서의 수신 지연 p99와 상태 신선도**(WebTransport datagram vs TCP), **노이즈 이웃 격리**(한 테넌트 폭주 시 다른 테넌트의 p99 변화) |
-| 공개 지표 | 팬아웃 p50/p99/p999, 연결당 메모리, 코어당 처리량, **CPU/메시지**(QUIC의 비용도 숨기지 않는다) |
+| 비교 대상 | **Sockudo**(Rust, 멀티테넌트 앱), Centrifugo(기능 기준선), **MoQ**(moq-rs / Cloudflare 릴레이), **Nakama relayed**, Colyseus, geckos.io(브라우저 UDP via WebRTC), uWS 기반 soketi(원시 처리량), Socket.IO(채택률) |
+| 승부 지표 | **상태 신선도(AoI) p99와 끊김 비율**(손실 0%·균등·버스트), 메시지당 지연은 보조(생존 편향) |
+| 비용 지표 | **CPU/메시지, 연결당 메모리** — WSS(게이트웨이 TLS) 대비 2배 이내가 관문(G5). LB TLS 종단 WS와의 차이도 공개 |
+| 공개 지표 | 팬아웃 p50/p99/p999, 코어당 처리량, 노이즈 이웃 격리(정책 방향 전환 시) |
 | 원칙 | 수치 없이 성능을 주장하지 않는다. 같은 언어(Rust) 경쟁자와 TCP 위에서 겨뤄서는 "훨씬"을 만들 구조적 근거가 없다 — 구조적 차이(datagram)에서 이긴다 |
 
 ### 커스텀 용이성: 확장 계층
@@ -63,22 +65,23 @@ wsprism-sdk-*     클라이언트 SDK (TS → Unity C# → Dart). WebTransport �
 |---|---|---|
 | **M0 정리** ✅ | 테넌트 조회 `HashMap`, `run_session` 분해, 룸 기능을 서비스로 + 세션 컨텍스트 `&mut`([ADR 0001](adr/0001-session-context-and-room-service.md)), 전송 무관 `OutFrame`([ADR 0002](adr/0002-transport-agnostic-out-frame.md)) | 동작 변화 없이 기존 테스트 통과 |
 | **M1 정직한 기반** ✅ | admission 파이프라인, Origin 허용 목록, 신뢰 프록시 + XFF, 티켓 경로 + 버전 협상([ADR 0003](adr/0003-ticket-sources-and-subprotocol.md)), 에러 코드 목록·정보 노출 제거, `reply_to`, `--config`/`--check-config`, 문서 정합, 퍼징 5종, cargo-deny(`serde_yaml` 교체), 벤치마크 기준선(TCP_NODELAY 수정) | 기준선 수치 문서화, 퍼징·감사 CI |
-| **V 차별화 검증** (2~3주) | WebTransport datagram vs WebSocket을 손실·지연 매트릭스로 측정, 브라우저 3종 호환, 1시간 소크, UDP 차단 시 폴백, 노이즈 이웃 격리(wsPrism·Sockudo·Centrifugo). 세부: [설계 §7](design/hot-lane-over-webtransport.md#7-검증-단계-v-23주) | 관문 G1~G4 판정 → ADR 0004 확정 또는 전환 |
+| **V 차별화 검증** (약 3주) | netns+veth 방향별 netem(균등·버스트 손실, 0% 대조군)으로 WS·WSS·WT datagram의 AoI·끊김·비용 비교, **MoQ 평가**, 브라우저 3종, 1시간 소크, UDP 차단 폴백. 노이즈 이웃 격리는 G1 실패 시에만. 세부: [설계 §7](design/hot-lane-over-webtransport.md#7-검증-단계-v-약-3주) | 관문 G1~G5 → ADR 0004 확정 / 하이브리드 / 전환 |
+| **T0 경계** | `SessionIo`(전송 능력), 전달 등급(`OutFrame::Hot`), Hot 슬롯(키별 최신값) + 틱 묶음 전송, Hot 헤더 확장·크기 상한 — **WebSocket만으로, M2 공개 트레이트 전에**. 세부: [설계 §9](design/hot-lane-over-webtransport.md#9-작업-순서-v-통과-후) | 동작 변화 없는 리팩터링 + WS에서 큐 적체 감소 측정 |
 | **M2-lite 끼워 쓰기** | engine/server crate 분리, `Authenticator` 트레이트 + JWT(테넌트별 JWKS) + **1회용 티켓 발급 API**, HTTP 백엔드 프록시(connect·rpc), **서버 발행 API**(`/api/v1/publish`, `/api/v1/disconnect`), 최소 TS SDK(WS). gRPC·다양한 플러그인은 뒤로 | Node 또는 Spring 백엔드에 붙인 예제 앱 |
-| **T WebTransport 전송** | `SessionIo` 추출, 전달 클래스 + Hot 슬롯(conflation), Hot 헤더 확장(KEY/SENDER), `WtIo`, `transport` 메트릭 라벨, SDK의 WT 우선·WS 폴백. 순서: [설계 §9](design/hot-lane-over-webtransport.md#9-단계-t-작업-순서-v-통과-후) | 같은 서비스 코드가 WT·WS 혼합 룸에서 동작, V의 이득이 제품 경로에서 재현 |
+| **T 비신뢰 전송** | V6 결정에 따라 WebTransport 직접 구현(`WtIo`) 또는 MoQ 경로, `transport` 메트릭 라벨, 1회용 티켓 경로, SDK의 비신뢰 우선·WS 폴백 | 같은 서비스 코드가 혼합 전송 룸에서 동작, V의 이득이 제품 경로에서 재현 |
 | **M3 신뢰성 (동등 수준)** | 채널 일반화, 채널별 이력 + offset/epoch + 재접속 복구, ACK. Hot Lane은 이력 없음 | 끊긴 사이 메시지 복구 테스트 |
 | **M4 멀티 노드 (동등 수준)** | Broker(Redis 먼저), 노드 로컬 구독 색인, 클러스터 강제 퇴장, 1회용 티켓 공유 저장소, 전역 한도의 정확/근사 결정 | 노드 강제 종료 카오스 테스트 |
 | **M5 성능 공개** | 메시지당 할당 제거(메트릭 라벨, 팬아웃), ID 인터닝, 프레임 사전 인코딩, 표준 메트릭 crate. 비교 대상 전체와 공개 벤치마크 | 재현 가능한 벤치 리포와 결과 |
 | **M6 운영** | 환경변수 오버라이드, 핫 리로드(`ArcSwap`), OpenTelemetry, JSON 로그·마스킹, 관리 API(RBAC), Docker/Helm, 재접속 지터, 메트릭 단위 표준화, UDP 로드밸런서 가이드 | 롤링 업데이트 가이드대로 무중단 배포 |
 | **M7 채택** | SDK 확장(Unity C#, Dart), semver·CHANGELOG·MSRV, `SECURITY.md`·`CONTRIBUTING.md`, 예제(멀티플레이·협업 커서), 소크·카오스, 외부 보안 감사 | 1.0 릴리스 |
 
-V에서 G1이 실패하면(ADR 0004 "탈락 시 대안") T를 빼고, 정책 중심 방향(측정된 격리, 스키마 검증, WASM 정책)으로 M2 이후를 재구성한다.
+결정 분기(ADR 0004): **G5만 실패** → 하이브리드(소규모 인터랙티브 룸은 비신뢰 전송, 대규모 방송은 WS — 룸 정책으로 선택). **G1 실패** → T를 빼고 상태 동기화 의미론은 WS에서 유지, 정책 중심(측정된 격리, 스키마 검증, WASM 정책)으로 재구성. **둘 다 실패** → 범위를 좁힌 정책 중심 또는 임베드 라이브러리 포지션.
 
 ## 리뷰 제안에서 바꾼 점과 이유
 
 1. **벤치마크를 M1에서 시작했다**(리뷰에서는 4단계). 설계 결정마다 비용을 재야 비싼 구조가 공개 API로 굳지 않는다.
 2. **엔진 API를 굳히기 전에 전송 계층을 분리했다**(ADR 0002). WebTransport를 붙일 수 있는 토대가 됐다.
-3. **차별화 검증(V)을 M2 앞에 넣었다.** 따라잡기 기능은 끝내도 경쟁 제품과 같아질 뿐이라, 차별점을 먼저 숫자로 증명한다.
+3. **차별화 검증(V)과 경계 작업(T0)을 M2 앞에 넣었다.** 따라잡기 기능은 끝내도 경쟁 제품과 같아질 뿐이라 차별점을 먼저 숫자로 증명하고, M2 공개 트레이트가 "순서 있는 바이트 채널 하나"를 전제로 굳지 않게 전송 능력·전달 등급 경계를 먼저 연다.
 4. **최소 TS SDK를 M2-lite에서 만든다.** 프로토콜(재접속, `reply_to`, WT 폴백)은 실제 클라이언트로 검증해야 결함이 드러난다.
 5. **SDK 순서는 TS → Unity C# → Dart.**
 
