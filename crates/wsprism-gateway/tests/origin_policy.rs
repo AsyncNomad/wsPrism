@@ -15,8 +15,9 @@ tenants:
 "#;
 
 async fn connect_from(gw: &Gateway, tenant: &str, origin: Option<&str>) -> Result<(), String> {
-    let url = ws_url(gw.addr, tenant, "dev", None);
-    let headers: Vec<(&'static str, &str)> = origin.map(|o| ("origin", o)).into_iter().collect();
+    let url = ws_url(gw.addr, tenant, None);
+    let mut headers = vec![AUTH];
+    headers.extend(origin.map(|o| ("origin", o)));
     try_connect_with(&url, &headers).await.map(|_| ())
 }
 

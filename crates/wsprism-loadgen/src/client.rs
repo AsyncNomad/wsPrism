@@ -6,6 +6,8 @@ use futures_util::{SinkExt, StreamExt};
 use hdrhistogram::Histogram;
 use tokio::net::TcpStream;
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
@@ -17,10 +19,15 @@ pub type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 const SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Connect, wait for `sys.authed`, join `room` and wait for `sys.joined`.
-pub async fn setup(url: &str, room: &str) -> Result<Ws, String> {
+pub async fn setup(url: &str, ticket: &str, room: &str) -> Result<Ws, String> {
+    let mut req = url.into_client_request().map_err(|e| e.to_string())?;
+    let auth = format!("Bearer {ticket}")
+        .parse()
+        .map_err(|_| "ticket is not a valid header value".to_string())?;
+    req.headers_mut().insert(AUTHORIZATION, auth);
     // TCP_NODELAY like real WebSocket clients (browsers), so client-side Nagle
     // delays don't pollute the measured latency.
-    let connect = tokio_tungstenite::connect_async_with_config(url, None, true);
+    let connect = tokio_tungstenite::connect_async_with_config(req, None, true);
     let (mut ws, _) = tokio::time::timeout(SETUP_TIMEOUT, connect)
         .await
         .map_err(|_| "connect timeout".to_string())?

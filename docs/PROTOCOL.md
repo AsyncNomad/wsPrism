@@ -14,13 +14,30 @@ Key contracts:
 ## 1) WebSocket Handshake
 
 ```
-ws(s)://<gateway>/v1/ws?tenant=<TENANT_ID>&ticket=<TICKET>
+ws(s)://<gateway>/v1/ws?tenant=<TENANT_ID>[&sid=<SESSION_ID>]
 ```
+
+The ticket is presented through one of the tenant's `policy.ticket_sources`
+(tried in order; default `[header, subprotocol]`):
+
+| Source | How | Use from |
+|---|---|---|
+| `header` | `Authorization: Bearer <ticket>` | Native apps, game engines, servers |
+| `subprotocol` | `Sec-WebSocket-Protocol: wsprism.v1, wsprism.auth.<ticket>` | Browsers (cannot set headers on a WebSocket) |
+| `query` | `?ticket=<ticket>` | Legacy only. Off by default: URLs are written to proxy/access logs |
+
+Subprotocol tokens must be HTTP token characters (base64url without padding
+and JWTs qualify).
+
+**Protocol version.** If the client offers subprotocols, the server selects a
+supported version (`wsprism.v1`) and echoes only that; the `wsprism.auth.*`
+entry is never echoed. Offering subprotocols without a supported version is
+rejected with HTTP 400. No `Sec-WebSocket-Protocol` header implies v1.
 
 Server (on success):
 
 ```json
-{"v":1,"svc":"sys","type":"authed","flags":0,"data":{"user_id":"<string>"}}
+{"v":1,"svc":"sys","type":"authed","data":{"tenant":"<id>","user":"<user>","sid":"<sid>"},"trace_id":"<id>"}
 ```
 
 ---
@@ -93,7 +110,8 @@ Before the upgrade (plain HTTP responses):
 | HTTP | When |
 |---|---|
 | 400 | Unknown tenant |
-| 401 | Invalid ticket |
+| 400 | Subprotocols offered but no supported version (`wsprism.v1`) |
+| 401 | Missing ticket (none of the tenant's `ticket_sources` present) or invalid ticket |
 | 403 | Browser `Origin` not in the tenant's `policy.allowed_origins` (requests without `Origin` are not checked) |
 | 429 + `Retry-After` | Handshake rate limit |
 | 503 (+ `Retry-After`) | Draining, or tenant session capacity reached |

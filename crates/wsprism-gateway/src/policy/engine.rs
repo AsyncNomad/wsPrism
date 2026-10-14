@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use wsprism_core::error::ClientCode;
 
 pub use crate::config::schema::{HotErrorMode, OnExceed, SessionMode};
-use crate::config::schema::{RateLimitScope, SessionPolicy, TenantPolicy};
+use crate::config::schema::{RateLimitScope, SessionPolicy, TenantPolicy, TicketSource};
 
 use super::allowlist::{
     compile_ext_rules, compile_hot_rules, is_ext_allowed, is_hot_allowed, ExtRule, HotRule,
@@ -48,6 +48,7 @@ pub struct TenantPolicyRuntime {
     hot_requires_active_room: bool,
 
     origins: OriginPolicy,
+    ticket_sources: Vec<TicketSource>,
 }
 
 impl TenantPolicyRuntime {
@@ -80,6 +81,7 @@ impl TenantPolicyRuntime {
             hot_error_mode: policy.hot_error_mode,
             hot_requires_active_room: policy.hot_requires_active_room,
             origins: OriginPolicy::compile(&policy.allowed_origins)?,
+            ticket_sources: policy.ticket_sources.clone(),
         })
     }
 
@@ -96,6 +98,11 @@ impl TenantPolicyRuntime {
     /// Browser origin policy for upgrades (CSWSH protection).
     pub fn origins(&self) -> &OriginPolicy {
         &self.origins
+    }
+
+    /// Where clients may present their ticket, in priority order.
+    pub fn ticket_sources(&self) -> &[TicketSource] {
+        &self.ticket_sources
     }
 
     /// Create per-connection limiter if enabled (Connection/Both).

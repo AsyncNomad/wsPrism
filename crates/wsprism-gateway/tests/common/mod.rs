@@ -71,17 +71,20 @@ pub async fn spawn(yaml: &str) -> Gateway {
     Gateway { addr, state }
 }
 
-pub fn ws_url(addr: SocketAddr, tenant: &str, ticket: &str, sid: Option<&str>) -> String {
-    let mut url = format!("ws://{addr}/v1/ws?tenant={tenant}&ticket={ticket}");
+pub fn ws_url(addr: SocketAddr, tenant: &str, sid: Option<&str>) -> String {
+    let mut url = format!("ws://{addr}/v1/ws?tenant={tenant}");
     if let Some(sid) = sid {
         url.push_str(&format!("&sid={sid}"));
     }
     url
 }
 
+/// Default credentials: the dev ticket as a bearer token.
+pub const AUTH: (&str, &str) = ("authorization", "Bearer dev");
+
 /// Connect and consume the `sys.authed` greeting.
 pub async fn connect(addr: SocketAddr, tenant: &str, sid: Option<&str>) -> Ws {
-    let (mut ws, _) = try_connect_url(&ws_url(addr, tenant, "dev", sid))
+    let (mut ws, _) = try_connect_url(&ws_url(addr, tenant, sid))
         .await
         .expect("ws connect");
     match next_event(&mut ws).await {
@@ -90,22 +93,26 @@ pub async fn connect(addr: SocketAddr, tenant: &str, sid: Option<&str>) -> Ws {
     }
 }
 
-/// Attempt a WS handshake, bounded by `WAIT` (a hung server fails the test).
+/// Attempt a WS handshake with the default credentials, bounded by `WAIT`
+/// (a hung server fails the test).
 pub async fn try_connect_url(url: &str) -> Result<(Ws, HandshakeResponse), String> {
-    try_connect_with(url, &[]).await
+    try_connect_with(url, &[AUTH]).await
 }
 
-/// Like `try_connect_url`, adding request `headers`.
+/// Attempt a WS handshake sending exactly `headers` (add `AUTH` to log in).
 pub async fn try_connect_with(
     url: &str,
-    headers: &[(&'static str, &str)],
+    headers: &[(&str, &str)],
 ) -> Result<(Ws, HandshakeResponse), String> {
     let mut req = url.into_client_request().map_err(|e| e.to_string())?;
     for (name, value) in headers {
         let value = value
             .parse()
             .map_err(|_| format!("bad header value {value}"))?;
-        req.headers_mut().append(*name, value);
+        let name: axum::http::HeaderName = name
+            .parse()
+            .map_err(|_| format!("bad header name {name}"))?;
+        req.headers_mut().append(name, value);
     }
     match tokio::time::timeout(WAIT, tokio_tungstenite::connect_async(req)).await {
         Err(_) => Err("handshake timed out (server hung?)".into()),

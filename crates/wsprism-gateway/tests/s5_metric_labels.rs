@@ -21,7 +21,7 @@ tenants:
 "#;
 
 async fn try_connect(gw: &Gateway, tenant: &str) {
-    let _ = try_connect_url(&ws_url(gw.addr, tenant, "dev", None)).await;
+    let _ = try_connect_url(&ws_url(gw.addr, tenant, None)).await;
 }
 
 #[tokio::test]

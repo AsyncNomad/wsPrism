@@ -58,7 +58,7 @@ tenants:
     .await;
     let _first = connect(gw.addr, "t", Some("a")).await;
 
-    let (mut second, _) = try_connect_url(&ws_url(gw.addr, "t", "dev", Some("b")))
+    let (mut second, _) = try_connect_url(&ws_url(gw.addr, "t", Some("b")))
         .await
         .expect("upgrade succeeds; rejection is in-band");
     expect_error(next_event(&mut second).await, "TOO_MANY_SESSIONS");
@@ -68,7 +68,8 @@ tenants:
 #[tokio::test]
 async fn bad_ticket_is_rejected_with_401_before_upgrade() {
     let gw = spawn(BASE_YAML).await;
-    let Err(err) = try_connect_url(&ws_url(gw.addr, "t", "not-a-ticket", None)).await else {
+    let bad = [("authorization", "Bearer not-a-ticket")];
+    let Err(err) = try_connect_with(&ws_url(gw.addr, "t", None), &bad).await else {
         panic!("handshake must fail");
     };
     assert!(err.contains("401"), "expected HTTP 401, got: {err}");
@@ -102,7 +103,7 @@ async fn draining_closes_sessions_with_1001() {
 async fn mute_client(gw: &Gateway, sid: &str) -> tokio::net::TcpStream {
     let mut tcp = tokio::net::TcpStream::connect(gw.addr).await.expect("tcp");
     let req = format!(
-        "GET /v1/ws?tenant=t&ticket=dev&sid={sid} HTTP/1.1\r\nHost: {}\r\n\
+        "GET /v1/ws?tenant=t&sid={sid} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer dev\r\n\
          Upgrade: websocket\r\nConnection: Upgrade\r\n\
          Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
         gw.addr

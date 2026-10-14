@@ -6,6 +6,8 @@
 pub mod admission;
 pub mod client_ip;
 pub mod codec;
+pub mod credentials;
 pub mod handshake;
 pub(crate) mod session;
+pub mod subprotocol;
 pub mod ws;

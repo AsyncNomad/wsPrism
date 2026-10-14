@@ -40,7 +40,9 @@ fn gen_trace() -> String {
 #[derive(Debug, Deserialize)]
 pub struct WsQuery {
     pub tenant: String,
-    pub ticket: String,
+    /// Legacy ticket carrier; honoured only if the tenant allows `query`.
+    #[serde(default)]
+    pub ticket: Option<String>,
     /// Optional client-provided session id (tab/browser id). Generated if absent.
     #[serde(default)]
     pub sid: Option<String>,
@@ -55,7 +57,7 @@ pub async fn ws_upgrade(
 ) -> Response {
     let req = HandshakeRequest {
         tenant: &q.tenant,
-        ticket: &q.ticket,
+        query_ticket: q.ticket.as_deref(),
         peer,
         headers: &headers,
     };
@@ -67,6 +69,10 @@ pub async fn ws_upgrade(
     app.metrics()
         .ws_upgrades
         .inc(&[("tenant", &q.tenant), ("status", "ok")]);
+    let ws = match admitted.subprotocol {
+        Some(version) => ws.protocols([version]),
+        None => ws,
+    };
     // S2: enforce the tenant frame limit in the WS codec itself, so oversized
     // payloads are rejected before they are buffered in full or decoded.
     ws.max_message_size(admitted.max_frame_bytes)

@@ -24,7 +24,7 @@ tenants:
 async fn admitted_handshakes_complete_with_defender_enabled() {
     let gw = spawn(YAML).await;
     for i in 0..5 {
-        let r = try_connect_url(&ws_url(gw.addr, "t", "dev", None)).await;
+        let r = try_connect_url(&ws_url(gw.addr, "t", None)).await;
         assert!(r.is_ok(), "handshake #{i} failed: {:?}", r.err());
     }
 }

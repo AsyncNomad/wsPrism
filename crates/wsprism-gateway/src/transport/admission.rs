@@ -15,7 +15,10 @@ use axum::response::{IntoResponse, Response};
 
 use crate::app_state::AppState;
 use crate::config::TenantConfig;
+use crate::policy::TenantPolicyRuntime;
+use crate::transport::credentials;
 use crate::transport::handshake::retry_after_header;
+use crate::transport::subprotocol::{Negotiated, Offered};
 
 /// Fixed `tenant` label for requests naming a tenant that isn't configured.
 const UNKNOWN_TENANT_LABEL: &str = "_unknown";
@@ -24,7 +27,8 @@ const UNKNOWN_TENANT_LABEL: &str = "_unknown";
 pub struct HandshakeRequest<'a> {
     /// Tenant id as requested by the client (unvalidated).
     pub tenant: &'a str,
-    pub ticket: &'a str,
+    /// `?ticket=` (only honoured if the tenant lists `query` in ticket_sources).
+    pub query_ticket: Option<&'a str>,
     /// TCP peer address.
     pub peer: SocketAddr,
     pub headers: &'a HeaderMap,
@@ -33,6 +37,8 @@ pub struct HandshakeRequest<'a> {
 /// A request that passed every check.
 pub struct Admitted {
     pub user_id: String,
+    /// Subprotocol to echo in the upgrade response, if one was negotiated.
+    pub subprotocol: Option<&'static str>,
     /// Client address (resolved through trusted proxies).
     pub client_ip: IpAddr,
     /// Tenant frame limit, enforced in the WS codec (S2).
@@ -101,11 +107,17 @@ fn check_all(
     let tenant = tenant.ok_or_else(|| {
         Rejection::new(StatusCode::BAD_REQUEST, "unknown_tenant", "Unknown Tenant")
     })?;
-    origin_allowed(app, tenant, req)?;
-    let user_id = authenticate(app, req)?;
+    let policy = app.tenant_policy(&tenant.id).ok_or_else(|| {
+        Rejection::new(StatusCode::BAD_REQUEST, "unknown_tenant", "Unknown Tenant")
+    })?;
+    let offered = Offered::parse(req.headers);
+    let subprotocol = negotiate_protocol(&offered)?;
+    origin_allowed(&policy, req)?;
+    let user_id = authenticate(app, &policy, req, &offered)?;
     tenant_capacity(app, tenant)?;
     Ok(Admitted {
         user_id,
+        subprotocol,
         client_ip,
         max_frame_bytes: tenant.limits.max_frame_bytes,
     })
@@ -134,17 +146,26 @@ fn not_draining(app: &AppState) -> Result<(), Rejection> {
     Ok(())
 }
 
+/// Protocol version via `Sec-WebSocket-Protocol` (see `transport::subprotocol`).
+fn negotiate_protocol(offered: &Offered<'_>) -> Result<Option<&'static str>, Rejection> {
+    match offered.negotiate() {
+        Negotiated::Implicit => Ok(None),
+        Negotiated::Selected(version) => Ok(Some(version)),
+        Negotiated::Unsupported => Err(Rejection::new(
+            StatusCode::BAD_REQUEST,
+            "unsupported_protocol",
+            "Unsupported Sec-WebSocket-Protocol (offer wsprism.v1)",
+        )),
+    }
+}
+
 /// Cross-site WebSocket hijacking protection (see `policy::origin`).
 fn origin_allowed(
-    app: &AppState,
-    tenant: &TenantConfig,
+    policy: &TenantPolicyRuntime,
     req: &HandshakeRequest<'_>,
 ) -> Result<(), Rejection> {
     let origin = req.headers.get(ORIGIN).and_then(|v| v.to_str().ok());
-    let allowed = app
-        .tenant_policy(&tenant.id)
-        .is_some_and(|p| p.origins().allows(origin));
-    if !allowed {
+    if !policy.origins().allows(origin) {
         return Err(Rejection::new(
             StatusCode::FORBIDDEN,
             "origin_not_allowed",
@@ -155,9 +176,17 @@ fn origin_allowed(
 }
 
 /// C3: authenticate before upgrading, so unauthenticated clients get a proper
-/// HTTP 401 and never consume a socket task.
-fn authenticate(app: &AppState, req: &HandshakeRequest<'_>) -> Result<String, Rejection> {
-    app.resolve_ticket(req.ticket)
+/// HTTP 401 and never consume a socket task. The ticket is read from the
+/// tenant's `ticket_sources` (see `transport::credentials`).
+fn authenticate(
+    app: &AppState,
+    policy: &TenantPolicyRuntime,
+    req: &HandshakeRequest<'_>,
+    offered: &Offered<'_>,
+) -> Result<String, Rejection> {
+    let ticket = credentials::find(policy.ticket_sources(), req, offered)
+        .ok_or_else(|| Rejection::new(StatusCode::UNAUTHORIZED, "auth_missing", "Unauthorized"))?;
+    app.resolve_ticket(ticket)
         .map_err(|_| Rejection::new(StatusCode::UNAUTHORIZED, "auth_failed", "Unauthorized"))
 }
 

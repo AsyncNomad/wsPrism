@@ -146,6 +146,12 @@ tenants:
       allowed_origins:
         - "https://app.example.com"
 
+      # Where clients may present their ticket, in priority order (default: header, subprotocol).
+      #   header      -> Authorization: Bearer <ticket>
+      #   subprotocol -> Sec-WebSocket-Protocol: wsprism.v1, wsprism.auth.<ticket>  (browsers)
+      #   query       -> ?ticket=<ticket>  (legacy; leaks into access logs, so off by default)
+      ticket_sources: [header, subprotocol]
+
 
   # ============================================================================
   # Tenant B: "enterprise_game" (High Performance)

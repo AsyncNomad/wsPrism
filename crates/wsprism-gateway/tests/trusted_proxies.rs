@@ -26,8 +26,8 @@ tenants:
 
 async fn connect_as(gw: &Gateway, client: &str) -> Result<(), String> {
     try_connect_with(
-        &ws_url(gw.addr, "t", "dev", None),
-        &[("x-forwarded-for", client)],
+        &ws_url(gw.addr, "t", None),
+        &[AUTH, ("x-forwarded-for", client)],
     )
     .await
     .map(|_| ())

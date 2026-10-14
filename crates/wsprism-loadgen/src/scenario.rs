@@ -68,10 +68,9 @@ impl Args {
 
     pub fn ws_url(&self, conn: usize) -> String {
         format!(
-            "{}/v1/ws?tenant={}&ticket={}&sid=c{conn}",
+            "{}/v1/ws?tenant={}&sid=c{conn}",
             self.url.trim_end_matches('/'),
-            self.tenant,
-            self.ticket
+            self.tenant
         )
     }
 }

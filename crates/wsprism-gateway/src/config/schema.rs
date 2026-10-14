@@ -433,6 +433,27 @@ pub struct TenantPolicy {
     /// Empty (default) = deny every browser origin. See `policy::origin`.
     #[serde(default)]
     pub allowed_origins: Vec<String>,
+
+    /// Where clients may present their ticket, in priority order. The query
+    /// string is not included by default because URLs are logged by proxies.
+    #[serde(default = "default_ticket_sources")]
+    pub ticket_sources: Vec<TicketSource>,
+}
+
+/// A place a client can carry its ticket on the upgrade request.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TicketSource {
+    /// `Authorization: Bearer <token>` (native clients).
+    Header,
+    /// `Sec-WebSocket-Protocol: wsprism.v1, wsprism.auth.<token>` (browsers).
+    Subprotocol,
+    /// `?ticket=<token>` (legacy; ends up in access logs).
+    Query,
+}
+
+fn default_ticket_sources() -> Vec<TicketSource> {
+    vec![TicketSource::Header, TicketSource::Subprotocol]
 }
 
 fn default_hot_requires_active_room() -> bool {
@@ -451,6 +472,7 @@ impl Default for TenantPolicy {
             hot_error_mode: default_hot_error_mode(),
             hot_requires_active_room: default_hot_requires_active_room(),
             allowed_origins: Vec::new(),
+            ticket_sources: default_ticket_sources(),
         }
     }
 }
@@ -461,6 +483,18 @@ impl TenantPolicy {
             return Err(WsPrismError::BadRequest(
                 "policy.rate_limit_rps and rate_limit_burst must be > 0".into(),
             ));
+        }
+        if self.ticket_sources.is_empty() {
+            return Err(WsPrismError::BadRequest(
+                "policy.ticket_sources must not be empty".into(),
+            ));
+        }
+        for (i, src) in self.ticket_sources.iter().enumerate() {
+            if self.ticket_sources[..i].contains(src) {
+                return Err(WsPrismError::BadRequest(format!(
+                    "policy.ticket_sources: duplicate entry {src:?}"
+                )));
+            }
         }
         // sessions policy sanity
         match self.sessions.mode {

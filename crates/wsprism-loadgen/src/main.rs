@@ -35,7 +35,7 @@ async fn main() {
         let (args, gate) = (args.clone(), gate.clone());
         setups.push(tokio::spawn(async move {
             let _permit = gate.acquire_owned().await.ok()?;
-            match client::setup(&args.ws_url(conn), &args.room_of(conn)).await {
+            match client::setup(&args.ws_url(conn), &args.ticket, &args.room_of(conn)).await {
                 Ok(ws) => Some(ws),
                 Err(e) => {
                     eprintln!("conn {conn}: {e}");
