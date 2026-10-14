@@ -5,19 +5,56 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
+use wtransport::config::QuicTransportConfig;
 use wtransport::endpoint::IncomingSession;
+use wtransport::quinn::VarInt;
 use wtransport::{Endpoint, Identity, ServerConfig};
 
 use crate::hub::{parse_query, Hub};
 
-pub async fn serve(addr: SocketAddr, identity: Identity, hub: Arc<Hub>) -> std::io::Result<()> {
-    let config = ServerConfig::builder()
-        .with_bind_address(addr)
-        .with_identity(identity)
+/// Per-connection QUIC settings sized for small, frequent state frames
+/// (memory experiment, BENCHMARKS.md "검증 V"). quinn defaults are sized for
+/// bulk streams: 1 MB / 1.25 MB datagram buffers, 1.25 MB stream window,
+/// 100 + 100 concurrent streams, MTU discovery.
+fn lean_transport() -> QuicTransportConfig {
+    let mut t = QuicTransportConfig::default();
+    t.datagram_send_buffer_size(64 * 1024)
+        .datagram_receive_buffer_size(Some(64 * 1024))
+        .stream_receive_window(VarInt::from_u32(64 * 1024))
+        .receive_window(VarInt::from_u32(256 * 1024))
+        .send_window(256 * 1024)
+        // WebTransport needs the CONNECT bidi stream and the HTTP/3 control /
+        // QPACK uni streams (3 per side); leave headroom.
+        .max_concurrent_bidi_streams(VarInt::from_u32(4))
+        .max_concurrent_uni_streams(VarInt::from_u32(8))
+        .mtu_discovery_config(None)
         .keep_alive_interval(Some(Duration::from_secs(3)))
-        .max_idle_timeout(Some(Duration::from_secs(30)))
-        .expect("idle timeout")
-        .build();
+        .max_idle_timeout(Some(
+            Duration::from_secs(30).try_into().expect("idle timeout"),
+        ));
+    t
+}
+
+pub async fn serve(
+    addr: SocketAddr,
+    identity: Identity,
+    hub: Arc<Hub>,
+    lean: bool,
+) -> std::io::Result<()> {
+    let config = if lean {
+        ServerConfig::builder()
+            .with_bind_address(addr)
+            .with_custom_transport(identity, lean_transport())
+            .build()
+    } else {
+        ServerConfig::builder()
+            .with_bind_address(addr)
+            .with_identity(identity)
+            .keep_alive_interval(Some(Duration::from_secs(3)))
+            .max_idle_timeout(Some(Duration::from_secs(30)))
+            .expect("idle timeout")
+            .build()
+    };
     let endpoint = Endpoint::server(config)?;
     loop {
         let incoming = endpoint.accept().await;

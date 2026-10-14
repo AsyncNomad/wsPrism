@@ -4,6 +4,7 @@
 # combination and appends one JSON line per run to bench/results/<name>.jsonl.
 #
 #   bench/run-v.sh <name> [RUNS] [LOSSES] [TICKS] [TRANSPORTS] [EXTRA_LOADGEN_ARGS]
+#   RELAY_EXTRA="--quic-lean" bench/run-v.sh ...   (extra relay flags)
 #
 # Defaults = the G1/G5 judgment cell: 20 ms one-way, 60 Hz, 10 rooms x 10.
 # Order interleaves transports within each (run, loss, tick) so all three are
@@ -40,7 +41,7 @@ for run in $(seq "$RUNS"); do for loss in $LOSSES; do for tick in $TICKS; do for
   label="loss=$loss tick=$tick run=$run"
   echo "[$total] $t $label" >&2
   "$ROOT/bench/netlab.sh" --srv-egress "$prof" --cli-egress "$prof" \
-    --server "$SPIKE --$t 10.77.0.1:$(port "$t") --tick-hz $tick --cert-dir $CERT" \
+    --server "$SPIKE --$t 10.77.0.1:$(port "$t") --tick-hz $tick --cert-dir $CERT ${RELAY_EXTRA:-}" \
     --client "$LG statesync --transport $t --addr 10.77.0.1:$(port "$t") $EXTRA --server-pid \$SERVER_PID --label '$label'" \
     2>/dev/null >> "$OUT" || echo "[$total] FAILED: $t $label" >&2
 done; done; done; done

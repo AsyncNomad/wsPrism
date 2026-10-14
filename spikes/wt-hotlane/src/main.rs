@@ -43,6 +43,10 @@ struct Args {
         default_value = "localhost,127.0.0.1,10.77.0.1"
     )]
     san: Vec<String>,
+    /// WebTransport: QUIC buffers sized for small state frames instead of
+    /// quinn's bulk-transfer defaults (memory experiment).
+    #[arg(long)]
+    quic_lean: bool,
     /// Print relay counters every N seconds to stderr (0 = never).
     #[arg(long, default_value_t = 0)]
     stats_every: u64,
@@ -91,6 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             addr,
             identity.clone_identity(),
             hub.clone(),
+            args.quic_lean,
         )));
     }
     println!(
