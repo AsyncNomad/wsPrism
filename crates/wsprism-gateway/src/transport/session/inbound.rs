@@ -8,9 +8,10 @@ use wsprism_core::protocol::hot::HotFrame;
 use wsprism_core::protocol::text::Envelope;
 
 use super::close::{is_message_too_long, Exit};
-use super::{sys, Flow, Session};
+use super::{Flow, Session};
 use crate::policy::engine::{HotErrorMode, PolicyDecision};
 use crate::realtime::{close_code, CloseSpec};
+use crate::sys;
 use crate::transport::codec::{decode, Inbound};
 
 impl Session {
@@ -33,16 +34,14 @@ impl Session {
         let decoded = match decode(msg) {
             Ok(d) => d,
             Err(e) => {
-                self.metrics
-                    .decode_errors
-                    .inc(&[("tenant", &self.id.tenant)]);
+                self.metrics.decode_errors.inc(&[("tenant", self.tenant())]);
                 return Flow::Break(Exit::Close(CloseSpec::new(
                     close_code::PROTOCOL_ERROR,
                     "decode_error",
                     Some(sys::error(
                         e.client_code().as_str(),
                         &e.to_string(),
-                        &self.id.trace_id,
+                        self.trace_id(),
                     )),
                 )));
             }
@@ -92,7 +91,7 @@ impl Session {
             PolicyDecision::Close { code, msg } => {
                 // SAFE LABEL: code.as_str()
                 self.decision(lane, "close", code.as_str());
-                let notice = notify.then(|| sys::error(code.as_str(), msg, &self.id.trace_id));
+                let notice = notify.then(|| sys::error(code.as_str(), msg, self.trace_id()));
                 ControlFlow::Break(Exit::Close(CloseSpec::new(
                     close_code::POLICY,
                     "policy",
@@ -110,61 +109,30 @@ impl Session {
         if !self.enforce("ext", decision, true)? {
             return Flow::Continue(());
         }
-        match (env.svc.as_str(), env.msg_type.as_str()) {
-            ("room", "join") => self.join_room(env.room),
-            ("room", "leave") => self.leave_room(env.room),
-            _ => self.dispatch_text(env).await,
-        }
+        self.dispatch_text(env).await
     }
 
-    fn join_room(&mut self, room: Option<String>) -> Flow {
-        let room = room.unwrap_or_else(|| "default".to_string());
-        match self.ctx().join_room_with_limits(&room, &self.limits) {
-            Ok(()) => {
-                let joined = sys::joined(&room, &self.id.trace_id);
-                self.active_room = Some(room);
-                self.reply(joined)
-            }
-            Err(e) => {
-                self.metrics.service_errors.inc(&[
-                    ("tenant", &self.id.tenant),
-                    ("svc", "room"),
-                    ("type", "join_failed"),
-                ]);
-                self.reply_error(e.client_code().as_str(), &e.to_string())
-            }
-        }
-    }
-
-    /// C4: leave the named room; without one, the active room.
-    fn leave_room(&mut self, room: Option<String>) -> Flow {
-        let ctx = self.ctx();
-        match room.or_else(|| self.active_room.clone()) {
-            Some(room) if ctx.is_in_room(&room) => {
-                ctx.leave_room(&room);
-                if self.active_room.as_deref() == Some(room.as_str()) {
-                    self.active_room = None;
-                }
-                self.reply(sys::left(&room, &self.id.trace_id))
-            }
-            _ => self.reply_error("BAD_REQUEST", "not a member of that room"),
-        }
-    }
-
-    async fn dispatch_text(&self, env: Envelope) -> Flow {
+    async fn dispatch_text(&mut self, env: Envelope) -> Flow {
+        // Label with the registered (static) service name, never the raw svc (S5).
+        let svc = self
+            .dispatcher
+            .text_service_name(&env.svc)
+            .unwrap_or("unknown");
         let start = Instant::now();
-        let res = self.dispatcher.dispatch_text(self.ctx(), env).await;
+        let res = self.dispatcher.dispatch_text(&mut self.ctx, env).await;
         // Always measure Ext lane
         self.metrics.dispatch_duration.observe(
-            &[("tenant", &self.id.tenant), ("lane", "ext")],
+            &[("tenant", self.tenant()), ("lane", "ext")],
             start.elapsed(),
         );
         match res {
             Ok(()) => Flow::Continue(()),
             Err(e) => {
-                self.metrics
-                    .service_errors
-                    .inc(&[("tenant", &self.id.tenant), ("lane", "ext")]);
+                self.metrics.service_errors.inc(&[
+                    ("tenant", self.tenant()),
+                    ("lane", "ext"),
+                    ("svc", svc),
+                ]);
                 self.reply_error(e.client_code().as_str(), &e.to_string())
             }
         }
@@ -180,7 +148,7 @@ impl Session {
         if !self.enforce("hot", decision, notify)? {
             return Flow::Continue(());
         }
-        if self.policy.hot_requires_active_room() && self.active_room.is_none() {
+        if self.policy.hot_requires_active_room() && self.ctx.active_room().is_none() {
             if notify {
                 return self.reply_error("BAD_REQUEST", "no active room");
             }
@@ -191,18 +159,18 @@ impl Session {
         self.hot_op_counter = self.hot_op_counter.wrapping_add(1);
         let start = (self.hot_op_counter & 1023 == 0).then(Instant::now);
 
-        let res = self.dispatcher.dispatch_hot(self.ctx(), frame).await;
+        let res = self.dispatcher.dispatch_hot(&mut self.ctx, frame).await;
         if let Some(s) = start {
             self.metrics
                 .dispatch_duration
-                .observe(&[("tenant", &self.id.tenant), ("lane", "hot")], s.elapsed());
+                .observe(&[("tenant", self.tenant()), ("lane", "hot")], s.elapsed());
         }
         match res {
             Ok(()) => Flow::Continue(()),
             Err(e) => {
                 self.metrics
                     .service_errors
-                    .inc(&[("tenant", &self.id.tenant), ("lane", "hot")]);
+                    .inc(&[("tenant", self.tenant()), ("lane", "hot")]);
                 if notify {
                     return self.reply_error(e.client_code().as_str(), &e.to_string());
                 }

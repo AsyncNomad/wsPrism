@@ -13,14 +13,14 @@ use crate::realtime::RealtimeCtx;
 #[async_trait]
 pub trait TextService: Send + Sync {
     fn svc(&self) -> &'static str;
-    async fn handle(&self, ctx: RealtimeCtx, env: Envelope) -> Result<()>;
+    async fn handle(&self, ctx: &mut RealtimeCtx, env: Envelope) -> Result<()>;
 }
 
 /// Binary services (Hot Lane). **Native only** (no WASM/script).
 #[async_trait]
 pub trait BinaryService: Send + Sync {
     fn svc_id(&self) -> u8;
-    async fn handle_binary(&self, ctx: RealtimeCtx, frame: HotFrame) -> Result<()>;
+    async fn handle_binary(&self, ctx: &mut RealtimeCtx, frame: HotFrame) -> Result<()>;
 }
 
 /// Registry and dispatcher for Text (Ext lane) and Binary (Hot lane) services.
@@ -50,11 +50,17 @@ impl Dispatcher {
         self.text.iter().map(|e| *e.key()).collect()
     }
 
+    /// The registered (static) name of text service `svc`, if any. Safe to
+    /// use as a metric label, unlike the client-supplied string (S5).
+    pub fn text_service_name(&self, svc: &str) -> Option<&'static str> {
+        self.text.get(svc).map(|e| *e.key())
+    }
+
     pub fn registered_hot_svcs(&self) -> Vec<u8> {
         self.hot.iter().map(|e| *e.key()).collect()
     }
 
-    pub async fn dispatch_text(&self, ctx: RealtimeCtx, env: Envelope) -> Result<()> {
+    pub async fn dispatch_text(&self, ctx: &mut RealtimeCtx, env: Envelope) -> Result<()> {
         let svc = env.svc.as_str();
         let handler = self
             .text
@@ -65,7 +71,7 @@ impl Dispatcher {
         handler.handle(ctx, env).await
     }
 
-    pub async fn dispatch_hot(&self, ctx: RealtimeCtx, frame: HotFrame) -> Result<()> {
+    pub async fn dispatch_hot(&self, ctx: &mut RealtimeCtx, frame: HotFrame) -> Result<()> {
         let sid = frame.svc_id;
         let handler = self
             .hot

@@ -8,12 +8,13 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use wsprism_core::error::{Result, WsPrismError};
 
-use super::{sys, Session, SessionIdentity};
+use super::{Session, SessionIdentity};
 use crate::app_state::AppState;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::OnExceed;
 use crate::realtime::core::Connection;
-use crate::realtime::{close_code, CloseSpec, RealtimeCore};
+use crate::realtime::{close_code, CloseSpec, RealtimeCore, RealtimeCtx};
+use crate::sys;
 
 /// Per-connection counter making internal session keys unique (S4).
 static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
@@ -195,23 +196,28 @@ impl Session {
             .map_err(|_| WsPrismError::Internal("outbound queue unavailable".into()))?;
 
         let gw = &app.cfg().gateway;
-        Ok(Admission::Admitted(Box::new(Session {
+        let ctx = RealtimeCtx::new(
+            id.tenant,
+            id.user_id,
+            id.sid,
             session_key,
-            conn_limiter: policy.new_connection_limiter(),
-            limits: t_cfg.limits.clone(),
-            policy,
+            id.trace_id,
+            Arc::new(t_cfg.limits.clone()),
             core,
+        );
+        Ok(Admission::Admitted(Box::new(Session {
+            ctx,
+            conn_limiter: policy.new_connection_limiter(),
+            policy,
             dispatcher: app.dispatcher(),
             metrics,
             out_tx,
             writer_timeout: Duration::from_millis(gw.writer_send_timeout_ms),
             ping_interval: Duration::from_millis(gw.ping_interval_ms),
             idle_timeout: Duration::from_millis(gw.idle_timeout_ms),
-            active_room: None,
             last_activity: Instant::now(),
             hot_op_counter: 0,
             _cleanup: cleanup,
-            id,
         })))
     }
 }

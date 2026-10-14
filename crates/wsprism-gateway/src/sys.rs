@@ -1,4 +1,5 @@
-//! Gateway `sys.*` envelopes sent to clients.
+//! Gateway `sys.*` envelopes sent to clients (shared by the session loop
+//! and built-in services).
 
 use serde_json::json;
 

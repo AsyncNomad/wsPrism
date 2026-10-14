@@ -158,6 +158,12 @@ impl RealtimeCore {
     }
 }
 
+/// A session's view of the realtime core, handed to services.
+///
+/// One context lives for the whole session (owned by the session task) and
+/// is lent to services as `&mut RealtimeCtx`, so services can update
+/// session-scoped state such as the active room without locks, and nothing
+/// is re-allocated per message. Clone it to use it from a spawned task.
 #[derive(Clone)]
 pub struct RealtimeCtx {
     tenant: Arc<str>,
@@ -167,11 +173,12 @@ pub struct RealtimeCtx {
     session_key: Arc<str>,
     pub trace_id: Arc<str>,
     active_room: Option<Arc<str>>,
+    limits: Arc<TenantLimits>,
     core: Arc<RealtimeCore>,
 }
 
 impl RealtimeCtx {
-    /// Construct a per-message context with immutable identity and trace fields.
+    /// Construct the context for one session.
     ///
     /// `session_key` is the gateway-internal, per-connection unique key (see
     /// S4 in docs/HARDENING.md); `session_id` is the client-facing sid.
@@ -181,22 +188,22 @@ impl RealtimeCtx {
         session_id: impl Into<Arc<str>>,
         session_key: impl Into<Arc<str>>,
         trace_id: impl Into<Arc<str>>,
-        active_room: Option<String>,
+        limits: Arc<TenantLimits>,
         core: Arc<RealtimeCore>,
     ) -> Self {
         let tenant = tenant.into();
         let user = user.into();
-        let session_id = session_id.into();
         let user_key: Arc<str> = Arc::from(format!("{}::{}", tenant, user));
 
         Self {
             tenant,
             user,
             user_key,
-            session_id,
+            session_id: session_id.into(),
             session_key: session_key.into(),
             trace_id: trace_id.into(),
-            active_room: active_room.map(Arc::from),
+            active_room: None,
+            limits,
             core,
         }
     }
@@ -216,22 +223,27 @@ impl RealtimeCtx {
     pub fn session_key(&self) -> &str {
         &self.session_key
     }
+    /// The session's active room: the Hot Lane target (see PROTOCOL.md).
     pub fn active_room(&self) -> Option<&str> {
         self.active_room.as_deref()
+    }
+    pub fn set_active_room(&mut self, room: Option<&str>) {
+        self.active_room = room.map(Arc::from);
     }
 
     fn room_key(&self, room: &str) -> String {
         format!("{}::{}", self.tenant(), room)
     }
 
-    pub fn join_room_with_limits(&self, room: &str, limits: &TenantLimits) -> Result<()> {
+    /// Join `room`, enforcing the tenant's room limits.
+    pub fn join_room(&self, room: &str) -> Result<()> {
         let rk = self.room_key(room);
         self.core.presence.try_join(
             self.tenant(),
             &rk,
             self.user_key(),
             self.session_key(),
-            limits,
+            &self.limits,
         )
     }
 

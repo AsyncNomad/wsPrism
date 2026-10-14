@@ -25,7 +25,7 @@ impl BinaryService for EchoBinaryService {
         self.svc_id
     }
 
-    async fn handle_binary(&self, ctx: RealtimeCtx, frame: HotFrame) -> Result<()> {
+    async fn handle_binary(&self, ctx: &mut RealtimeCtx, frame: HotFrame) -> Result<()> {
         let out = Outgoing {
             qos: QoS::Lossy,
             payload: Payload::Binary(frame.payload.clone()),

@@ -12,7 +12,6 @@
 mod admit;
 mod close;
 mod inbound;
-pub(crate) mod sys;
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -25,12 +24,12 @@ use tokio::time::{timeout, Duration, Instant};
 use wsprism_core::error::Result;
 
 use crate::app_state::AppState;
-use crate::config::TenantLimits;
 use crate::dispatch::Dispatcher;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::ConnRateLimiter;
 use crate::policy::TenantPolicyRuntime;
-use crate::realtime::{close_code, CloseSpec, RealtimeCore, RealtimeCtx};
+use crate::realtime::{close_code, CloseSpec, RealtimeCtx};
+use crate::sys;
 
 use admit::{Admission, SessionCleanup};
 use close::Exit;
@@ -77,19 +76,16 @@ pub(crate) async fn run(app: AppState, id: SessionIdentity, socket: WebSocket) -
 
 /// State of one admitted session, owned by its task.
 struct Session {
-    id: SessionIdentity,
-    /// Gateway-internal key, unique per connection (S4).
-    session_key: String,
+    /// Identity + session-scoped state, lent to services as `&mut` (one per
+    /// session, not rebuilt per message).
+    ctx: RealtimeCtx,
     policy: Arc<TenantPolicyRuntime>,
-    limits: TenantLimits,
-    core: Arc<RealtimeCore>,
     dispatcher: Arc<Dispatcher>,
     metrics: Arc<GatewayMetrics>,
     out_tx: mpsc::Sender<Message>,
     writer_timeout: Duration,
     ping_interval: Duration,
     idle_timeout: Duration,
-    active_room: Option<String>,
     last_activity: Instant,
     conn_limiter: Option<ConnRateLimiter>,
     /// Hot Lane latency sampling counter (1/1024).
@@ -134,7 +130,7 @@ impl Session {
             Err(_) => {
                 self.metrics
                     .writer_timeouts
-                    .inc(&[("tenant", &self.id.tenant)]);
+                    .inc(&[("tenant", self.tenant())]);
                 Flow::Break(Exit::Abort)
             }
         }
@@ -151,7 +147,7 @@ impl Session {
             return Flow::Break(Exit::Close(CloseSpec::new(
                 close_code::NORMAL,
                 "idle_timeout",
-                Some(sys::error("TIMEOUT", "idle", &self.id.trace_id)),
+                Some(sys::error("TIMEOUT", "idle", self.trace_id())),
             )));
         }
         Flow::Continue(())
@@ -172,7 +168,7 @@ impl Session {
                     Some(sys::error(
                         "SLOW_CONSUMER",
                         "outbound queue full",
-                        &self.id.trace_id,
+                        self.trace_id(),
                     )),
                 )))
             }
@@ -181,29 +177,24 @@ impl Session {
     }
 
     fn reply_error(&self, code: &str, msg: &str) -> Flow {
-        self.reply(sys::error(code, msg, &self.id.trace_id))
+        self.reply(sys::error(code, msg, self.trace_id()))
     }
 
     /// Count a policy decision. Label values are static or from a fixed set (S5).
     fn decision(&self, lane: &str, decision: &str, reason: &str) {
         self.metrics.policy_decisions.inc(&[
-            ("tenant", &self.id.tenant),
+            ("tenant", self.tenant()),
             ("lane", lane),
             ("decision", decision),
             ("reason", reason),
         ]);
     }
 
-    /// Per-message context handed to room operations and services.
-    fn ctx(&self) -> RealtimeCtx {
-        RealtimeCtx::new(
-            self.id.tenant.clone(),
-            self.id.user_id.clone(),
-            self.id.sid.clone(),
-            self.session_key.clone(),
-            self.id.trace_id.clone(),
-            self.active_room.clone(),
-            self.core.clone(),
-        )
+    fn tenant(&self) -> &str {
+        self.ctx.tenant()
+    }
+
+    fn trace_id(&self) -> &str {
+        &self.ctx.trace_id
     }
 }

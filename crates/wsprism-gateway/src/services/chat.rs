@@ -29,7 +29,7 @@ impl TextService for ChatService {
         "chat"
     }
 
-    async fn handle(&self, ctx: RealtimeCtx, env: Envelope) -> Result<()> {
+    async fn handle(&self, ctx: &mut RealtimeCtx, env: Envelope) -> Result<()> {
         match env.msg_type.as_str() {
             "send" => {
                 let room = env

@@ -12,7 +12,7 @@ use wsprism_core::error::{Result, WsPrismError};
 use crate::dispatch::Dispatcher;
 use crate::obs::metrics::GatewayMetrics;
 use crate::realtime::RealtimeCore;
-use crate::services::{ChatService, EchoBinaryService};
+use crate::services::{ChatService, EchoBinaryService, RoomService};
 use crate::{
     config::{GatewayConfig, TenantConfig},
     policy,
@@ -70,6 +70,7 @@ impl AppState {
         let dispatcher = Dispatcher::new();
 
         // 3) Register built-in services (Sprint 3)
+        dispatcher.register_text(Arc::new(RoomService::new()));
         dispatcher.register_text(Arc::new(ChatService::new()));
         dispatcher.register_hot(Arc::new(EchoBinaryService::new(1)));
 
@@ -78,7 +79,7 @@ impl AppState {
             let text_svcs = dispatcher.registered_text_svcs();
             let hot_svcs = dispatcher.registered_hot_svcs();
 
-            let exempt_text = ["room", "sys"]; // transport/internal
+            let exempt_text = ["sys"]; // reserved for gateway-originated messages
 
             for t in &cfg.tenants {
                 // ext rules: "svc:type"
