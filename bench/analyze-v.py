@@ -132,6 +132,9 @@ def main(path):
             print(f"    {n}")
 
     # Reference: against the single WSS configuration with the best AoI under loss.
+    if not lossy:
+        print("\n(no lossy conditions in this file: G1 cannot be judged; cost ratios above)")
+        return
     wss_best = min(ticks, key=lambda tk: max(m[("wss", l, tk)]["aoi_p99"] for l in lossy))
     print(f"\nReference: WT vs the best-AoI WSS configuration (tick={wss_best})")
     for tick in ticks:
