@@ -25,4 +25,9 @@ async-trait = { workspace = true }
 tungstenite = "0.24"
 
 [dev-dependencies]
+criterion = { workspace = true }
 tokio-tungstenite = "0.24"
+
+[[bench]]
+name = "hotpath"
+harness = false

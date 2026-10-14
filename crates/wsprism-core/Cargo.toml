@@ -11,5 +11,10 @@ bytes = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+criterion = { workspace = true }
 base64 = "0.22"
 hex = "0.4"
+
+[[bench]]
+name = "protocol"
+harness = false

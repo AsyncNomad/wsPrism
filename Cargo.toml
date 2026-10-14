@@ -25,4 +25,9 @@ axum = { version = "0.7", features = ["ws"] }
 futures-util = "0.3"
 
 dashmap = "5"
+
+# benchmarking / load testing (dev & tools only)
+criterion = "0.8"
+hdrhistogram = "7.6"
+clap = { version = "4.6", features = ["derive"] }
 async-trait = "0.1"
