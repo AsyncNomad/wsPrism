@@ -2,6 +2,10 @@
 resolver = "2"
 members = ["crates/*"]
 
+[workspace.package]
+license = "Apache-2.0"
+repository = "https://github.com/AsyncNomad/wsPrism"
+
 [workspace.dependencies]
 # runtime / logging
 tokio = { version = "1", features = ["full"] }
@@ -11,15 +15,17 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # serialization / config / errors
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-serde_yaml = "0.9"
+# serde_yaml is deprecated and its unsafe-libyaml is unmaintained (RUSTSEC-2024-0449);
+# serde_norway is the maintained drop-in fork.
+serde_norway = "0.9"
 thiserror = "1"
 
 # binary utils
 bytes = "1"
 
 # internal crates
-wsprism-core = { path = "crates/wsprism-core" }
-wsprism-gateway = { path = "crates/wsprism-gateway" }
+wsprism-core = { path = "crates/wsprism-core", version = "0.1.0" }
+wsprism-gateway = { path = "crates/wsprism-gateway", version = "0.1.0" }
 
 axum = { version = "0.7", features = ["ws"] }
 futures-util = "0.3"

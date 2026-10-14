@@ -18,7 +18,7 @@ pub fn load_from_file(path: &str) -> Result<GatewayConfig> {
 }
 
 pub fn load_from_str(s: &str) -> Result<GatewayConfig> {
-    let cfg: GatewayConfig = serde_yaml::from_str(s)
+    let cfg: GatewayConfig = serde_norway::from_str(s)
         .map_err(|e| WsPrismError::BadRequest(format!("invalid yaml: {e}")))?;
     cfg.validate()?;
     Ok(cfg)
