@@ -35,3 +35,34 @@ jobs:
 
       - name: Test
         run: cargo test --workspace --locked
+
+  # Dependency policy: RustSec advisories (what cargo-audit checks), licenses,
+  # sources and bans, as configured in deny.toml.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  # Short fuzzing smoke run per parser that sees untrusted input (fuzz/).
+  # Longer campaigns run locally: cargo +nightly fuzz run <target>.
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [hot_frame, envelope, client_ip, origin, subprotocol]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Fuzz ${{ matrix.target }} (60s)
+        working-directory: fuzz
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60

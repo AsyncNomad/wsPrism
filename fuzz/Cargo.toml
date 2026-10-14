@@ -1,0 +1,55 @@
+[package]
+name = "wsprism-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+description = "cargo-fuzz targets for every parser that sees untrusted input"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytes = "1"
+axum = "0.7"
+wsprism-core = { path = "../crates/wsprism-core" }
+wsprism-gateway = { path = "../crates/wsprism-gateway" }
+
+# Fuzzing needs nightly; keep it out of the main (stable) workspace.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "hot_frame"
+path = "fuzz_targets/hot_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "envelope"
+path = "fuzz_targets/envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_ip"
+path = "fuzz_targets/client_ip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "origin"
+path = "fuzz_targets/origin.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "subprotocol"
+path = "fuzz_targets/subprotocol.rs"
+test = false
+doc = false
+bench = false
