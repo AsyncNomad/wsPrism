@@ -60,7 +60,7 @@ graph TD
 ## Key Features
 
 ⚡ **Ultra-Low Latency Core**  
-Built on `tokio` and `axum`, utilizing a lock-free, session-oriented architecture optimized for tail latency.
+Built on `tokio` and `axum`, with a session-oriented architecture tuned for tail latency (session loops never wait on their own queues; TCP_NODELAY by default). Measured numbers are in `docs/BENCHMARKS.md`.
 
 🏢 **Multi-Tenancy**  
 Run multiple isolated tenants (projects) on a single wsPrism instance, each with independent configuration and policies.

@@ -1,9 +1,17 @@
-# wsPrism Config (wsprism.yaml) v1 (Draft)
+# wsPrism Config (`wsprism.yaml`) v1
 
-wsPrism Gateway is configured via a single YAML file. The parser is **strict**:
-unknown fields cause startup failure.
+The gateway is configured with a single YAML file, passed with `--config`
+(or `WSPRISM_CONFIG`; default `./wsprism.yaml`). Validate it without serving:
 
----
+```bash
+wsprism-gateway --check-config --config wsprism.yaml
+```
+
+The parser is **strict**: unknown fields and out-of-range values fail at
+startup (and in `--check-config`), with the offending location.
+
+The annotated reference is the repository's [`wsprism.yaml`](../wsprism.yaml);
+every option is documented there.
 
 ## Minimal example
 
@@ -17,13 +25,8 @@ tenants:
       max_frame_bytes: 4096
 ```
 
----
+## Reloading
 
-## Hot Reload (Sprint 0 contract)
-Reloadable:
-- `tenants[].limits.*`
-- `tenants[].policy.*` (future)
-- `plugins.*` enable/disable (future)
-
-Restart required:
-- `gateway.listen` (for now)
+There is **no hot reload yet**: configuration changes need a restart (drain
+first; see `drain_grace_ms`). Hot reload of tenant policies is planned for
+roadmap milestone M6.

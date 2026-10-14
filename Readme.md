@@ -54,63 +54,62 @@ wsPrism은 프로젝트 루트의 `wsprism.yaml` 파일을 통해 게이트웨�
 
 ### 2. 게이트웨이 실행 (Run the Gateway)
 
-Cargo 또는 사전 빌드된 바이너리를 사용해 실행할 수 있습니다.
-
 ```bash
-# Cargo 사용
-RUST_LOG=wsprism_gateway=debug cargo run --release -- --config wsprism.yaml
-```
+# 설정 검증만 (CI·배포 전 점검용)
+cargo run --release -p wsprism-gateway -- --check-config --config wsprism.yaml
 
-```bash
-# 바이너리 사용
-./wsprism start --config wsprism.yaml
+# 실행 (설정 경로는 --config 또는 WSPRISM_CONFIG, 기본값 ./wsprism.yaml)
+RUST_LOG=wsprism_gateway=info cargo run --release -p wsprism-gateway -- --config wsprism.yaml
+
+# 빌드된 바이너리
+./target/release/wsprism-gateway --config wsprism.yaml
 ```
 
 ### 3. 실행 확인 (Verify)
 
-서버가 정상적으로 실행되면 다음과 같은 로그가 출력됩니다.
-
 ```
-INFO  wsprism::server > 🚀 wsPrism Gateway active at 0.0.0.0:8080
-INFO  wsprism::loader > Loaded configuration for tenant: "acme"
+INFO wsprism_gateway: wsprism-gateway starting listen=0.0.0.0:8080 config=wsprism.yaml
+```
+
+```bash
+curl http://localhost:8080/healthz   # ok
+curl http://localhost:8080/readyz    # ready (드레인 중이면 503)
+curl http://localhost:8080/metrics   # Prometheus 메트릭
 ```
 
 ### 4. 연결 (Connect)
 
-클라이언트(브라우저, 게임 엔진 등)에서 WebSocket으로 연결합니다.
+- **URL:** `ws://<host>:<port>/v1/ws?tenant=<id>[&sid=<세션 id>]`
+- **인증 티켓**은 테넌트의 `policy.ticket_sources` 중 하나로 보냅니다 (기본: 헤더, 서브프로토콜). 쿼리스트링(`?ticket=`)은 프록시 로그에 남기 때문에 기본으로 꺼져 있습니다.
+  - 네이티브 클라이언트: `Authorization: Bearer <ticket>`
+  - 브라우저: 서브프로토콜 `wsprism.v1` + `wsprism.auth.<ticket>`
+- 브라우저에서 접속하려면 그 Origin이 테넌트의 `policy.allowed_origins`에 있어야 합니다.
 
-- **URL 형식:** `ws://<host>:<port>/v1/ws?tenant=<id>&ticket=<auth_token>`
-- **예시:** `ws://localhost:8080/v1/ws?tenant=acme&ticket=dev`
+```js
+// 브라우저 (현재 인증은 개발용 스텁: 티켓 "dev"만 통과)
+const ws = new WebSocket("ws://localhost:8080/v1/ws?tenant=starter_plan", ["wsprism.v1", "wsprism.auth.dev"]);
+```
 
 ### 5. 메시지 전송 (프로토콜)
 
-wsPrism은 **듀얼 레인(Dual Lane)** 프로토콜을 사용합니다.
+wsPrism은 **듀얼 레인(Dual Lane)** 프로토콜을 사용합니다. 전체 계약은 [`docs/PROTOCOL.md`](docs/PROTOCOL.md)에 있습니다.
 
 ### A. Ext Lane (텍스트 / JSON)
 
-채팅, 룸 관리, 복잡한 로직에 사용됩니다.
+채팅, 룸 관리, 복잡한 로직에 사용됩니다. `seq`를 보내면 응답에 `reply_to`로 돌아옵니다.
 
 ```json
-{
-	"v":1,
-	"svc":"chat",
-	"type":"send",
-	"room":"match:1",
-	"data":{
-		"msg":"Hello World"
-	}
-}
+{"v":1, "svc":"room", "type":"join", "room":"match:1", "seq":1}
+{"v":1, "svc":"chat", "type":"send", "room":"match:1", "seq":2, "data":{"msg":"Hello World"}}
 ```
 
 ### B. Hot Lane (바이너리)
 
-이동, 물리 연산 등 지연에 민감한 데이터에 사용됩니다.
-
-서비스 ID와 오퍼코드에 의해 엄격하게 라우팅됩니다.
+이동, 물리 연산 등 지연에 민감한 데이터에 사용됩니다. 서비스 ID와 오퍼코드로 라우팅되며, 세션의 활성 룸(마지막으로 join한 룸)으로 전달됩니다.
 
 ```
-구조:[svc_id (u8)][opcode (u8)][flags (u8)][payload ...]
-예시:[0x01][0x01][0x00][...bytes...]
+구조: [v=1 (u8)][svc_id (u8)][opcode (u8)][flags (u8)][seq (u32 LE, flags & 0x01일 때)][payload ...]
+예시: [0x01][0x01][0x01][0x00][...bytes...]
 ```
 
 ---
@@ -145,13 +144,13 @@ wsPrism의 코어 엔진은 **Rust**로 구현되어 메모리 안전성, 제로
 wsPrism은 이 둘을 동시에 지원합니다.
 
 - **Ext Lane (텍스트 / JSON):** 채팅, 로비, 복잡한 데이터 처리용. 디버깅이 쉽고 유연함
-- **Hot Lane (바이너리):** 이동, 물리, 시세 틱 처리용. 제로 할당 라우팅, 최소 오버헤드, ID 기반 엄격한 라우팅
+- **Hot Lane (바이너리):** 이동, 물리, 시세 틱 처리용. zero-copy 디코드, 최소 오버헤드, ID 기반 엄격한 라우팅
 
 ---
 
 ## 주요 기능 (Key Features)
 
-- **⚡ 초저지연 코어:** `tokio`, `axum` 기반, 락-프리 세션 아키텍처
+- **⚡ 초저지연 코어:** `tokio`, `axum` 기반, 세션 루프가 자기 큐를 절대 기다리지 않는 구조. 수치는 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)
 - **🏢 멀티 테넌시:** 단일 인스턴스에서 여러 프로젝트를 독립 정책으로 운영
 - **🛡️ 정책 엔진:** 기본 보안 설계, 테넌트별 허용 목록·레이트 리미트·페이로드 제한
 - **🧠 결정적 QoS:** 게임 상태는 손실 허용, 채팅은 신뢰 전달 등 우선순위 기반 전송
@@ -181,12 +180,25 @@ graph TD
         Transport --> Policy --> Router
 
         Router -->|Hot Lane - Binary| Service_Echo[Native/Hot Service]
-        Router -->|Ext Lane - Text| Service_Chat[Script/WASM Service]
+        Router -->|Ext Lane - Text| Service_Chat[Native Service · WASM 계획]
     end
 
     Service_Chat -.->|WebHook / RPC| Backend[Your Backend API]
 
 ```
+
+---
+
+## 문서 (Documentation)
+
+| 문서 | 내용 |
+|---|---|
+| [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | 와이어 프로토콜 계약: 핸드셰이크·인증, 두 레인, 룸, 에러 코드, 종료 코드 |
+| [`wsprism.yaml`](wsprism.yaml) | 모든 설정 항목의 주석 달린 레퍼런스 |
+| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | 측정 방법과 성능 수치 |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | 상용 수준을 향한 단계별 계획 |
+| [`docs/adr/`](docs/adr/README.md) | 설계 결정 기록 |
+| [`docs/HARDENING.md`](docs/HARDENING.md) | 보안·정확성 결함 수정 기록 |
 
 ---
 
@@ -209,4 +221,4 @@ graph TD
 
 이 프로젝트는 **Apache License 2.0** 하에 배포됩니다.
 
-자세한 내용은 [LICENSE](https://www.notion.so/LICENSE) 파일을 참고하세요.
+자세한 내용은 [LICENSE](LICENSE) 파일을 참고하세요.

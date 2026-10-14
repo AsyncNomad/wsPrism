@@ -56,59 +56,60 @@ With this approach, wsPrism can safely and consistently support diverse requirem
 
 ### 2. Run the Gateway
 
-You can start the gateway using cargo or the pre-built binary.
-
 ```bash
-# Using Cargo
-RUST_LOG=wsprism_gateway=debug cargo run --release -- --config wsprism.yaml
-```
+# Validate the configuration only (for CI / pre-deploy checks)
+cargo run --release -p wsprism-gateway -- --check-config --config wsprism.yaml
 
-```bash
-# Using Binary
-./wsprism start --config wsprism.yaml
+# Run (config path via --config or WSPRISM_CONFIG; default ./wsprism.yaml)
+RUST_LOG=wsprism_gateway=info cargo run --release -p wsprism-gateway -- --config wsprism.yaml
+
+# Built binary
+./target/release/wsprism-gateway --config wsprism.yaml
 ```
 
 ### 3. Verify
 
-You should see the startup logs indicating the server is active:
-
 ```
-INFO  wsprism::server > 🚀 wsPrism Gateway active at 0.0.0.0:8080
-INFO  wsprism::loader > Loaded configuration for tenant: "acme"
+INFO wsprism_gateway: wsprism-gateway starting listen=0.0.0.0:8080 config=wsprism.yaml
+```
+
+```bash
+curl http://localhost:8080/healthz   # ok
+curl http://localhost:8080/readyz    # ready (503 while draining)
+curl http://localhost:8080/metrics   # Prometheus metrics
 ```
 
 ### 4. Connect
 
-Connect your client (Browser, Game Engine, etc.) via WebSocket.
+- **URL:** `ws://<host>:<port>/v1/ws?tenant=<id>[&sid=<session id>]`
+- **The ticket** is sent through one of the tenant's `policy.ticket_sources` (default: header, subprotocol). The query string (`?ticket=`) is off by default because proxies log URLs.
+  - Native clients: `Authorization: Bearer <ticket>`
+  - Browsers: subprotocols `wsprism.v1` + `wsprism.auth.<ticket>`
+- Browser origins must be listed in the tenant's `policy.allowed_origins`.
 
-- **URL Format:** `ws://<host>:<port>/v1/ws?tenant=<id>&ticket=<auth_token>`
-- **Example:** `ws://localhost:8080/v1/ws?tenant=acme&ticket=dev`
+```js
+// Browser (authentication is currently a dev stub: only ticket "dev" passes)
+const ws = new WebSocket("ws://localhost:8080/v1/ws?tenant=starter_plan", ["wsprism.v1", "wsprism.auth.dev"]);
+```
 
 ### 5. Send Messages (Protocol)
 
-wsPrism uses a **Dual Lane** protocol.
+wsPrism uses a **Dual Lane** protocol. The full contract is in [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
 
 **A. Ext Lane (Text/JSON)**
-Used for chat, room management, and complex logic.
+Used for chat, room management, and complex logic. Send a `seq` and responses come back with `reply_to`.
 
 ```json
-{
-  "v": 1,
-  "svc": "chat",
-  "type": "send",
-  "room": "match:1",
-  "data": {
-    "msg": "Hello World"
-  }
-}
+{"v":1, "svc":"room", "type":"join", "room":"match:1", "seq":1}
+{"v":1, "svc":"chat", "type":"send", "room":"match:1", "seq":2, "data":{"msg":"Hello World"}}
 ```
 
 **B. Hot Lane (Binary)**
-Used for latency-critical data (movement, physics). Routed strictly by Service ID and OpCode.
+Used for latency-critical data (movement, physics). Routed by service id and opcode, delivered to the session's active room (the last room joined).
 
 ```
-Structure: [svc_id (u8)] [opcode (u8)] [flags (u8)] [payload ...]
-Example:   [0x01]        [0x01]        [0x00]       [...bytes...]
+Structure: [v=1 (u8)][svc_id (u8)][opcode (u8)][flags (u8)][seq (u32 LE, if flags & 0x01)][payload ...]
+Example:   [0x01][0x01][0x01][0x00][...bytes...]
 ```
 
 ---
@@ -136,13 +137,13 @@ We utilize **Rust** for the Core Engine to guarantee memory safety, zero-cost ab
 Most frameworks force you to choose between "Easy JSON" or "Fast Binary." wsPrism unifies them:
 
 - **Ext Lane (Text/JSON):** For chat, lobby logic, and complex data. Easy to debug, highly flexible.
-- **Hot Lane (Binary):** For movement, physics, and market ticks. Zero-allocation routing, minimal overhead, routed strictly by ID.
+- **Hot Lane (Binary):** For movement, physics, and market ticks. Zero-copy decoding, minimal overhead, routed strictly by ID.
 
 ---
 
 ## Key Features
 
-- **⚡ Ultra-Low Latency Core:** Built on `tokio` and `axum`, utilizing a lock-free session architecture.
+- **⚡ Ultra-Low Latency Core:** Built on `tokio` and `axum`; session loops never wait on their own queues. Numbers in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 - **🏢 Multi-Tenancy:** Single instance support for multiple isolated tenants (projects) with independent policies.
 - **🛡️ Policy Engine:** "Secure by Default." Define strict allowlists, rate limits, and payload sizes per tenant.
 - **🧠 Deterministic QoS:** Prioritized message delivery. "Lossy" channels for game state, "Reliable" channels for chat.
@@ -172,11 +173,24 @@ graph TD
         Transport --> Policy --> Router
         
         Router -->|Hot Lane - Binary| Service_Echo[Native/Hot Service]
-        Router -->|Ext Lane - Text| Service_Chat[Script/WASM Service]
+        Router -->|Ext Lane - Text| Service_Chat[Native Service · WASM planned]
     end
     
     Service_Chat -.->|WebHook / RPC| Backend[Your Backend API]
 ```
+
+---
+
+## Documentation
+
+| Document | Contents |
+|---|---|
+| [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Wire protocol contract: handshake & auth, both lanes, rooms, error codes, close codes |
+| [`wsprism.yaml`](wsprism.yaml) | Annotated reference for every configuration option |
+| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Methodology and performance numbers |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones toward production grade |
+| [`docs/adr/`](docs/adr/README.md) | Architecture decision records |
+| [`docs/HARDENING.md`](docs/HARDENING.md) | Security & correctness fix log |
 
 ---
 
@@ -200,4 +214,4 @@ If you plan to use wsPrism in a production environment, we strongly recommend co
 
 ## License
 
-This project is licensed under the **Apache License 2.0**. See the [LICENSE](https://www.google.com/search?q=./LICENSE) file for details.
+This project is licensed under the **Apache License 2.0**. See the [LICENSE](LICENSE) file for details.
