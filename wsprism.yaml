@@ -45,6 +45,12 @@ gateway:
   # type: integer (1..=1048576), default 1024
   session_queue_capacity: 1024
 
+  # Socket options for accepted connections.
+  socket:
+    # TCP_NODELAY (disable Nagle). Keep on for realtime traffic: with Nagle +
+    # delayed ACKs, small frames can wait ~25-40 ms (see docs/BENCHMARKS.md).
+    tcp_nodelay: true
+
 
   # ----------------------------------------------------------------------------
   # 2. Handshake Defender (DoS Protection)

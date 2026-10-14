@@ -4,10 +4,10 @@
 //! starts the WebSocket server.
 
 use std::net::SocketAddr;
-use tokio::time::Instant;
+
 use tracing_subscriber::{fmt, EnvFilter};
 
-use wsprism_gateway::{app_state, config, router};
+use wsprism_gateway::{app_state, config, server};
 
 #[tokio::main]
 async fn main() {
@@ -22,37 +22,15 @@ async fn main() {
         .expect("gateway.listen must be a valid SocketAddr");
 
     let state = app_state::AppState::new(cfg).expect("failed to build app state");
-    let app = router::build_router(state.clone());
 
     tracing::info!(%listen, "wsprism-gateway starting");
     let listener = tokio::net::TcpListener::bind(listen)
         .await
         .expect("failed to bind");
 
-    let drain_grace_ms = state.cfg().gateway.drain_grace_ms;
-
-    // Sprint 5: Enable ConnectInfo for HandshakeDefender
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(async move {
-        shutdown_signal().await;
-
-        tracing::info!("shutdown signal received; entering draining mode");
-        state.enter_draining();
-        state.realtime().best_effort_shutdown_all("draining");
-
-        let deadline = Instant::now() + std::time::Duration::from_millis(drain_grace_ms);
-        while Instant::now() < deadline {
-            if state.realtime().sessions.len_sessions() == 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("server failed");
+    server::serve(listener, state, shutdown_signal())
+        .await
+        .expect("server failed");
 }
 
 async fn shutdown_signal() {

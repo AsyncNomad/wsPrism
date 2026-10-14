@@ -13,7 +13,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use wsprism_gateway::{app_state::AppState, config, router};
+use wsprism_gateway::{app_state::AppState, config, server};
 
 pub type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -48,7 +48,7 @@ pub struct Gateway {
 pub async fn spawn(yaml: &str) -> Gateway {
     let cfg = config::load_from_str(yaml).expect("test config must parse");
     let state = AppState::new(cfg).expect("app state");
-    let app = router::build_router(state.clone());
+    let served = state.clone();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     listener.set_nonblocking(true).expect("nonblocking");
     let addr = listener.local_addr().expect("local addr");
@@ -60,12 +60,10 @@ pub async fn spawn(yaml: &str) -> Gateway {
             .expect("server runtime");
         rt.block_on(async move {
             let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .await
-            .expect("serve");
+            // Same server stack as the binary (socket options, drain).
+            server::serve(listener, served, std::future::pending())
+                .await
+                .expect("serve");
         });
     });
     Gateway { addr, state }

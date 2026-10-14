@@ -94,9 +94,33 @@ pub struct GatewaySection {
     #[serde(default = "default_session_queue_capacity")]
     pub session_queue_capacity: usize,
 
+    /// Socket options for accepted connections.
+    #[serde(default)]
+    pub socket: SocketConfig,
+
     // Sprint 5: Handshake Defender Configuration
     #[serde(default)]
     pub handshake_limit: HandshakeConfig,
+}
+
+/// Socket options applied to every accepted TCP connection.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct SocketConfig {
+    /// Disable Nagle's algorithm (TCP_NODELAY). Keep this on for a realtime
+    /// gateway: with Nagle + delayed ACKs small frames can wait tens of ms.
+    #[serde(default = "default_true")]
+    pub tcp_nodelay: bool,
+}
+
+impl Default for SocketConfig {
+    fn default() -> Self {
+        Self { tcp_nodelay: true }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -163,6 +187,7 @@ impl Default for GatewaySection {
             writer_send_timeout_ms: default_writer_send_timeout_ms(),
             drain_grace_ms: default_drain_grace_ms(),
             session_queue_capacity: default_session_queue_capacity(),
+            socket: SocketConfig::default(),
             handshake_limit: HandshakeConfig::default(),
         }
     }
