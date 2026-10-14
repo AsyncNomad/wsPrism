@@ -9,6 +9,10 @@
 # Defaults = the G1/G5 judgment cell: 20 ms one-way, 60 Hz, 10 rooms x 10.
 # Order interleaves transports within each (run, loss, tick) so all three are
 # measured close together in time.
+#
+# Resumable: a (transport, label) already present in the output file is
+# skipped, so re-running the same command after an interruption only runs
+# what is missing. Delete the file to start over.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -39,6 +43,11 @@ for run in $(seq "$RUNS"); do for loss in $LOSSES; do for tick in $TICKS; do for
   total=$((total + 1))
   prof="$(profile "$loss")"
   label="loss=$loss tick=$tick run=$run"
+  if [[ -f "$OUT" ]] && grep -qF "\"label\":\"$label\"" "$OUT" \
+      && grep -F "\"label\":\"$label\"" "$OUT" | grep -qF "\"transport\":\"$t\""; then
+    echo "[$total] skip (done): $t $label" >&2
+    continue
+  fi
   echo "[$total] $t $label" >&2
   "$ROOT/bench/netlab.sh" --srv-egress "$prof" --cli-egress "$prof" \
     --server "$SPIKE --$t 10.77.0.1:$(port "$t") --tick-hz $tick --cert-dir $CERT ${RELAY_EXTRA:-}" \
