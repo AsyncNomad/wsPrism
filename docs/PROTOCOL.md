@@ -100,6 +100,13 @@ Hot Lane routing:
 - `svc_id` routes to a native BinaryService
 - **room is resolved by presence.active_room**
 
+**Delivery today (WebSocket).** Hot Lane traffic is *lossy only inside the
+gateway*: when a recipient's outbound queue is full, the frame is dropped for
+that recipient. On the network it still rides TCP, so a lost packet delays all
+later frames until it is retransmitted (head-of-line blocking). Truly
+unreliable, unordered delivery (WebTransport datagrams) is the planned next
+transport — see `docs/design/hot-lane-over-webtransport.md`.
+
 ---
 
 ## 4) Ping/Pong & Idle timeout

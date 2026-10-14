@@ -1,23 +1,32 @@
 # wsPrism Roadmap
 
 wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 실시간 게이트웨이보다 측정 가능하게 빠른** 대기업급 소프트웨어로 만들기 위한 계획이다.
-결함 수정 기록은 [`HARDENING.md`](HARDENING.md), 클라이언트 계약은 [`PROTOCOL.md`](PROTOCOL.md)에 있다.
+결함 수정 기록은 [`HARDENING.md`](HARDENING.md), 클라이언트 계약은 [`PROTOCOL.md`](PROTOCOL.md), 설계 결정은 [`adr/`](adr/README.md)에 있다.
 
-- 작성: 2026-10-14. 코드 리뷰에서 나온 상용화 제안을 바탕으로, 목표에 맞춰 순서와 강조점을 조정했다.
+- 작성: 2026-10-14. 코드 리뷰의 상용화 제안을 바탕으로 했고, 이후 경쟁 분석에 따라 방향을 정했다([ADR 0004](adr/0004-product-direction.md)).
 - 이 문서는 살아 있는 계획이다. 단계가 끝나거나 방향이 바뀌면 "현재 위치"와 해당 단계를 갱신한다.
+
+## 포지션 (ADR 0004, 검증 V 후 확정)
+
+> **브라우저에서 진짜 UDP처럼 동작하는 실시간 상태 동기화 — WebTransport datagram, 안 되면 WebSocket 폴백 — 그리고 테넌트별 정책.**
+
+- **간판**: Hot Lane을 비신뢰·비순서 전달 클래스로 만들어, 패킷 손실이 있는 네트워크에서 상태 업데이트의 꼬리 지연과 신선도를 TCP 기반 게이트웨이보다 크게 개선한다. 설계: [Hot Lane over WebTransport](design/hot-lane-over-webtransport.md).
+- **기반**: 멀티테넌트 정책 엔진(admission 파이프라인, allowlist, 테넌트 한도, 세션 정책, Origin, 티켓 경로). 대기업급 요구사항의 핵심이지만 한 줄 소개는 아니다.
+- **대상 트래픽**: 최신 상태가 이기는 데이터 — 웹 멀티플레이, 협업 커서·화이트보드, 시세·스포츠 틱, IoT·원격 대시보드. 게임 백엔드는 만들지 않는다(사용자 백엔드 앞의 전송 계층).
+- **따라잡기 기능**(프록시, 발행 API, 이력·복구, 멀티 노드)은 "갈아탈 때 막히지 않을 만큼"만.
 
 ## 현재 위치
 
 | 항목 | 상태 |
 |---|---|
-| 연결 앞단(핸드셰이크 방어, 정책, 세션·룸 거버넌스) | 탄탄함. `hardening` 브랜치에서 보안·정확성 결함 15건 수정, 테스트 45개 |
-| 백엔드 연동 | 없음. 기능은 Rust로 함께 컴파일해야 하고, 서버 발행(push) API가 없다 |
-| 확장 지점 | 하드코딩. 인증은 티켓 `dev`만 통과하는 스텁, 서비스는 `AppState::new`에서 직접 등록 |
-| 확장성 | 단일 노드. 세션·룸 정보가 프로세스 메모리에만 있다 |
-| 신뢰성 | `QoS::Reliable`은 "순서대로 전달하거나 수신자를 끊는다"까지. 재접속 사이의 메시지 복구는 없다 |
-| 성능 | 기준선 측정 완료([BENCHMARKS](BENCHMARKS.md)). 메시지당 최대 비용은 메트릭(275 ns)과 팬아웃(수신자당 ~200 ns) |
+| 연결 앞단 | 탄탄함. 보안·정확성 결함 15건 수정(`hardening`), admission 파이프라인, Origin·신뢰 프록시·티켓 경로, 프로토콜 v1(에러 코드, `reply_to`, 버전 협상). 테스트 79개, 퍼징 5종, cargo-deny |
+| 전송 | WebSocket만. Hot Lane의 Lossy는 서버 큐에서만 성립(네트워크 구간은 TCP) |
+| 백엔드 연동 | 없음. 서비스는 Rust로 함께 컴파일, 서버 발행 API 없음 |
+| 확장 지점 | 서비스는 `AppState::new`에서 직접 등록, 인증은 티켓 `dev`만 통과하는 스텁 |
+| 확장성 | 단일 노드 |
+| 성능 | 기준선 측정 완료([BENCHMARKS](BENCHMARKS.md)). TCP_NODELAY 수정으로 p99.9 26.7→3.6 ms. 메시지당 최대 비용은 메트릭(275 ns)과 팬아웃(수신자당 ~200 ns) |
 
-**M0 완료 (브랜치 `m0/engine-prep`). M1: 벤치마크 기준선, 보안 3종(Origin·신뢰 프록시·티켓), 버전 협상 완료. 프로토콜 v1(에러 코드 목록, `reply_to` 상관관계) 완료. **M1 완료.** 다음: M2(끼워 쓰기).
+**M0, M1 완료 (브랜치 `m0/engine-prep`). 다음: 검증 단계 V.**
 
 ## 목표를 측정 가능하게
 
@@ -25,63 +34,58 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 
 | | 내용 |
 |---|---|
-| 비교 대상 | Centrifugo (기능 기준선), uWebSockets 기반 서버 예: soketi (원시 처리량 기준선), Socket.IO (채택률 기준선) |
-| 지표 | 대규모 팬아웃 p50/p99/p999 지연 (예: 10만 연결, 방당 1,000명), 연결당 메모리, 코어당 메시지 처리량, **노이즈 이웃 격리**(한 테넌트가 폭주할 때 다른 테넌트의 p99 변화) |
-| 승부처 | 원시 처리량만으로 C++ 기반 uWS를 크게 이기기는 어렵다. 이길 곳은 **꼬리 지연 안정성, 바이너리 Hot Lane, 테넌트 격리**다. 성능 주장도 여기에 집중한다 |
-| 원칙 | 수치 없이 성능을 주장하지 않는다. 목표 수치는 M1 기준선을 측정한 뒤 정한다 |
+| 비교 대상 | **Sockudo**(Rust, 멀티테넌트 앱, 가장 직접적), Centrifugo(기능 기준선), **Nakama relayed**(게임 릴레이), **geckos.io**(브라우저 UDP via WebRTC), uWS 기반 soketi(원시 처리량), Socket.IO(채택률) |
+| 승부 지표 | **손실 네트워크에서의 수신 지연 p99와 상태 신선도**(WebTransport datagram vs TCP), **노이즈 이웃 격리**(한 테넌트 폭주 시 다른 테넌트의 p99 변화) |
+| 공개 지표 | 팬아웃 p50/p99/p999, 연결당 메모리, 코어당 처리량, **CPU/메시지**(QUIC의 비용도 숨기지 않는다) |
+| 원칙 | 수치 없이 성능을 주장하지 않는다. 같은 언어(Rust) 경쟁자와 TCP 위에서 겨뤄서는 "훨씬"을 만들 구조적 근거가 없다 — 구조적 차이(datagram)에서 이긴다 |
 
 ### 커스텀 용이성: 확장 계층
 
 | 계층 | 대상 | 방식 |
 |---|---|---|
-| ① 설정 | 운영자 | YAML, 핫 리로드 |
-| ② 백엔드 프록시 | **대부분의 팀(언어 무관)** | connect / subscribe / rpc를 백엔드로 위임(HTTP → gRPC), 서버 발행 API |
-| ③ Rust 트레이트 | 성능이 필요한 팀 | `Authenticator`, `Broker`, `Service` 구현 → 빌더로 조립 |
+| ① 설정 | 운영자 | YAML, `--check-config`, 핫 리로드(M6) |
+| ② 백엔드 프록시 | **대부분의 팀(언어 무관)** | connect / rpc를 백엔드로 위임(HTTP → gRPC), 서버 발행 API, 1회용 티켓 발급 |
+| ③ Rust 트레이트 | 성능이 필요한 팀 | `Authenticator`, `Service`(Text/Binary), 이후 `Broker` → 빌더로 조립 |
 | ④ WASM 플러그인 | SaaS 테넌트별 커스텀 | Ext Lane 전용, 샌드박스. Hot Lane에는 넣지 않는다 |
-
-"쉽게 커스텀"의 실체는 ②다.
-
-### 경쟁 현실
-
-프록시, 서버 발행 API, 이력·복구, Redis/NATS 브로커, JWT는 Centrifugo가 이미 갖고 있다. 이것들은 **차별점이 아니라 상용 제품의 기본 조건**이므로 동등 수준까지 따라잡는다. 승부는 성능, Hot Lane, 테넌트 격리에서 본다. 범위는 "게임·실시간 바이너리 트래픽 + 멀티테넌트 SaaS"로 좁힌다.
 
 ## 제품 구조
 
 ```
 wsprism-core      프로토콜 (전송·런타임 무관)
 wsprism-engine    트레이트로 확장 가능한 엔진 (현재 gateway를 재구성)
-wsprism-server    engine + 기본 플러그인(JWT, Redis, HTTP 프록시)을 조립한 바이너리
-wsprism-sdk-*     클라이언트 SDK (TS → Unity C# → Dart)
+wsprism-server    engine + 기본 플러그인(JWT, HTTP 프록시, 이후 Redis)을 조립한 바이너리
+wsprism-sdk-*     클라이언트 SDK (TS → Unity C# → Dart). WebTransport 우선, WebSocket 폴백
 ```
-
-라이브러리(임베드)와 서버 제품을 둘 다 제공한다. 주 배포 형태는 서버 제품이다.
-
-## 리뷰 제안에서 바꾼 점과 이유
-
-1. **벤치마크를 M1에서 시작한다** (리뷰에서는 4단계). 성능이 최상위 목표라면 M2~M4의 설계 결정(메시지 타입, 브로커 인터페이스, 채널 모델)마다 비용을 재야 한다. 나중에 재면 비싼 구조가 공개 API로 이미 굳어 있다. 최적화는 나중이어도 **측정은 먼저**다.
-2. **엔진 API를 굳히기 전에 전송 계층을 결정한다.** 지금은 `axum::extract::ws::Message`가 `Connection`, 서비스, 송신 경로 전반에 새어 나와 있어서 공개 트레이트에 들어가면 바꿀 수 없다. 엔진 전용 `Bytes` 기반 메시지 타입을 두고, 전송 구현(tungstenite, axum 0.8, fastwebsockets)을 평가한다. 가장 큰 성능 레버인 "직렬화 1회 + **WS 프레이밍 1회** → N개 소켓에 같은 바이트 쓰기"가 가능한지가 이 선택에 달려 있다.
-3. **최소 TS SDK를 M2에서 만든다** (리뷰에서는 6단계). 재접속, 이력 복구, `seq` 매칭 같은 프로토콜은 실제 클라이언트를 구현해 봐야 설계 결함이 드러난다. 프로토콜 v1을 동결하기 전에 검증한다.
-4. **SDK 순서는 TS → Unity C# → Dart.** 타깃이 게임이므로 Unity를 앞당긴다.
 
 ## 단계
 
 | 단계 | 내용 | 완료 기준 |
 |---|---|---|
-| **M0 정리** | ~~테넌트 조회를 `HashMap`으로~~, ~~`run_session` 분해~~, ~~룸 기능을 일반 서비스로 + 세션 컨텍스트 `&mut` 대여~~([ADR 0001](adr/0001-session-context-and-room-service.md)), ~~엔진 전용 메시지 타입 도입(axum `Message` 격리)~~([ADR 0002](adr/0002-transport-agnostic-out-frame.md)). **완료** | 동작 변화 없이 기존 테스트 전부 통과 |
-| **M1 정직한 기반** | 보안: ~~Origin 허용 목록(CSWSH 방지)~~, ~~신뢰 프록시 + `X-Forwarded-For`~~, ~~티켓을 쿼리스트링에서 제거(`Authorization` / `Sec-WebSocket-Protocol`)~~([ADR 0003](adr/0003-ticket-sources-and-subprotocol.md); 1회용 단기 티켓은 M2 인증기와 함께). 프로토콜 v1: ~~모든 응답에 요청 `seq`(`reply_to`)~~, ~~에러 코드 목록~~, ~~서브프로토콜 버전 협상(`wsprism.v1`)~~, ~~에러 메시지의 내부 정보 제거~~. ~~문서를 코드와 일치(README의 `--config`, Hot 프레임 버전 바이트, `sys.authed` 형식)~~. ~~퍼징(파서 5종)~~, ~~`cargo-deny`(cargo-audit 포함)~~ — 감사에서 `serde_yaml`(유지보수 종료) 발견·교체. ~~**벤치마크 장치와 현재 기준선**~~ ([BENCHMARKS](BENCHMARKS.md); 측정 중 TCP_NODELAY 누락을 찾아 수정 — p99.9 26.7→3.6 ms) | 기준선 수치가 문서에 있음, 퍼징이 CI에서 돎 |
-| **M2 끼워 쓰기 (핵심)** | engine/server crate 분리, 트레이트 + 빌더, 공개 API 최소화. JWT(테넌트별 JWKS, `exp`, 테넌트 claim), 채널 권한, 연결 중 토큰 갱신. **백엔드 프록시(HTTP 먼저)와 서버 발행 API**(`/api/v1/publish`, `/api/v1/disconnect`, API 키·mTLS). 최소 TS SDK | Node 또는 Spring 백엔드에 붙인 예제 앱이 동작 |
-| **M3 진짜 신뢰성** | 룸을 "채널"로 일반화(네임스페이스), 채널별 이력 + offset/epoch + 재접속 복구, ACK. 이력이 지워졌으면 "복구 불가"를 알린다. 단일 노드부터. Hot Lane은 계속 Lossy | 연결이 끊긴 사이 메시지를 복구하는 테스트 통과 |
-| **M4 멀티 노드** | Broker 구현(Redis 먼저, 그다음 NATS). Presence를 노드 로컬 구독 색인으로 축소. 클러스터 전체 강제 퇴장(제어 채널). 전역 한도마다 "정확 vs 근사"를 결정해 문서화 | 노드를 강제 종료하는 카오스 테스트 통과 |
-| **M5 성능 증명** | 메시지당 할당 제거(메트릭 라벨, `RealtimeCtx`, 팬아웃 복제), 세션·채널 ID 인터닝, 프레임 사전 인코딩, 표준 메트릭 crate. 경쟁 제품과 공개 벤치마크 | 재현 가능한 벤치 리포와 결과 공개 |
-| **M6 운영** | `clap` CLI, 환경변수 오버라이드, 핫 리로드(`ArcSwap`), `check-config`, OpenTelemetry, JSON 로그와 민감정보 마스킹, 관리 API(RBAC), Docker/Helm, 재접속 지터(`reconnect_after`), 메트릭 단위 표준화(`_seconds`) | 롤링 업데이트 가이드대로 무중단 배포 |
-| **M7 채택** | SDK 확장(Unity C#, Dart), semver·CHANGELOG·MSRV, `SECURITY.md`·`CONTRIBUTING.md`, 예제(채팅·멀티플레이), 소크·카오스 테스트, 외부 보안 감사 | 1.0 릴리스 |
+| **M0 정리** ✅ | 테넌트 조회 `HashMap`, `run_session` 분해, 룸 기능을 서비스로 + 세션 컨텍스트 `&mut`([ADR 0001](adr/0001-session-context-and-room-service.md)), 전송 무관 `OutFrame`([ADR 0002](adr/0002-transport-agnostic-out-frame.md)) | 동작 변화 없이 기존 테스트 통과 |
+| **M1 정직한 기반** ✅ | admission 파이프라인, Origin 허용 목록, 신뢰 프록시 + XFF, 티켓 경로 + 버전 협상([ADR 0003](adr/0003-ticket-sources-and-subprotocol.md)), 에러 코드 목록·정보 노출 제거, `reply_to`, `--config`/`--check-config`, 문서 정합, 퍼징 5종, cargo-deny(`serde_yaml` 교체), 벤치마크 기준선(TCP_NODELAY 수정) | 기준선 수치 문서화, 퍼징·감사 CI |
+| **V 차별화 검증** (2~3주) | WebTransport datagram vs WebSocket을 손실·지연 매트릭스로 측정, 브라우저 3종 호환, 1시간 소크, UDP 차단 시 폴백, 노이즈 이웃 격리(wsPrism·Sockudo·Centrifugo). 세부: [설계 §7](design/hot-lane-over-webtransport.md#7-검증-단계-v-23주) | 관문 G1~G4 판정 → ADR 0004 확정 또는 전환 |
+| **M2-lite 끼워 쓰기** | engine/server crate 분리, `Authenticator` 트레이트 + JWT(테넌트별 JWKS) + **1회용 티켓 발급 API**, HTTP 백엔드 프록시(connect·rpc), **서버 발행 API**(`/api/v1/publish`, `/api/v1/disconnect`), 최소 TS SDK(WS). gRPC·다양한 플러그인은 뒤로 | Node 또는 Spring 백엔드에 붙인 예제 앱 |
+| **T WebTransport 전송** | `SessionIo` 추출, 전달 클래스 + Hot 슬롯(conflation), Hot 헤더 확장(KEY/SENDER), `WtIo`, `transport` 메트릭 라벨, SDK의 WT 우선·WS 폴백. 순서: [설계 §9](design/hot-lane-over-webtransport.md#9-단계-t-작업-순서-v-통과-후) | 같은 서비스 코드가 WT·WS 혼합 룸에서 동작, V의 이득이 제품 경로에서 재현 |
+| **M3 신뢰성 (동등 수준)** | 채널 일반화, 채널별 이력 + offset/epoch + 재접속 복구, ACK. Hot Lane은 이력 없음 | 끊긴 사이 메시지 복구 테스트 |
+| **M4 멀티 노드 (동등 수준)** | Broker(Redis 먼저), 노드 로컬 구독 색인, 클러스터 강제 퇴장, 1회용 티켓 공유 저장소, 전역 한도의 정확/근사 결정 | 노드 강제 종료 카오스 테스트 |
+| **M5 성능 공개** | 메시지당 할당 제거(메트릭 라벨, 팬아웃), ID 인터닝, 프레임 사전 인코딩, 표준 메트릭 crate. 비교 대상 전체와 공개 벤치마크 | 재현 가능한 벤치 리포와 결과 |
+| **M6 운영** | 환경변수 오버라이드, 핫 리로드(`ArcSwap`), OpenTelemetry, JSON 로그·마스킹, 관리 API(RBAC), Docker/Helm, 재접속 지터, 메트릭 단위 표준화, UDP 로드밸런서 가이드 | 롤링 업데이트 가이드대로 무중단 배포 |
+| **M7 채택** | SDK 확장(Unity C#, Dart), semver·CHANGELOG·MSRV, `SECURITY.md`·`CONTRIBUTING.md`, 예제(멀티플레이·협업 커서), 소크·카오스, 외부 보안 감사 | 1.0 릴리스 |
 
-M5는 성능 작업을 이때 시작한다는 뜻이 아니다. M1부터 변경마다 측정해 온 결과를 이 시점에 공식적으로 공개 비교한다는 뜻이다.
+V에서 G1이 실패하면(ADR 0004 "탈락 시 대안") T를 빼고, 정책 중심 방향(측정된 격리, 스키마 검증, WASM 정책)으로 M2 이후를 재구성한다.
+
+## 리뷰 제안에서 바꾼 점과 이유
+
+1. **벤치마크를 M1에서 시작했다**(리뷰에서는 4단계). 설계 결정마다 비용을 재야 비싼 구조가 공개 API로 굳지 않는다.
+2. **엔진 API를 굳히기 전에 전송 계층을 분리했다**(ADR 0002). WebTransport를 붙일 수 있는 토대가 됐다.
+3. **차별화 검증(V)을 M2 앞에 넣었다.** 따라잡기 기능은 끝내도 경쟁 제품과 같아질 뿐이라, 차별점을 먼저 숫자로 증명한다.
+4. **최소 TS SDK를 M2-lite에서 만든다.** 프로토콜(재접속, `reply_to`, WT 폴백)은 실제 클라이언트로 검증해야 결함이 드러난다.
+5. **SDK 순서는 TS → Unity C# → Dart.**
 
 ## 코드 밖에서 필요한 것
 
 - **호환성 약속**: semver, 폐기 정책, 프로토콜 버전 협상. 클라이언트 SDK는 서버보다 느리게 업데이트된다.
-- **결정 기록**: 설계 결정은 [`adr/`](adr/README.md)에 ADR로 남긴다(M0부터). 결함 수정 기록은 `HARDENING.md`.
+- **결정 기록**: 설계 결정은 [`adr/`](adr/README.md), 설계 문서는 [`design/`](design/), 결함 수정은 `HARDENING.md`.
 - **보안 대응 체계**: 제보 경로, 패치 SLA, 의존성 감사.
 - **테넌트 계량**: 연결 수·메시지 수를 SaaS 과금 근거로 남긴다.
 
@@ -89,6 +93,7 @@ M5는 성능 작업을 이때 시작한다는 뜻이 아니다. M1부터 변경�
 
 - 결함 수정은 재현 테스트 먼저. 수정을 빼면 테스트가 실패하는지 확인한다.
 - 동작 변화와 리팩터링은 커밋을 섞지 않는다. 커밋 하나에 수정 하나.
-- 게이트: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --locked`. 통합 테스트는 반복 실행으로 결과가 흔들리지 않는지 확인한다.
+- 게이트: `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --locked`, `cargo deny check`. 통합 테스트는 반복 실행으로 결과가 흔들리지 않는지 확인한다.
 - 클라이언트에 보이는 변화는 `PROTOCOL.md`에, 설계 결정과 기각한 대안은 ADR에 남긴다.
 - **기능을 덧붙이지 않는다.** 새 기능은 올바른 경계(트레이트, 모듈, 레지스트리, 설정)를 먼저 만들고 거기에 끼운다. 코어 경로에 `if svc == "x"` 같은 특수 처리를 넣지 않는다. 불가피하면 명시하고 후속 과제로 기록한다.
+- **스파이크 코드는 제품 코드가 아니다.** 검증용 코드는 워크스페이스 밖(`spikes/`)에 두고 버린다. 측정 장치만 남긴다.
