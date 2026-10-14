@@ -98,6 +98,12 @@ pub struct GatewaySection {
     #[serde(default)]
     pub socket: SocketConfig,
 
+    /// Reverse proxies / load balancers (IPs or CIDRs) whose
+    /// `X-Forwarded-For` is trusted to name the client. Empty = trust none
+    /// (the TCP peer is the client).
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+
     // Sprint 5: Handshake Defender Configuration
     #[serde(default)]
     pub handshake_limit: HandshakeConfig,
@@ -188,6 +194,7 @@ impl Default for GatewaySection {
             drain_grace_ms: default_drain_grace_ms(),
             session_queue_capacity: default_session_queue_capacity(),
             socket: SocketConfig::default(),
+            trusted_proxies: Vec::new(),
             handshake_limit: HandshakeConfig::default(),
         }
     }

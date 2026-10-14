@@ -9,6 +9,8 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::net::TcpStream;
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::handshake::client::Response as HandshakeResponse;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -89,16 +91,23 @@ pub async fn connect(addr: SocketAddr, tenant: &str, sid: Option<&str>) -> Ws {
 }
 
 /// Attempt a WS handshake, bounded by `WAIT` (a hung server fails the test).
-pub async fn try_connect_url(
+pub async fn try_connect_url(url: &str) -> Result<(Ws, HandshakeResponse), String> {
+    try_connect_with(url, &[]).await
+}
+
+/// Like `try_connect_url`, adding request `headers`.
+pub async fn try_connect_with(
     url: &str,
-) -> Result<
-    (
-        Ws,
-        tokio_tungstenite::tungstenite::handshake::client::Response,
-    ),
-    String,
-> {
-    match tokio::time::timeout(WAIT, tokio_tungstenite::connect_async(url)).await {
+    headers: &[(&'static str, &str)],
+) -> Result<(Ws, HandshakeResponse), String> {
+    let mut req = url.into_client_request().map_err(|e| e.to_string())?;
+    for (name, value) in headers {
+        let value = value
+            .parse()
+            .map_err(|_| format!("bad header value {value}"))?;
+        req.headers_mut().append(*name, value);
+    }
+    match tokio::time::timeout(WAIT, tokio_tungstenite::connect_async(req)).await {
         Err(_) => Err("handshake timed out (server hung?)".into()),
         Ok(r) => r.map_err(|e| e.to_string()),
     }

@@ -4,6 +4,7 @@
 //! they reach policy/dispatcher layers.
 
 pub mod admission;
+pub mod client_ip;
 pub mod codec;
 pub mod handshake;
 pub(crate) mod session;

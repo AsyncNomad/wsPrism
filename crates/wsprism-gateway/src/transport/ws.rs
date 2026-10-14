@@ -75,9 +75,10 @@ pub async fn ws_upgrade(
             let sid = q.sid.clone().unwrap_or_else(gen_sid);
             let trace_id = gen_trace();
             let user_id = admitted.user_id;
+            let ip = admitted.client_ip;
             // C6: instrument the whole session future instead of entering the
             // span across awaits (clippy.toml bans holding span guards there).
-            let span = tracing::info_span!("ws", %trace_id, t=%q.tenant, u=%user_id, s=%sid);
+            let span = tracing::info_span!("ws", %trace_id, t=%q.tenant, u=%user_id, s=%sid, %ip);
             let id = SessionIdentity {
                 tenant: q.tenant,
                 user_id,

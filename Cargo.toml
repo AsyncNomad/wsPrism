@@ -31,3 +31,4 @@ criterion = "0.8"
 hdrhistogram = "7.6"
 clap = { version = "4.6", features = ["derive"] }
 async-trait = "0.1"
+ipnet = "2"

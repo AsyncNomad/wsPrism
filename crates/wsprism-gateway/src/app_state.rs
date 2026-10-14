@@ -18,6 +18,7 @@ use crate::{
     policy,
 };
 // Sprint 5
+use crate::transport::client_ip::TrustedProxies;
 use crate::transport::handshake::HandshakeDefender;
 
 /// If true, the gateway fails fast on allowlist/dispatcher mismatches at boot.
@@ -32,6 +33,7 @@ pub struct AppState {
     metrics: Arc<GatewayMetrics>,
     // Sprint 5
     handshake: Arc<HandshakeDefender>,
+    trusted_proxies: Arc<TrustedProxies>,
 }
 
 struct AppStateInner {
@@ -49,6 +51,7 @@ impl AppState {
         let metrics = Arc::new(GatewayMetrics::default());
         // Sprint 5
         let handshake = Arc::new(HandshakeDefender::new(cfg.gateway.handshake_limit.clone()));
+        let trusted_proxies = Arc::new(TrustedProxies::parse(&cfg.gateway.trusted_proxies)?);
 
         // 1) Compile tenant policy runtimes
         let mut tenant_policy = HashMap::new();
@@ -134,6 +137,7 @@ impl AppState {
             dispatcher: Arc::new(dispatcher),
             metrics,
             handshake,
+            trusted_proxies,
         })
     }
 
@@ -168,6 +172,10 @@ impl AppState {
 
     pub fn metrics(&self) -> Arc<GatewayMetrics> {
         Arc::clone(&self.metrics)
+    }
+
+    pub fn trusted_proxies(&self) -> &TrustedProxies {
+        &self.trusted_proxies
     }
 
     pub fn handshake(&self) -> Arc<HandshakeDefender> {

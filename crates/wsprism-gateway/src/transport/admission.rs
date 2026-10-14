@@ -5,7 +5,7 @@
 //! policy, trusted proxies, pluggable authenticators) are added here as
 //! another step, without touching the upgrade handler.
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 
 use axum::http::{header::RETRY_AFTER, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -30,6 +30,8 @@ pub struct HandshakeRequest<'a> {
 /// A request that passed every check.
 pub struct Admitted {
     pub user_id: String,
+    /// Client address (resolved through trusted proxies).
+    pub client_ip: IpAddr,
     /// Tenant frame limit, enforced in the WS codec (S2).
     pub max_frame_bytes: usize,
 }
@@ -90,7 +92,8 @@ fn check_all(
     req: &HandshakeRequest<'_>,
     tenant: Option<&TenantConfig>,
 ) -> Result<Admitted, Rejection> {
-    rate_limit(app, req)?;
+    let client_ip = app.trusted_proxies().client_ip(req.peer.ip(), req.headers);
+    rate_limit(app, client_ip)?;
     not_draining(app)?;
     let tenant = tenant.ok_or_else(|| {
         Rejection::new(StatusCode::BAD_REQUEST, "unknown_tenant", "Unknown Tenant")
@@ -99,13 +102,14 @@ fn check_all(
     tenant_capacity(app, tenant)?;
     Ok(Admitted {
         user_id,
+        client_ip,
         max_frame_bytes: tenant.limits.max_frame_bytes,
     })
 }
 
-/// Handshake defender: per-IP and global token buckets (S6).
-fn rate_limit(app: &AppState, req: &HandshakeRequest<'_>) -> Result<(), Rejection> {
-    app.handshake().check(req.peer.ip()).map_err(|wait_secs| {
+/// Handshake defender: per-client-IP and global token buckets (S6).
+fn rate_limit(app: &AppState, client_ip: IpAddr) -> Result<(), Rejection> {
+    app.handshake().check(client_ip).map_err(|wait_secs| {
         Rejection::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limit",
