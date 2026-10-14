@@ -66,7 +66,12 @@ bench/run-moq.sh moq-judgment 3
 ## 4차 리뷰 후 순서 (사용자 승인 2026-10-14)
 
 1. **측정 수정 → G1·G5 재판정** (아래 R 체크리스트)
-2. 경쟁 게이트웨이(Centrifugo, Sockudo)와 WebSocket 경로 직접 비교 (netlab 안) — 도구 완료(`bench/run-compete.sh`, `bench/analyze-compete.py`), 스모크 완료(`compete-smoke.jsonl`), 본 측정·포화 측정 남음
+2. 경쟁 게이트웨이(Centrifugo, Sockudo)와 WebSocket 경로 직접 비교 (netlab 안) — 도구 완료, 스모크 완료(`compete-smoke.jsonl`). 본 측정(60회, 재개 가능):
+   ```bash
+   bench/competitors/fetch.sh   # Centrifugo 6.9.7, Sockudo 5.1.0 (체크섬 검증)
+   bench/run-compete.sh compete-v1 3 "rooms:20 rooms:60 rooms:120 broadcast:10 broadcast:50"
+   python3 bench/analyze-compete.py bench/results/compete-v1.jsonl
+   ```
 3. ✅ 서버 피어 멤버 지정 송신을 설계 §4.6에 반영 (T0 경계 요건)
 4. G2 브라우저 실증 (사용자 필요)
 5. 수요 확인은 사용자 판단 영역
