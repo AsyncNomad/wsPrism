@@ -7,8 +7,7 @@
 
 use crate::config::schema::TenantLimits;
 use crate::realtime::core::{Connection, Presence, SessionRegistry};
-use crate::realtime::types::{close_code, CloseSpec, Outgoing, PreparedMsg, QoS};
-use axum::extract::ws::Message;
+use crate::realtime::types::{close_code, CloseSpec, OutFrame, Outgoing, QoS};
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -69,8 +68,8 @@ impl RealtimeCore {
     /// - `Lossy`: if the queue is full, drop it for this recipient.
     /// - `Reliable`: if the queue is full, close the recipient as a slow
     ///   consumer so it resyncs on reconnect, instead of silently missing it.
-    fn deliver(&self, session_key: &str, conn: &Connection, msg: Message, qos: &QoS) {
-        match conn.tx.try_send(msg) {
+    fn deliver(&self, session_key: &str, conn: &Connection, frame: OutFrame, qos: &QoS) {
+        match conn.tx.try_send(frame) {
             Ok(()) | Err(TrySendError::Closed(_)) => {} // closed = session ending
             Err(TrySendError::Full(_)) => match qos {
                 QoS::Lossy => {
@@ -104,10 +103,10 @@ impl RealtimeCore {
         if keys.is_empty() {
             return Err(WsPrismError::BadRequest("user not connected".into()));
         }
-        let prepared = PreparedMsg::prepare(&out)?;
+        let frame = OutFrame::from_payload(&out.payload)?;
         for key in keys {
             if let Some(conn) = self.sessions.get_session(&key) {
-                self.deliver(&key, &conn, prepared.to_ws_message(), &out.qos);
+                self.deliver(&key, &conn, frame.clone(), &out.qos);
             }
         }
         Ok(())
@@ -119,17 +118,17 @@ impl RealtimeCore {
             .sessions
             .get_session(session_key)
             .ok_or_else(|| WsPrismError::BadRequest("session not connected".into()))?;
-        let prepared = PreparedMsg::prepare(&out)?;
-        self.deliver(session_key, &conn, prepared.to_ws_message(), &out.qos);
+        let frame = OutFrame::from_payload(&out.payload)?;
+        self.deliver(session_key, &conn, frame, &out.qos);
         Ok(())
     }
 
     /// Publish to every session in a room (honours `out.qos`).
     pub fn publish_room(&self, room_key: &str, out: Outgoing) -> Result<()> {
-        let prepared = PreparedMsg::prepare(&out)?;
+        let frame = OutFrame::from_payload(&out.payload)?;
         for key in self.presence.sessions_in(room_key) {
             if let Some(conn) = self.sessions.get_session(&key) {
-                self.deliver(&key, &conn, prepared.to_ws_message(), &out.qos);
+                self.deliver(&key, &conn, frame.clone(), &out.qos);
             }
         }
         Ok(())

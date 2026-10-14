@@ -7,4 +7,4 @@ pub mod core;
 pub mod types;
 
 pub use core::{Presence, RealtimeCore, RealtimeCtx, SessionRegistry};
-pub use types::{close_code, CloseSpec, Outgoing, Payload, PreparedMsg, QoS};
+pub use types::{close_code, CloseSpec, OutFrame, Outgoing, Payload, QoS, Utf8Text};

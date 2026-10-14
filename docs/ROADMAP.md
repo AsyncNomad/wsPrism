@@ -17,7 +17,7 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 | 신뢰성 | `QoS::Reliable`은 "순서대로 전달하거나 수신자를 끊는다"까지. 재접속 사이의 메시지 복구는 없다 |
 | 성능 | 측정한 적 없음. 메시지마다 할당·복제가 남아 있다 |
 
-**진행 중: M0.**
+**M0 완료 (브랜치 `m0/engine-prep`). 다음: M1.**
 
 ## 목표를 측정 가능하게
 
@@ -67,7 +67,7 @@ wsprism-sdk-*     클라이언트 SDK (TS → Unity C# → Dart)
 
 | 단계 | 내용 | 완료 기준 |
 |---|---|---|
-| **M0 정리** | ~~테넌트 조회를 `HashMap`으로~~, ~~`run_session` 분해~~, ~~룸 기능을 일반 서비스로 + 세션 컨텍스트 `&mut` 대여~~([ADR 0001](adr/0001-session-context-and-room-service.md)), 엔진 전용 메시지 타입 도입(axum `Message` 격리) | 동작 변화 없이 기존 테스트 전부 통과 |
+| **M0 정리** | ~~테넌트 조회를 `HashMap`으로~~, ~~`run_session` 분해~~, ~~룸 기능을 일반 서비스로 + 세션 컨텍스트 `&mut` 대여~~([ADR 0001](adr/0001-session-context-and-room-service.md)), ~~엔진 전용 메시지 타입 도입(axum `Message` 격리)~~([ADR 0002](adr/0002-transport-agnostic-out-frame.md)). **완료** | 동작 변화 없이 기존 테스트 전부 통과 |
 | **M1 정직한 기반** | 보안: Origin 허용 목록(CSWSH 방지), 신뢰 프록시 + `X-Forwarded-For`, 티켓을 쿼리스트링에서 제거(1회용 단기 티켓 / `Sec-WebSocket-Protocol`). 프로토콜 v1: 모든 응답에 요청 `seq`, 에러 코드 목록, 서브프로토콜 버전 협상(`wsprism.v1`), 에러 메시지의 내부 정보 제거. 문서를 코드와 일치(README의 `--config`, Hot 프레임 버전 바이트, `sys.authed` 형식). 퍼징(`decode_hot_frame`, envelope), `cargo-deny`/`cargo-audit`. **벤치마크 장치와 현재 기준선** | 기준선 수치가 문서에 있음, 퍼징이 CI에서 돎 |
 | **M2 끼워 쓰기 (핵심)** | engine/server crate 분리, 트레이트 + 빌더, 공개 API 최소화. JWT(테넌트별 JWKS, `exp`, 테넌트 claim), 채널 권한, 연결 중 토큰 갱신. **백엔드 프록시(HTTP 먼저)와 서버 발행 API**(`/api/v1/publish`, `/api/v1/disconnect`, API 키·mTLS). 최소 TS SDK | Node 또는 Spring 백엔드에 붙인 예제 앱이 동작 |
 | **M3 진짜 신뢰성** | 룸을 "채널"로 일반화(네임스페이스), 채널별 이력 + offset/epoch + 재접속 복구, ACK. 이력이 지워졌으면 "복구 불가"를 알린다. 단일 노드부터. Hot Lane은 계속 Lossy | 연결이 끊긴 사이 메시지를 복구하는 테스트 통과 |

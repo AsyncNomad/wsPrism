@@ -1,4 +1,3 @@
-use axum::extract::ws::Message;
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -35,39 +34,61 @@ pub struct Outgoing {
     pub payload: Payload,
 }
 
-/// Prepared message cached for broadcasting (serialize once, send N times).
-#[derive(Debug, Clone)]
-pub enum PreparedMsg {
-    Text(String),
-    Binary(Bytes),
+/// UTF-8 text in a shared, cheaply clonable buffer. Valid UTF-8 is
+/// guaranteed by construction (checked once for untrusted bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Utf8Text(Bytes);
+
+impl Utf8Text {
+    /// Validate `bytes` as UTF-8 (once) and wrap them without copying.
+    pub fn try_from_bytes(bytes: Bytes) -> Result<Self> {
+        std::str::from_utf8(&bytes)
+            .map_err(|e| WsPrismError::BadRequest(format!("utf8 invalid: {e}")))?;
+        Ok(Self(bytes))
+    }
+
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
 }
 
-impl PreparedMsg {
-    pub fn prepare(out: &Outgoing) -> Result<Self> {
-        match &out.payload {
+impl From<String> for Utf8Text {
+    fn from(s: String) -> Self {
+        Self(Bytes::from(s))
+    }
+}
+
+/// A message queued for one session's socket.
+///
+/// Transport-agnostic: the realtime core and services never see the
+/// WebSocket library's message type (the transport converts at its edge,
+/// `transport::session::wire`). Cloning is a reference-count bump, so a
+/// fan-out to N sessions does not copy the payload N times.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutFrame {
+    Text(Utf8Text),
+    Binary(Bytes),
+    /// Keep-alive ping (empty payload).
+    Ping,
+}
+
+impl OutFrame {
+    /// Encode a payload once, ready to be cloned to every recipient.
+    pub fn from_payload(payload: &Payload) -> Result<Self> {
+        match payload {
             Payload::TextJson(v) => {
                 let s = serde_json::to_string(v)
                     .map_err(|e| WsPrismError::BadRequest(format!("json encode failed: {e}")))?;
-                Ok(PreparedMsg::Text(s))
+                Ok(OutFrame::Text(s.into()))
             }
-            Payload::Utf8Bytes(b) => {
-                // validate UTF-8 once; send as Text
-                let s = std::str::from_utf8(b)
-                    .map_err(|e| WsPrismError::BadRequest(format!("utf8 invalid: {e}")))?
-                    .to_owned();
-                Ok(PreparedMsg::Text(s))
-            }
-            Payload::Binary(b) => Ok(PreparedMsg::Binary(b.clone())),
+            Payload::Utf8Bytes(b) => Ok(OutFrame::Text(Utf8Text::try_from_bytes(b.clone())?)),
+            Payload::Binary(b) => Ok(OutFrame::Binary(b.clone())),
         }
     }
 
-    /// Convert to axum::ws::Message for transport.
-    /// NOTE: axum::Message::Binary requires `Vec<u8>`, so Binary path clones into Vec.
-    pub fn to_ws_message(&self) -> Message {
-        match self {
-            PreparedMsg::Text(s) => Message::Text(s.clone()),
-            PreparedMsg::Binary(b) => Message::Binary(b.to_vec()),
-        }
+    /// A text frame from an owned string (no validation needed).
+    pub fn text(s: String) -> Self {
+        OutFrame::Text(s.into())
     }
 }
 
@@ -105,5 +126,27 @@ impl CloseSpec {
             reason: reason.into(),
             notice,
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_utf8_is_rejected_once_at_construction() {
+        assert!(Utf8Text::try_from_bytes(Bytes::from_static(&[0xff, 0xfe])).is_err());
+        let t = Utf8Text::try_from_bytes(Bytes::from_static("héllo".as_bytes())).unwrap();
+        assert_eq!(t.as_bytes(), "héllo".as_bytes());
+    }
+
+    #[test]
+    fn fanout_clones_share_the_buffer() {
+        let frame = OutFrame::from_payload(&Payload::Binary(Bytes::from(vec![1u8; 64]))).unwrap();
+        let (OutFrame::Binary(a), OutFrame::Binary(b)) = (frame.clone(), frame) else {
+            panic!("binary payload must stay binary");
+        };
+        assert_eq!(a.as_ptr(), b.as_ptr(), "clone must not copy the payload");
     }
 }

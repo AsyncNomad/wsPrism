@@ -12,6 +12,7 @@
 mod admit;
 mod close;
 mod inbound;
+mod wire;
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -28,7 +29,7 @@ use crate::dispatch::Dispatcher;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::ConnRateLimiter;
 use crate::policy::TenantPolicyRuntime;
-use crate::realtime::{close_code, CloseSpec, RealtimeCtx};
+use crate::realtime::{close_code, CloseSpec, OutFrame, RealtimeCtx};
 use crate::sys;
 
 use admit::{Admission, SessionCleanup};
@@ -82,7 +83,7 @@ struct Session {
     policy: Arc<TenantPolicyRuntime>,
     dispatcher: Arc<Dispatcher>,
     metrics: Arc<GatewayMetrics>,
-    out_tx: mpsc::Sender<Message>,
+    out_tx: mpsc::Sender<OutFrame>,
     writer_timeout: Duration,
     ping_interval: Duration,
     idle_timeout: Duration,
@@ -99,7 +100,7 @@ impl Session {
         &mut self,
         ws_tx: &mut SplitSink<WebSocket, Message>,
         ws_rx: &mut SplitStream<WebSocket>,
-        out_rx: &mut mpsc::Receiver<Message>,
+        out_rx: &mut mpsc::Receiver<OutFrame>,
         ctl_rx: &mut mpsc::Receiver<CloseSpec>,
     ) -> Exit {
         let mut ping_tick = tokio::time::interval(self.ping_interval);
@@ -120,11 +121,15 @@ impl Session {
     }
 
     /// Write one queued message to the socket (slow-consumer protection).
-    async fn write(&self, ws_tx: &mut SplitSink<WebSocket, Message>, out: Option<Message>) -> Flow {
-        let Some(msg) = out else {
+    async fn write(
+        &self,
+        ws_tx: &mut SplitSink<WebSocket, Message>,
+        out: Option<OutFrame>,
+    ) -> Flow {
+        let Some(frame) = out else {
             return Flow::Break(Exit::Abort);
         };
-        match timeout(self.writer_timeout, ws_tx.send(msg)).await {
+        match timeout(self.writer_timeout, ws_tx.send(wire::to_message(frame))).await {
             Ok(Ok(())) => Flow::Continue(()),
             Ok(Err(_)) => Flow::Break(Exit::Abort),
             Err(_) => {
@@ -138,7 +143,7 @@ impl Session {
 
     /// Keep-alive ping is optional: skip it if the queue is full (C9).
     fn ping(&self) -> Flow {
-        let _ = self.out_tx.try_send(Message::Ping(Vec::new()));
+        let _ = self.out_tx.try_send(OutFrame::Ping);
         Flow::Continue(())
     }
 
@@ -158,7 +163,7 @@ impl Session {
     /// freeze the session forever. A full queue means the client can't keep up
     /// with its own replies plus broadcasts, so it is closed as a slow consumer.
     fn reply(&self, text: String) -> Flow {
-        match self.out_tx.try_send(Message::Text(text)) {
+        match self.out_tx.try_send(OutFrame::text(text)) {
             Ok(()) => Flow::Continue(()),
             Err(TrySendError::Full(_)) => {
                 self.decision("transport", "close", "slow_consumer");

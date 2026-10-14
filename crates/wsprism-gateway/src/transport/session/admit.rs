@@ -3,7 +3,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use axum::extract::ws::Message;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use wsprism_core::error::{Result, WsPrismError};
@@ -13,7 +12,7 @@ use crate::app_state::AppState;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::OnExceed;
 use crate::realtime::core::Connection;
-use crate::realtime::{close_code, CloseSpec, RealtimeCore, RealtimeCtx};
+use crate::realtime::{close_code, CloseSpec, OutFrame, RealtimeCore, RealtimeCtx};
 use crate::sys;
 
 /// Per-connection counter making internal session keys unique (S4).
@@ -87,7 +86,7 @@ impl Session {
     pub(super) fn admit(
         app: &AppState,
         id: SessionIdentity,
-        out_tx: mpsc::Sender<Message>,
+        out_tx: mpsc::Sender<OutFrame>,
         ctl_tx: mpsc::Sender<CloseSpec>,
     ) -> Result<Admission> {
         let policy = app
@@ -187,7 +186,7 @@ impl Session {
         };
         // The queue is empty and only this task consumes it, so this cannot be full.
         out_tx
-            .try_send(Message::Text(sys::authed(
+            .try_send(OutFrame::text(sys::authed(
                 &id.tenant,
                 &id.user_id,
                 &id.sid,

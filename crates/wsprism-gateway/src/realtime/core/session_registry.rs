@@ -1,17 +1,16 @@
-use axum::extract::ws::Message;
 use dashmap::{DashMap, DashSet};
 use tokio::sync::mpsc;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use wsprism_core::error::{Result, WsPrismError};
 
-use crate::realtime::types::CloseSpec;
+use crate::realtime::types::{CloseSpec, OutFrame};
 
 /// Handles to one live session.
 #[derive(Clone)]
 pub struct Connection {
     /// Outbound message queue (drained by the session's writer loop).
-    pub tx: mpsc::Sender<Message>,
+    pub tx: mpsc::Sender<OutFrame>,
     /// Control channel: asks the session to close itself (kick, replace,
     /// drain). The session ends promptly even if its peer never answers (C8).
     pub ctl: mpsc::Sender<CloseSpec>,

@@ -1,12 +1,13 @@
 //! How a session ends: the `Exit` reasons and the matching socket teardown.
 
-use axum::extract::ws::{CloseFrame, Message, WebSocket};
+use axum::extract::ws::{Message, WebSocket};
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration, Instant};
 
-use crate::realtime::{close_code, CloseSpec};
+use super::wire;
+use crate::realtime::{close_code, CloseSpec, OutFrame};
 
 /// How long to keep the socket open after sending close 1009 (see S2).
 const CLOSE_LINGER: Duration = Duration::from_millis(500);
@@ -42,7 +43,7 @@ pub(super) async fn finish(
     exit: Exit,
     ws_tx: &mut SplitSink<WebSocket, Message>,
     ws_rx: &mut SplitStream<WebSocket>,
-    out_rx: &mut mpsc::Receiver<Message>,
+    out_rx: &mut mpsc::Receiver<OutFrame>,
     writer_timeout: Duration,
 ) {
     match exit {
@@ -53,10 +54,7 @@ pub(super) async fn finish(
         Exit::Abort => {}
         Exit::Close(spec) => close_session(ws_tx, ws_rx, out_rx, spec, writer_timeout).await,
         Exit::TooBig => {
-            let close = Message::Close(Some(CloseFrame {
-                code: close_code::MESSAGE_TOO_BIG,
-                reason: "message too big".into(),
-            }));
+            let close = wire::close_message(close_code::MESSAGE_TOO_BIG, "message too big".into());
             let _ = timeout(writer_timeout, ws_tx.send(close)).await;
             // The oversized payload is still unread in the kernel buffer
             // (tungstenite rejects on the header and cannot skip the body).
@@ -74,22 +72,16 @@ pub(super) async fn finish(
 pub(super) async fn close_session(
     ws_tx: &mut SplitSink<WebSocket, Message>,
     ws_rx: &mut SplitStream<WebSocket>,
-    out_rx: &mut mpsc::Receiver<Message>,
+    out_rx: &mut mpsc::Receiver<OutFrame>,
     spec: CloseSpec,
     writer_timeout: Duration,
 ) {
     out_rx.close(); // no new messages from here on
     let mut outgoing = Vec::new();
-    while let Ok(m) = out_rx.try_recv() {
-        if !matches!(m, Message::Close(_)) {
-            outgoing.push(m);
-        }
+    while let Ok(frame) = out_rx.try_recv() {
+        outgoing.push(wire::to_message(frame));
     }
-    outgoing.extend(spec.notice.map(Message::Text));
-    outgoing.push(Message::Close(Some(CloseFrame {
-        code: spec.code,
-        reason: spec.reason.into(),
-    })));
+    outgoing.extend(wire::close_messages(spec));
 
     let deadline = Instant::now() + writer_timeout;
     for m in outgoing {

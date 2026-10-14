@@ -6,5 +6,6 @@
 | # | 제목 | 상태 |
 |---|---|---|
 | [0001](0001-session-context-and-room-service.md) | 세션 컨텍스트를 서비스에 `&mut`로 빌려주고, 룸 기능을 일반 서비스로 | 채택 (M0) |
+| [0002](0002-transport-agnostic-out-frame.md) | 전송 계층과 무관한 송신 프레임 `OutFrame` | 채택 (M0) |
 
 새 ADR은 다음 번호로 만들고, 결정이 바뀌면 기존 ADR을 고치지 말고 새 ADR에서 "대체함"을 밝힌다.
