@@ -1,4 +1,8 @@
 //! THROWAWAY validation V6: state sync over a MoQ relay.
+//!
+//! `cell`: the judgment-cell scenario (same metrics/JSON as the loadgen).
+//! `pub` / `sub`: one publisher and one subscriber in separate processes, to
+//! observe what a subscriber sees when the publisher reconnects (M-5).
 
 #[path = "../../../crates/wsprism-loadgen/src/statesync/aoi.rs"]
 mod aoi;
@@ -11,15 +15,26 @@ mod wire;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use anyhow::Context;
 use clap::Parser;
 use hdrhistogram::Histogram;
-use moq_native_ietf::{quic, tls};
 use moq_transport::coding::TrackNamespace;
 use moq_transport::serve::{self, Datagram, TrackReaderMode};
 use moq_transport::session::Session;
 use tokio::sync::{mpsc, Semaphore};
 use tokio::time::{interval_at, Instant, MissedTickBehavior};
+
+mod conn;
+mod reconnect;
+
+#[derive(Parser)]
+enum Cmd {
+    /// The judgment-cell scenario.
+    Cell(Args),
+    /// Publish one participant's track (reconnect experiment).
+    Pub(reconnect::PubArgs),
+    /// Subscribe to one participant's track and log what happens (reconnect experiment).
+    Sub(reconnect::SubArgs),
+}
 
 #[derive(Parser)]
 struct Args {
@@ -50,12 +65,12 @@ struct Args {
     label: String,
 }
 
-fn now_ns() -> u64 {
+pub(crate) fn now_ns() -> u64 {
     static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
     EPOCH.get_or_init(std::time::Instant::now).elapsed().as_nanos() as u64
 }
 
-fn ns(room: u32, id: u32) -> TrackNamespace {
+pub(crate) fn ns(room: u32, id: u32) -> TrackNamespace {
     TrackNamespace::from_utf8_path(&format!("r{room}/p{id}"))
 }
 
@@ -77,19 +92,8 @@ struct Client {
 }
 
 async fn connect(url: &url::Url, room: u32, id: u32) -> anyhow::Result<Client> {
-    let tls = tls::Args {
-        disable_verify: true,
-        ..Default::default()
-    }
-    .load()?;
-    let endpoint = quic::Endpoint::new(quic::Config::new("0.0.0.0:0".parse()?, None, tls)?)?;
-    let (wt, _cid, transport) = endpoint.client.connect(url, None).await?;
-    // The endpoint must outlive the connection.
-    std::mem::forget(endpoint);
-    let (session, publisher, subscriber) = Session::connect(wt, None, transport)
-        .await
-        .context("MoQ session")?;
-    Ok(Client { room, id, session, publisher, subscriber })
+    let c = conn::open(url).await?;
+    Ok(Client { room, id, session: c.session, publisher: c.publisher, subscriber: c.subscriber })
 }
 
 async fn run_client(
@@ -194,7 +198,14 @@ async fn run_client(
 async fn main() -> anyhow::Result<()> {
     now_ns();
     let _ = rustls::crypto::ring::default_provider().install_default();
-    let args = Arc::new(Args::parse());
+    match Cmd::parse() {
+        Cmd::Cell(a) => cell(Arc::new(a)).await,
+        Cmd::Pub(a) => reconnect::publish(a).await,
+        Cmd::Sub(a) => reconnect::subscribe(a).await,
+    }
+}
+
+async fn cell(args: Arc<Args>) -> anyhow::Result<()> {
     let rss_before = args.server_pid.and_then(cost::sample).map(|s| s.rss_kb);
 
     let gate = Arc::new(Semaphore::new(args.connect_concurrency.max(1)));

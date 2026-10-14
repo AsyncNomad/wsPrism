@@ -56,7 +56,11 @@ bench/run-moq.sh moq-judgment 3
 - [x] M-2 버리는 프로브 `spikes/moq-probe` (제품 부하 생성기에 넣지 않음 — MoQ 의존성을 제품 워크스페이스에 들이지 않기 위해). AoI·프레임·비용 코드는 부하 생성기 파일을 `#[path]`로 그대로 써서 지표가 같다. 참가자별 네임스페이스 `r<room>/p<id>`, 트랙 `state`, 업데이트마다 datagram 객체 1개, 같은 룸의 다른 참가자 트랙 구독(발행 전이면 100 ms 간격 재시도)
 - [x] M-3 스모크(20 ms, 손실 없음, 2×5, 5초): 구독 40/40, 전달률 1.0, 지연 p99 42.6 ms, AoI p99 51.2 ms → `moq-smoke.jsonl`
 - [ ] M-4 판정 칸 측정(재개 가능 스크립트로) → 커밋
-- [ ] M-5 발행자 재접속 시 구독자 동작 확인
+  - [x] MoQ 9회 (`moq-judgment.jsonl`) — 중앙값: 초과 AoI 15.6~15.7 ms, 끊김 0, 지연 p99 46 ms, CPU 11.4~11.7 µs/msg, RSS 단순 평균 약 525 KB/conn
+  - [ ] 같은 세션 WSS·WT 기준(틱 0) 18회를 같은 파일에: `bench/run-v.sh moq-judgment 3 "none:20 uniform:1:20 burst:1:4:20" "0" "wss wt"` (재개 가능)
+  - [ ] 한계 메모리(연결 100 → 300): `bench/run-moq.sh moq-mem-10 3 none:20` / `bench/run-moq.sh moq-mem-30 3 none:20 "--rooms 30 --room-size 10 --rate 60 --sample-hz 60 --warmup 3 --duration 10"`
+  - 판정: `python3 bench/analyze-v.py --candidate moq bench/results/moq-judgment.jsonl`
+- [ ] M-5 발행자 재접속 시 구독자 동작 확인 — 프로브 `pub`/`sub` 하위 명령(별도 프로세스, `kill -9` = 비정상 종료, `--graceful` = 세션 닫기) 작성·빌드 완료, 실행 전
 - [ ] M-6 판단 메모: 직접 구현 / MoQ 위 / MoQ 호환 → BENCHMARKS·ADR 0004 갱신
 
 ## 열린 항목

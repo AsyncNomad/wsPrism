@@ -43,7 +43,7 @@ for run in $(seq "$RUNS"); do for loss in $LOSSES; do
   prof="$(profile "$loss")"
   "$ROOT/bench/netlab.sh" --srv-egress "$prof" --cli-egress "$prof" \
     --server "$RELAY --bind 10.77.0.1:4443 --tls-cert $WORK/cert.pem --tls-key $WORK/key.pem --coordinator-file $WORK/coord-$total.json" \
-    --client "$PROBE --url https://10.77.0.1:4443/wsprism $EXTRA --server-pid \$SERVER_PID --label '$label'" \
+    --client "$PROBE cell --url https://10.77.0.1:4443/wsprism $EXTRA --server-pid \$SERVER_PID --label '$label'" \
     2>>"${MOQ_LOG:-/dev/null}" >> "$OUT" || echo "[$total] FAILED: moq $label" >&2
 done; done
 echo "done: $total runs -> $OUT" >&2

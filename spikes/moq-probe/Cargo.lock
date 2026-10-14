@@ -1049,6 +1049,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "url",
+ "web-transport",
 ]
 
 [[package]]

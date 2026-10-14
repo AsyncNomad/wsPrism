@@ -16,11 +16,16 @@ Rules (ADR 0004, revision 2):
   loss conditions.
 - Same-configuration rule: pass only if one tick satisfies G1 and G5.
 
-Usage: bench/analyze-v.py bench/results/v-judgment.jsonl
+The candidate is WT by default; --candidate moq judges the MoQ relay path
+(bench/run-moq.sh) the same way. Several files may be given; their rows are
+pooled, so a candidate measured in one file can be judged against WSS in the
+same file (preferred: same session, CPU noise between sessions is ~20%).
+
+Usage: bench/analyze-v.py [--candidate wt|moq] FILE...
 """
+import argparse
 import json
 import statistics
-import sys
 from collections import defaultdict
 
 
@@ -28,15 +33,16 @@ def parse_label(label):
     return dict(kv.split("=", 1) for kv in label.split())
 
 
-def load(path):
+def load(paths):
     rows = defaultdict(list)
-    for line in open(path):
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        d = json.loads(line)
-        lab = parse_label(d["label"])
-        rows[(d["transport"], lab["loss"], int(lab["tick"]))].append(d)
+    for path in paths:
+        for line in open(path):
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            d = json.loads(line)
+            lab = parse_label(d["label"])
+            rows[(d["transport"], lab["loss"], int(lab["tick"]))].append(d)
     return rows
 
 
@@ -67,8 +73,8 @@ def metrics(runs):
     }
 
 
-def main(path):
-    rows = load(path)
+def main(paths, cand):
+    rows = load(paths)
     m = {k: metrics(v) for k, v in rows.items()}
     transports = sorted({k[0] for k in m})
     losses = sorted({k[1] for k in m})
@@ -98,35 +104,37 @@ def main(path):
                       f"{x['mem'] or float('nan'):11.1f} {x['broken']}")
         print()
 
-    if "wt" not in transports or "wss" not in transports:
+    if cand not in transports or "wss" not in transports:
         return
-    print("== Gates (WT vs WSS) ==")
+    print(f"== Gates ({cand.upper()} vs WSS) ==")
+    # Only ticks at which the candidate was measured (MoQ forwards immediately: tick 0).
+    cticks = [tk for tk in ticks if all((cand, l, tk) in m and ("wss", l, tk) in m for l in losses)]
 
     def judge(tick, wss_tick):
         notes, g1 = [], True
         for loss in lossy:
-            wt_ex, wss_ex = excess("wt", loss, tick), excess("wss", loss, wss_tick)
-            wt_st, wss_st = m[("wt", loss, tick)]["stall"], m[("wss", loss, wss_tick)]["stall"]
+            wt_ex, wss_ex = excess(cand, loss, tick), excess("wss", loss, wss_tick)
+            wt_st, wss_st = m[(cand, loss, tick)]["stall"], m[("wss", loss, wss_tick)]["stall"]
             ex_ok = wt_ex is not None and wss_ex is not None and wt_ex <= wss_ex / 3
             st_ok = wt_st <= wss_st / 3 if wss_st > 0 else wt_st == 0
             g1 &= ex_ok and st_ok
             notes.append(f"{loss}: excess {wt_ex:.1f} vs {wss_ex:.1f} ms ({wss_ex / max(wt_ex, 1e-9):.1f}x) {'ok' if ex_ok else 'FAIL'}; "
                          f"stall {wt_st*100:.3f}% vs {wss_st*100:.3f}% {'ok' if st_ok else 'FAIL'}")
-        c_wt, c_wss = m[("wt", base_loss, tick)], m[("wss", base_loss, wss_tick)]
+        c_wt, c_wss = m[(cand, base_loss, tick)], m[("wss", base_loss, wss_tick)]
         ctrl = c_wt["aoi_p50"] <= c_wss["aoi_p50"] * 1.1 and c_wt["aoi_p99"] <= c_wss["aoi_p99"] * 1.1
         g1 &= ctrl
         notes.append(f"0% control: AoI p50 {c_wt['aoi_p50']:.1f} vs {c_wss['aoi_p50']:.1f}, p99 {c_wt['aoi_p99']:.1f} vs {c_wss['aoi_p99']:.1f} {'ok' if ctrl else 'FAIL'}")
-        cpu = [m[("wt", l, tick)]["cpu"] / m[("wss", l, wss_tick)]["cpu"] for l in losses]
-        mem = [m[("wt", l, tick)]["mem"] / m[("wss", l, wss_tick)]["mem"] for l in losses]
+        cpu = [m[(cand, l, tick)]["cpu"] / m[("wss", l, wss_tick)]["cpu"] for l in losses]
+        mem = [m[(cand, l, tick)]["mem"] / m[("wss", l, wss_tick)]["mem"] for l in losses]
         g5 = max(cpu) <= 2.0 and max(mem) <= 2.0
         notes.append(f"cost: cpu {min(cpu):.2f}-{max(cpu):.2f}x, mem {min(mem):.2f}-{max(mem):.2f}x")
         return g1, g5, notes
 
     any_pass = False
-    for tick in ticks:
+    for tick in cticks:
         g1, g5, notes = judge(tick, tick)
         any_pass |= g1 and g5
-        print(f"WT tick={tick} vs WSS tick={tick}: G1 {'PASS' if g1 else 'FAIL'}, G5 {'PASS' if g5 else 'FAIL'}"
+        print(f"{cand.upper()} tick={tick} vs WSS tick={tick}: G1 {'PASS' if g1 else 'FAIL'}, G5 {'PASS' if g5 else 'FAIL'}"
               f"{' -> BOTH' if g1 and g5 else ''}")
         for n in notes:
             print(f"    {n}")
@@ -136,13 +144,17 @@ def main(path):
         print("\n(no lossy conditions in this file: G1 cannot be judged; cost ratios above)")
         return
     wss_best = min(ticks, key=lambda tk: max(m[("wss", l, tk)]["aoi_p99"] for l in lossy))
-    print(f"\nReference: WT vs the best-AoI WSS configuration (tick={wss_best})")
-    for tick in ticks:
+    print(f"\nReference: {cand.upper()} vs the best-AoI WSS configuration (tick={wss_best})")
+    for tick in cticks:
         g1, g5, notes = judge(tick, wss_best)
-        print(f"  WT tick={tick}: G1 {'PASS' if g1 else 'FAIL'}, G5 {'PASS' if g5 else 'FAIL'}; {notes[-1]}")
+        print(f"  {cand.upper()} tick={tick}: G1 {'PASS' if g1 else 'FAIL'}, G5 {'PASS' if g5 else 'FAIL'}; {notes[-1]}")
 
     print(f"\nSame-configuration rule: {'PASS — a tick satisfies G1 and G5' if any_pass else 'FAIL — no tick satisfies both'}")
 
 
 if __name__ == "__main__":
-    main(sys.argv[1] if len(sys.argv) > 1 else "bench/results/v-judgment.jsonl")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--candidate", default="wt", help="transport judged against WSS (wt, moq)")
+    ap.add_argument("files", nargs="*", default=["bench/results/v-judgment.jsonl"])
+    a = ap.parse_args()
+    main(a.files, a.candidate)
