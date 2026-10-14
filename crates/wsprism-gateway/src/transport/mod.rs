@@ -5,4 +5,5 @@
 
 pub mod codec;
 pub mod handshake;
+pub(crate) mod session;
 pub mod ws;

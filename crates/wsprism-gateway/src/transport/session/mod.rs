@@ -1,0 +1,209 @@
+//! One WebSocket session after the upgrade: admission, the event loop, and
+//! teardown.
+//!
+//! - `admit`: sid takeover, per-user session limit, registry registration.
+//! - `inbound`: per-frame decode → rate limit → policy → room ops / dispatch.
+//! - `close`: why a session ends (`Exit`) and how its socket is torn down.
+//! - `sys`: gateway `sys.*` envelopes.
+//!
+//! Handlers return a `Flow`. The event loop only routes events to them and
+//! never awaits the session's own outbound queue (C9).
+
+mod admit;
+mod close;
+mod inbound;
+pub(crate) mod sys;
+
+use std::ops::ControlFlow;
+use std::sync::Arc;
+
+use axum::extract::ws::{Message, WebSocket};
+use futures_util::stream::{SplitSink, SplitStream};
+use futures_util::{SinkExt, StreamExt};
+use tokio::sync::mpsc::{self, error::TrySendError};
+use tokio::time::{timeout, Duration, Instant};
+use wsprism_core::error::Result;
+
+use crate::app_state::AppState;
+use crate::config::TenantLimits;
+use crate::dispatch::Dispatcher;
+use crate::obs::metrics::GatewayMetrics;
+use crate::policy::engine::ConnRateLimiter;
+use crate::policy::TenantPolicyRuntime;
+use crate::realtime::{close_code, CloseSpec, RealtimeCore, RealtimeCtx};
+
+use admit::{Admission, SessionCleanup};
+use close::Exit;
+
+/// Outcome of handling one event: keep going, or end the session.
+type Flow = ControlFlow<Exit>;
+
+/// Who is connected, fixed for the connection's lifetime.
+pub(crate) struct SessionIdentity {
+    pub tenant: String,
+    pub user_id: String,
+    /// Client-facing session id (client-provided or generated; not unique).
+    pub sid: String,
+    pub trace_id: String,
+}
+
+/// Run a session on an upgraded socket until it ends.
+pub(crate) async fn run(app: AppState, id: SessionIdentity, socket: WebSocket) -> Result<()> {
+    let gw = &app.cfg().gateway;
+    let writer_timeout = Duration::from_millis(gw.writer_send_timeout_ms);
+    let (out_tx, mut out_rx) = mpsc::channel(gw.session_queue_capacity);
+    let (ctl_tx, mut ctl_rx) = mpsc::channel::<CloseSpec>(1);
+    let (mut ws_tx, mut ws_rx) = socket.split();
+
+    let mut session = match Session::admit(&app, id, out_tx, ctl_tx)? {
+        Admission::Admitted(session) => session,
+        Admission::Rejected(spec) => {
+            close::close_session(&mut ws_tx, &mut ws_rx, &mut out_rx, spec, writer_timeout).await;
+            return Ok(());
+        }
+    };
+
+    let exit = session
+        .event_loop(&mut ws_tx, &mut ws_rx, &mut out_rx, &mut ctl_rx)
+        .await;
+
+    // The session stays registered until the close completes: the drain
+    // logic in main waits on the registry, and anything routed to us meanwhile
+    // is rejected by the closed queue. Dropping `session` unregisters it.
+    close::finish(exit, &mut ws_tx, &mut ws_rx, &mut out_rx, writer_timeout).await;
+    drop(session);
+    Ok(())
+}
+
+/// State of one admitted session, owned by its task.
+struct Session {
+    id: SessionIdentity,
+    /// Gateway-internal key, unique per connection (S4).
+    session_key: String,
+    policy: Arc<TenantPolicyRuntime>,
+    limits: TenantLimits,
+    core: Arc<RealtimeCore>,
+    dispatcher: Arc<Dispatcher>,
+    metrics: Arc<GatewayMetrics>,
+    out_tx: mpsc::Sender<Message>,
+    writer_timeout: Duration,
+    ping_interval: Duration,
+    idle_timeout: Duration,
+    active_room: Option<String>,
+    last_activity: Instant,
+    conn_limiter: Option<ConnRateLimiter>,
+    /// Hot Lane latency sampling counter (1/1024).
+    hot_op_counter: u64,
+    /// Unregisters the session when dropped.
+    _cleanup: SessionCleanup,
+}
+
+impl Session {
+    async fn event_loop(
+        &mut self,
+        ws_tx: &mut SplitSink<WebSocket, Message>,
+        ws_rx: &mut SplitStream<WebSocket>,
+        out_rx: &mut mpsc::Receiver<Message>,
+        ctl_rx: &mut mpsc::Receiver<CloseSpec>,
+    ) -> Exit {
+        let mut ping_tick = tokio::time::interval(self.ping_interval);
+        let mut idle_tick = tokio::time::interval(Duration::from_millis(1000));
+        loop {
+            let flow = tokio::select! {
+                // C8: kick / replace / drain requests from other tasks.
+                Some(spec) = ctl_rx.recv() => Flow::Break(Exit::Close(spec)),
+                out = out_rx.recv() => self.write(ws_tx, out).await,
+                incoming = ws_rx.next() => self.on_incoming(incoming).await,
+                _ = ping_tick.tick() => self.ping(),
+                _ = idle_tick.tick() => self.check_idle(),
+            };
+            if let ControlFlow::Break(exit) = flow {
+                return exit;
+            }
+        }
+    }
+
+    /// Write one queued message to the socket (slow-consumer protection).
+    async fn write(&self, ws_tx: &mut SplitSink<WebSocket, Message>, out: Option<Message>) -> Flow {
+        let Some(msg) = out else {
+            return Flow::Break(Exit::Abort);
+        };
+        match timeout(self.writer_timeout, ws_tx.send(msg)).await {
+            Ok(Ok(())) => Flow::Continue(()),
+            Ok(Err(_)) => Flow::Break(Exit::Abort),
+            Err(_) => {
+                self.metrics
+                    .writer_timeouts
+                    .inc(&[("tenant", &self.id.tenant)]);
+                Flow::Break(Exit::Abort)
+            }
+        }
+    }
+
+    /// Keep-alive ping is optional: skip it if the queue is full (C9).
+    fn ping(&self) -> Flow {
+        let _ = self.out_tx.try_send(Message::Ping(Vec::new()));
+        Flow::Continue(())
+    }
+
+    fn check_idle(&self) -> Flow {
+        if self.last_activity.elapsed() >= self.idle_timeout {
+            return Flow::Break(Exit::Close(CloseSpec::new(
+                close_code::NORMAL,
+                "idle_timeout",
+                Some(sys::error("TIMEOUT", "idle", &self.id.trace_id)),
+            )));
+        }
+        Flow::Continue(())
+    }
+
+    /// Queue a reply from the session's own loop without awaiting (C9). This
+    /// loop is the queue's only consumer, so awaiting a full queue would
+    /// freeze the session forever. A full queue means the client can't keep up
+    /// with its own replies plus broadcasts, so it is closed as a slow consumer.
+    fn reply(&self, text: String) -> Flow {
+        match self.out_tx.try_send(Message::Text(text)) {
+            Ok(()) => Flow::Continue(()),
+            Err(TrySendError::Full(_)) => {
+                self.decision("transport", "close", "slow_consumer");
+                Flow::Break(Exit::Close(CloseSpec::new(
+                    close_code::POLICY,
+                    "slow_consumer",
+                    Some(sys::error(
+                        "SLOW_CONSUMER",
+                        "outbound queue full",
+                        &self.id.trace_id,
+                    )),
+                )))
+            }
+            Err(TrySendError::Closed(_)) => Flow::Break(Exit::Abort),
+        }
+    }
+
+    fn reply_error(&self, code: &str, msg: &str) -> Flow {
+        self.reply(sys::error(code, msg, &self.id.trace_id))
+    }
+
+    /// Count a policy decision. Label values are static or from a fixed set (S5).
+    fn decision(&self, lane: &str, decision: &str, reason: &str) {
+        self.metrics.policy_decisions.inc(&[
+            ("tenant", &self.id.tenant),
+            ("lane", lane),
+            ("decision", decision),
+            ("reason", reason),
+        ]);
+    }
+
+    /// Per-message context handed to room operations and services.
+    fn ctx(&self) -> RealtimeCtx {
+        RealtimeCtx::new(
+            self.id.tenant.clone(),
+            self.id.user_id.clone(),
+            self.id.sid.clone(),
+            self.session_key.clone(),
+            self.id.trace_id.clone(),
+            self.active_room.clone(),
+            self.core.clone(),
+        )
+    }
+}
