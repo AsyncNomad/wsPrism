@@ -427,6 +427,12 @@ pub struct TenantPolicy {
     /// If true, hot lane requires active_room.
     #[serde(default = "default_hot_requires_active_room")]
     pub hot_requires_active_room: bool,
+
+    /// Browser origins allowed to open sockets (CSWSH protection). Requests
+    /// without an `Origin` header (non-browser clients) are always allowed.
+    /// Empty (default) = deny every browser origin. See `policy::origin`.
+    #[serde(default)]
+    pub allowed_origins: Vec<String>,
 }
 
 fn default_hot_requires_active_room() -> bool {
@@ -444,6 +450,7 @@ impl Default for TenantPolicy {
             sessions: SessionPolicy::default(),
             hot_error_mode: default_hot_error_mode(),
             hot_requires_active_room: default_hot_requires_active_room(),
+            allowed_origins: Vec::new(),
         }
     }
 }

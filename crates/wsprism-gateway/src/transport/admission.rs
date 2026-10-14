@@ -7,7 +7,10 @@
 
 use std::net::{IpAddr, SocketAddr};
 
-use axum::http::{header::RETRY_AFTER, HeaderMap, StatusCode};
+use axum::http::{
+    header::{ORIGIN, RETRY_AFTER},
+    HeaderMap, StatusCode,
+};
 use axum::response::{IntoResponse, Response};
 
 use crate::app_state::AppState;
@@ -98,6 +101,7 @@ fn check_all(
     let tenant = tenant.ok_or_else(|| {
         Rejection::new(StatusCode::BAD_REQUEST, "unknown_tenant", "Unknown Tenant")
     })?;
+    origin_allowed(app, tenant, req)?;
     let user_id = authenticate(app, req)?;
     tenant_capacity(app, tenant)?;
     Ok(Admitted {
@@ -125,6 +129,26 @@ fn not_draining(app: &AppState) -> Result<(), Rejection> {
             StatusCode::SERVICE_UNAVAILABLE,
             "draining",
             "draining",
+        ));
+    }
+    Ok(())
+}
+
+/// Cross-site WebSocket hijacking protection (see `policy::origin`).
+fn origin_allowed(
+    app: &AppState,
+    tenant: &TenantConfig,
+    req: &HandshakeRequest<'_>,
+) -> Result<(), Rejection> {
+    let origin = req.headers.get(ORIGIN).and_then(|v| v.to_str().ok());
+    let allowed = app
+        .tenant_policy(&tenant.id)
+        .is_some_and(|p| p.origins().allows(origin));
+    if !allowed {
+        return Err(Rejection::new(
+            StatusCode::FORBIDDEN,
+            "origin_not_allowed",
+            "Origin Not Allowed",
         ));
     }
     Ok(())

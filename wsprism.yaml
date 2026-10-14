@@ -140,6 +140,12 @@ tenants:
       
       hot_allowlist: []             # Binary protocol disabled for this tenant
 
+      # Browser origins allowed to connect (cross-site WebSocket hijacking protection).
+      # Requests without an Origin header (native apps, servers) are always allowed.
+      # Empty = deny every browser origin. Patterns: exact, "https://*.domain", or "*".
+      allowed_origins:
+        - "https://app.example.com"
+
 
   # ============================================================================
   # Tenant B: "enterprise_game" (High Performance)

@@ -14,6 +14,7 @@ use crate::config::schema::{RateLimitScope, SessionPolicy, TenantPolicy};
 use super::allowlist::{
     compile_ext_rules, compile_hot_rules, is_ext_allowed, is_hot_allowed, ExtRule, HotRule,
 };
+use super::origin::OriginPolicy;
 
 /// Decision from policy evaluation.
 #[derive(Debug, Clone)]
@@ -45,6 +46,8 @@ pub struct TenantPolicyRuntime {
     // Hot lane behavior
     hot_error_mode: HotErrorMode,
     hot_requires_active_room: bool,
+
+    origins: OriginPolicy,
 }
 
 impl TenantPolicyRuntime {
@@ -76,6 +79,7 @@ impl TenantPolicyRuntime {
             sessions: policy.sessions.clone(),
             hot_error_mode: policy.hot_error_mode,
             hot_requires_active_room: policy.hot_requires_active_room,
+            origins: OriginPolicy::compile(&policy.allowed_origins)?,
         })
     }
 
@@ -87,6 +91,11 @@ impl TenantPolicyRuntime {
     }
     pub fn hot_requires_active_room(&self) -> bool {
         self.hot_requires_active_room
+    }
+
+    /// Browser origin policy for upgrades (CSWSH protection).
+    pub fn origins(&self) -> &OriginPolicy {
+        &self.origins
     }
 
     /// Create per-connection limiter if enabled (Connection/Both).

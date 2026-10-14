@@ -65,6 +65,12 @@ impl AppState {
                         ))
                     })?;
 
+            if runtime.origins().denies_all_browsers() {
+                tracing::warn!(
+                    tenant = %t.id,
+                    "policy.allowed_origins is empty: browser clients (requests with an Origin header) will be rejected with 403"
+                );
+            }
             tenant_policy.insert(t.id.clone(), Arc::new(runtime));
         }
 

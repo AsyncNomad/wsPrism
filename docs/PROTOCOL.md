@@ -94,6 +94,7 @@ Before the upgrade (plain HTTP responses):
 |---|---|
 | 400 | Unknown tenant |
 | 401 | Invalid ticket |
+| 403 | Browser `Origin` not in the tenant's `policy.allowed_origins` (requests without `Origin` are not checked) |
 | 429 + `Retry-After` | Handshake rate limit |
 | 503 (+ `Retry-After`) | Draining, or tenant session capacity reached |
 
