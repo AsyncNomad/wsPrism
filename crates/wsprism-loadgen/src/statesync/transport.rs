@@ -20,6 +20,9 @@ pub enum Transport {
     Ws,
     Wss,
     Wt,
+    /// WebTransport first; if it is not up within the attempt budget, fall
+    /// back to WSS (design §5, gate G4).
+    Auto,
 }
 
 pub trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -65,6 +68,30 @@ impl Rx {
     }
 }
 
+/// Connect with fallback: `Auto` tries WT on `addr` for `wt_budget`, then
+/// WSS on `fallback_addr`. Returns the transport actually used.
+pub async fn connect_with_fallback(
+    transport: Transport,
+    addr: &str,
+    fallback_addr: Option<&str>,
+    wt_budget: std::time::Duration,
+    room: u32,
+    id: u32,
+) -> Result<(Tx, Rx, Transport), String> {
+    if transport != Transport::Auto {
+        let (tx, rx) = connect(transport, addr, room, id).await?;
+        return Ok((tx, rx, transport));
+    }
+    match tokio::time::timeout(wt_budget, connect(Transport::Wt, addr, room, id)).await {
+        Ok(Ok((tx, rx))) => Ok((tx, rx, Transport::Wt)),
+        Ok(Err(_)) | Err(_) => {
+            let fb = fallback_addr.ok_or("auto needs --fallback-addr")?;
+            let (tx, rx) = connect(Transport::Wss, fb, room, id).await?;
+            Ok((tx, rx, Transport::Wss))
+        }
+    }
+}
+
 /// Connect to `addr` (host:port) for `room`/`id`.
 pub async fn connect(
     transport: Transport,
@@ -74,6 +101,7 @@ pub async fn connect(
 ) -> Result<(Tx, Rx), String> {
     let query = format!("/?room={room}&id={id}");
     match transport {
+        Transport::Auto => Err("use connect_with_fallback for auto".into()),
         Transport::Ws | Transport::Wss => {
             let tcp = TcpStream::connect(addr).await.map_err(|e| e.to_string())?;
             tcp.set_nodelay(true).map_err(|e| e.to_string())?;

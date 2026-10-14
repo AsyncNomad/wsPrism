@@ -52,6 +52,12 @@ pub struct Args {
     pub warmup: u64,
     #[arg(long, default_value_t = 10)]
     pub duration: u64,
+    /// `--transport auto`: WSS address used when WebTransport is not up in time.
+    #[arg(long)]
+    pub fallback_addr: Option<String>,
+    /// `--transport auto`: how long to try WebTransport before falling back (ms).
+    #[arg(long, default_value_t = 1500)]
+    pub wt_budget_ms: u64,
     /// Server process to sample CPU/RSS from.
     #[arg(long)]
     pub server_pid: Option<u32>,
@@ -107,8 +113,18 @@ pub async fn run(args: Args) {
             let (args, gate) = (args.clone(), gate.clone());
             setups.push(tokio::spawn(async move {
                 let _permit = gate.acquire_owned().await.ok()?;
-                match transport::connect(args.transport, &args.addr, plan.room, plan.id).await {
-                    Ok(link) => Some((plan, link)),
+                let started = Instant::now();
+                let attempt = transport::connect_with_fallback(
+                    args.transport,
+                    &args.addr,
+                    args.fallback_addr.as_deref(),
+                    Duration::from_millis(args.wt_budget_ms),
+                    plan.room,
+                    plan.id,
+                )
+                .await;
+                match attempt {
+                    Ok((tx, rx, used)) => Some((plan, (tx, rx), used, started.elapsed())),
                     Err(e) => {
                         eprintln!("conn {}: {e}", plan.id);
                         None
@@ -118,9 +134,16 @@ pub async fn run(args: Args) {
         }
     }
     let mut links = Vec::new();
+    let mut connect_ms = new_hist();
+    let (mut used_wt, mut used_wss) = (0u64, 0u64);
     for s in setups {
-        if let Ok(Some(l)) = s.await {
-            links.push(l);
+        if let Ok(Some((plan, link, used, took))) = s.await {
+            let _ = connect_ms.record((took.as_micros() as u64).max(1));
+            match used {
+                Transport::Wt => used_wt += 1,
+                _ => used_wss += 1,
+            }
+            links.push((plan, link));
         }
     }
     let total = (args.rooms * args.room_size) as usize;
@@ -163,7 +186,20 @@ pub async fn run(args: Args) {
         cost_start.await.ok().flatten(),
         cost_end.await.ok().flatten(),
     );
-    report(&args, pubs, all, rss_before, c0, c1);
+    let connect = Connect {
+        hist: connect_ms,
+        used_wt,
+        used_wss,
+    };
+    report(&args, pubs, all, rss_before, c0, c1, &connect);
+}
+
+/// How clients got connected (time to established link, transport used).
+struct Connect {
+    /// Microseconds from first attempt to an established link (incl. fallback).
+    hist: Histogram<u64>,
+    used_wt: u64,
+    used_wss: u64,
 }
 
 async fn client(
@@ -236,6 +272,7 @@ fn report(
     rss_before: Option<u64>,
     c0: Option<cost::ProcSample>,
     c1: Option<cost::ProcSample>,
+    connect: &Connect,
 ) {
     let mut aoi = new_hist();
     let mut lat = new_hist();
@@ -280,6 +317,10 @@ fn report(
         "server_cpu_us_per_msg": cpu_us_per_msg,
         "server_rss_kb_per_conn": rss_per_conn_kb,
         "broken_links": broke,
+        "connect_ms": {
+            "p50": q(&connect.hist, 0.5), "p99": q(&connect.hist, 0.99), "max": connect.hist.max() as f64 / 1000.0
+        },
+        "connected_via": {"wt": connect.used_wt, "wss": connect.used_wss},
     });
     println!("{v}");
 }
