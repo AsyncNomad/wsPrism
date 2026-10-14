@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_core::error::{ClientCode, Result, WsPrismError};
 
 use super::{Session, SessionIdentity};
 use crate::app_state::AppState;
@@ -133,7 +133,7 @@ impl Session {
                         close_code::POLICY,
                         "too_many_sessions",
                         Some(sys::error(
-                            "TOO_MANY_SESSIONS",
+                            ClientCode::TooManySessions,
                             "limit exceeded",
                             &id.trace_id,
                         )),
@@ -169,11 +169,7 @@ impl Session {
             return Ok(Admission::Rejected(CloseSpec::new(
                 close_code::TRY_AGAIN_LATER,
                 "capacity",
-                Some(sys::error(
-                    e.client_code().as_str(),
-                    &e.to_string(),
-                    &id.trace_id,
-                )),
+                Some(sys::error_from(&e, &id.trace_id)),
             )));
         }
         metrics.ws_active_sessions.inc(&[("tenant", &id.tenant)]);

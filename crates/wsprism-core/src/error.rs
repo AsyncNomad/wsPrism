@@ -30,6 +30,12 @@ pub enum ClientCode {
     ResourceExhausted,
     /// Unsupported protocol version.
     UnsupportedVersion,
+    /// Per-user session limit reached (`on_exceed: deny`).
+    TooManySessions,
+    /// The client could not keep up with its outbound queue.
+    SlowConsumer,
+    /// No activity within the idle timeout.
+    Timeout,
     /// Internal server error.
     Internal,
 }
@@ -45,6 +51,9 @@ impl ClientCode {
             ClientCode::NotAllowed => "NOT_ALLOWED",
             ClientCode::ResourceExhausted => "RESOURCE_EXHAUSTED",
             ClientCode::UnsupportedVersion => "UNSUPPORTED_VERSION",
+            ClientCode::TooManySessions => "TOO_MANY_SESSIONS",
+            ClientCode::SlowConsumer => "SLOW_CONSUMER",
+            ClientCode::Timeout => "TIMEOUT",
             ClientCode::Internal => "INTERNAL",
         }
     }
@@ -75,6 +84,22 @@ pub enum WsPrismError {
 }
 
 impl WsPrismError {
+    /// Message safe to show to clients: validation details are kept, but
+    /// internal errors never expose their cause, and the `Display` prefixes
+    /// meant for logs (`bad request: ...`) are dropped.
+    pub fn client_message(&self) -> &str {
+        match self {
+            WsPrismError::BadRequest(m)
+            | WsPrismError::NotAllowed(m)
+            | WsPrismError::ResourceExhausted(m) => m,
+            WsPrismError::AuthFailed => "authentication failed",
+            WsPrismError::RateLimited => "rate limited",
+            WsPrismError::PayloadTooLarge => "payload too large",
+            WsPrismError::UnsupportedVersion => "unsupported protocol version",
+            WsPrismError::Internal(_) => "internal error",
+        }
+    }
+
     /// Map internal error to a stable client-facing code.
     pub fn client_code(&self) -> ClientCode {
         match self {
@@ -87,5 +112,24 @@ impl WsPrismError {
             WsPrismError::UnsupportedVersion => ClientCode::UnsupportedVersion,
             WsPrismError::Internal(_) => ClientCode::Internal,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn internal_errors_never_expose_their_cause() {
+        let e = WsPrismError::Internal("db password=hunter2 at 10.0.0.5".into());
+        assert_eq!(e.client_message(), "internal error");
+        assert_eq!(e.client_code(), ClientCode::Internal);
+    }
+
+    #[test]
+    fn client_messages_drop_the_log_prefix() {
+        let e = WsPrismError::BadRequest("chat.send requires room".into());
+        assert_eq!(e.to_string(), "bad request: chat.send requires room");
+        assert_eq!(e.client_message(), "chat.send requires room");
     }
 }

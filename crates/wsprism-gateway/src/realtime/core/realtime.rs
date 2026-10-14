@@ -8,10 +8,11 @@
 use crate::config::schema::TenantLimits;
 use crate::realtime::core::{Connection, Presence, SessionRegistry};
 use crate::realtime::types::{close_code, CloseSpec, OutFrame, Outgoing, QoS};
-use serde_json::json;
+use crate::sys;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::error::TrySendError;
+use wsprism_core::error::ClientCode;
 use wsprism_core::error::{Result, WsPrismError};
 
 static DROP_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -83,14 +84,11 @@ impl RealtimeCore {
                     if sample_every_1024(n) {
                         tracing::warn!(%session_key, closes=%n, "reliable egress: closing slow consumer");
                     }
-                    let notice = json!({
-                        "v": 1, "svc": "sys", "type": "error",
-                        "data": { "code": "SLOW_CONSUMER", "msg": "outbound queue full" }
-                    });
+                    let notice = sys::error(ClientCode::SlowConsumer, "outbound queue full", "");
                     let _ = conn.ctl.try_send(CloseSpec::new(
                         close_code::POLICY,
                         "slow_consumer",
-                        Some(notice.to_string()),
+                        Some(notice),
                     ));
                 }
             },

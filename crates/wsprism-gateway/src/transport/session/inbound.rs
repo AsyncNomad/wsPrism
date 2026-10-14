@@ -4,6 +4,7 @@ use std::ops::ControlFlow;
 
 use axum::extract::ws::Message;
 use tokio::time::Instant;
+use wsprism_core::error::ClientCode;
 use wsprism_core::protocol::hot::HotFrame;
 use wsprism_core::protocol::text::Envelope;
 
@@ -38,11 +39,7 @@ impl Session {
                 return Flow::Break(Exit::Close(CloseSpec::new(
                     close_code::PROTOCOL_ERROR,
                     "decode_error",
-                    Some(sys::error(
-                        e.client_code().as_str(),
-                        &e.to_string(),
-                        self.trace_id(),
-                    )),
+                    Some(sys::error_from(&e, self.trace_id())),
                 )));
             }
         };
@@ -84,14 +81,14 @@ impl Session {
                 // SAFE LABEL: code.as_str()
                 self.decision(lane, "reject", code.as_str());
                 if notify {
-                    self.reply_error(code.as_str(), msg)?;
+                    self.reply_code(code, msg)?;
                 }
                 ControlFlow::Continue(false)
             }
             PolicyDecision::Close { code, msg } => {
                 // SAFE LABEL: code.as_str()
                 self.decision(lane, "close", code.as_str());
-                let notice = notify.then(|| sys::error(code.as_str(), msg, self.trace_id()));
+                let notice = notify.then(|| sys::error(code, msg, self.trace_id()));
                 ControlFlow::Break(Exit::Close(CloseSpec::new(
                     close_code::POLICY,
                     "policy",
@@ -133,7 +130,7 @@ impl Session {
                     ("lane", "ext"),
                     ("svc", svc),
                 ]);
-                self.reply_error(e.client_code().as_str(), &e.to_string())
+                self.reply_error(&e)
             }
         }
     }
@@ -150,7 +147,7 @@ impl Session {
         }
         if self.policy.hot_requires_active_room() && self.ctx.active_room().is_none() {
             if notify {
-                return self.reply_error("BAD_REQUEST", "no active room");
+                return self.reply_code(ClientCode::BadRequest, "no active room");
             }
             return Flow::Continue(());
         }
@@ -172,7 +169,7 @@ impl Session {
                     .service_errors
                     .inc(&[("tenant", self.tenant()), ("lane", "hot")]);
                 if notify {
-                    return self.reply_error(e.client_code().as_str(), &e.to_string());
+                    return self.reply_error(&e);
                 }
                 Flow::Continue(())
             }

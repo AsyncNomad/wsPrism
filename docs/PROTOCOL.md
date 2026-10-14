@@ -103,7 +103,29 @@ Gateway periodically pings; client must pong. Idle connections are closed.
 
 ---
 
-## 6) Rejections & close codes
+## 6) Error codes
+
+`sys.error` carries `data.code` from this fixed set (`ClientCode` in
+`wsprism-core`) and a human-readable `data.msg`. Clients should branch on
+`code`, never on `msg`. Internal errors never expose their cause.
+
+| Code | Meaning |
+|---|---|
+| `BAD_REQUEST` | Malformed or invalid request (details in `msg`) |
+| `AUTH_FAILED` | Authentication failed |
+| `RATE_LIMITED` | Rate limited |
+| `PAYLOAD_TOO_LARGE` | Payload too large |
+| `NOT_ALLOWED` | Not permitted by policy (e.g. `chat.send` to a room not joined) |
+| `RESOURCE_EXHAUSTED` | A tenant/room/user limit was reached |
+| `UNSUPPORTED_VERSION` | Unsupported protocol version |
+| `TOO_MANY_SESSIONS` | Per-user session limit reached (`on_exceed: deny`) |
+| `SLOW_CONSUMER` | The client could not keep up with its outbound queue |
+| `TIMEOUT` | No activity within the idle timeout |
+| `INTERNAL` | Internal error (`msg` is always `internal error`) |
+
+---
+
+## 7) Rejections & close codes
 
 Before the upgrade (plain HTTP responses):
 

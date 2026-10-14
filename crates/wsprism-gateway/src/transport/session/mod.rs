@@ -22,7 +22,7 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio::time::{timeout, Duration, Instant};
-use wsprism_core::error::Result;
+use wsprism_core::error::{ClientCode, Result, WsPrismError};
 
 use crate::app_state::AppState;
 use crate::dispatch::Dispatcher;
@@ -152,7 +152,7 @@ impl Session {
             return Flow::Break(Exit::Close(CloseSpec::new(
                 close_code::NORMAL,
                 "idle_timeout",
-                Some(sys::error("TIMEOUT", "idle", self.trace_id())),
+                Some(sys::error(ClientCode::Timeout, "idle", self.trace_id())),
             )));
         }
         Flow::Continue(())
@@ -171,7 +171,7 @@ impl Session {
                     close_code::POLICY,
                     "slow_consumer",
                     Some(sys::error(
-                        "SLOW_CONSUMER",
+                        ClientCode::SlowConsumer,
                         "outbound queue full",
                         self.trace_id(),
                     )),
@@ -181,7 +181,11 @@ impl Session {
         }
     }
 
-    fn reply_error(&self, code: &str, msg: &str) -> Flow {
+    fn reply_error(&self, e: &WsPrismError) -> Flow {
+        self.reply(sys::error_from(e, self.trace_id()))
+    }
+
+    fn reply_code(&self, code: ClientCode, msg: &str) -> Flow {
         self.reply(sys::error(code, msg, self.trace_id()))
     }
 
