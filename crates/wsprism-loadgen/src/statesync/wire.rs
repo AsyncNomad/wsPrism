@@ -24,7 +24,7 @@ pub struct Header {
     pub ts_ns: u64,
 }
 
-fn header(f: &[u8]) -> Option<Header> {
+pub fn header(f: &[u8]) -> Option<Header> {
     Some(Header {
         sender: u32::from_le_bytes(f.get(0..4)?.try_into().ok()?),
         seq: u32::from_le_bytes(f.get(4..8)?.try_into().ok()?),

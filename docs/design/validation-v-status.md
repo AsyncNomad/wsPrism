@@ -28,7 +28,7 @@ cargo build --release -p wsprism-loadgen
 | G3 안정성 | ✅ 통과 | `v-soak*.{jsonl,log}` |
 | G4 폴백 | ✅ 통과 | `v-fallback.jsonl` |
 | G5 비용 | ❌ 실패 (메모리 2.6~2.9×, CPU는 틱 묶음 시 1.76×) | `v-mem-*`, `v-lean`, `v-cpu-scale` |
-| V6 MoQ | 🔄 진행 중 (아래) | — |
+| V6 MoQ | 🔄 진행 중 (아래) | `moq-*.jsonl` |
 
 현재 판정상 ADR 0004 분기 **"G5만 실패 → 하이브리드"**. 확정은 G2·MoQ 후.
 
@@ -42,14 +42,19 @@ bench/run-v.sh v-judgment 3
 python3 bench/analyze-v.py bench/results/v-judgment.jsonl
 ```
 
+```bash
+# MoQ 판정 칸 (9회) — 재개 가능, 같은 명령 재실행
+bench/run-moq.sh moq-judgment 3
+```
+
 ## V6 MoQ 실측 — 단계별 체크리스트
 
 목표: 같은 판정 칸(20 ms, 60 Hz, 10×10, 손실 없음/균등 1%/버스트)에서 MoQ 경로의 AoI·끊김·CPU·메모리를 재고, 발행자 재접속 시 구독 유지 여부를 확인. 시간 상한 3일(2026-10-14 시작).
 
 - [x] M-0 코드 조사: 한 세션 발행+구독 가능, datagram 중계 가능, CAT 인가, quinn 기반, README 일부 낡음 (BENCHMARKS 「V6」)
-- [ ] M-1 `moq-relay-ietf` 빌드·실행 방법 확인(CLI, TLS), netlab에서 기동
-- [ ] M-2 부하 생성기 `--transport moq`: 발행(참가자별 트랙, 업데이트마다 datagram 객체) + 구독(같은 룸의 다른 참가자 트랙)
-- [ ] M-3 스모크(손실 없음, 2×5) → 커밋
+- [x] M-1 `moq-relay-ietf` 0.7.29 설치(`cargo install moq-relay-ietf --version 0.7.29 --locked`), 실행마다 자가 서명 인증서(SAN IP 10.77.0.1)를 만들어 netlab에서 `--bind 10.77.0.1:4443`로 기동 — `bench/run-moq.sh`
+- [x] M-2 버리는 프로브 `spikes/moq-probe` (제품 부하 생성기에 넣지 않음 — MoQ 의존성을 제품 워크스페이스에 들이지 않기 위해). AoI·프레임·비용 코드는 부하 생성기 파일을 `#[path]`로 그대로 써서 지표가 같다. 참가자별 네임스페이스 `r<room>/p<id>`, 트랙 `state`, 업데이트마다 datagram 객체 1개, 같은 룸의 다른 참가자 트랙 구독(발행 전이면 100 ms 간격 재시도)
+- [x] M-3 스모크(20 ms, 손실 없음, 2×5, 5초): 구독 40/40, 전달률 1.0, 지연 p99 42.6 ms, AoI p99 51.2 ms → `moq-smoke.jsonl`
 - [ ] M-4 판정 칸 측정(재개 가능 스크립트로) → 커밋
 - [ ] M-5 발행자 재접속 시 구독자 동작 확인
 - [ ] M-6 판단 메모: 직접 구현 / MoQ 위 / MoQ 호환 → BENCHMARKS·ADR 0004 갱신
