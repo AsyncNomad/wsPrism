@@ -19,10 +19,8 @@ cargo build --release -q --manifest-path "$ROOT/Cargo.toml" -p wsprism-gateway -
 GW="$ROOT/target/release/wsprism-gateway"
 LG="$ROOT/target/release/wsprism-loadgen"
 
-# The gateway reads ./wsprism.yaml, so run it from a scratch directory.
 WORK="$(mktemp -d)"
-cp "$ROOT/bench/gateway.yaml" "$WORK/wsprism.yaml"
-(cd "$WORK" && exec "$GW" > "$WORK/gateway.log" 2>&1) &
+"$GW" --config "$ROOT/bench/gateway.yaml" > "$WORK/gateway.log" 2>&1 &
 GW_PID=$!
 trap 'kill $GW_PID 2>/dev/null || true; rm -rf "$WORK"' EXIT
 for _ in $(seq 50); do curl -sf http://127.0.0.1:18080/healthz >/dev/null && break; sleep 0.1; done

@@ -1604,6 +1604,7 @@ dependencies = [
  "async-trait",
  "axum",
  "bytes",
+ "clap",
  "criterion",
  "dashmap",
  "futures-util",
