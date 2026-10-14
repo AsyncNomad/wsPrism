@@ -1,6 +1,6 @@
 # 설계: Hot Lane over WebTransport
 
-- 상태: 초안, **개정 1** (2026-10-14: 2차 리뷰 반영 — AoI 주 지표, 비용 관문 G5, MoQ 평가, T0 분리, netns 측정). 결정 근거는 [ADR 0004](../adr/0004-product-direction.md).
+- 상태: 초안, **개정 2** (2026-10-14). 개정 1: AoI 주 지표, 비용 관문 G5, MoQ 평가, T0 분리, netns 측정. 개정 2: Hot 슬롯 키 버그 수정(송신자 포함), `member_id` 연결별 발급, 서버 피어 경로(§4.6), 초과 AoI·판정 칸 고정·G1/G5 동일 설정(틱 곡선), 작업 번호·일정 정리. 결정 근거는 [ADR 0004](../adr/0004-product-direction.md).
 - 범위: ① 목표 아키텍처(단계 T에서 구현), ② 그 전에 수행할 검증 단계 V의 구체 계획.
 
 ## 0. 요약
@@ -51,6 +51,7 @@ flags: 0x01 SEQ_PRESENT (기존) · 0x02 ACK_REQUESTED (기존, datagram에선 �
 - **클라이언트→서버**: `key`가 있으면 서버의 conflation 대상. `seq`는 클라이언트가 단조 증가로 붙인다.
 - **서버→클라이언트**: 서버가 `sender`(룸 범위 멤버 id)를 붙여 보낸다. 수신 SDK는 `(sender, key)`마다 마지막 `seq`보다 오래된 프레임을 버린다(u32 serial-number 비교, RFC 1982 방식). datagram은 순서가 바뀌므로 이 필터가 필수다.
 - `sys.joined`에 자기 `member_id`를 추가한다(수신 측이 자기 자신을 구분).
+- **`member_id`는 연결(세션)마다 새로 발급한다.** 재접속한 클라이언트의 `seq`가 0부터 다시 시작해도, 수신 필터는 새 `sender`로 보므로 새 업데이트를 "오래된 것"으로 버리지 않는다. (기각: 헤더에 epoch 추가 — 같은 일을 프레임마다 바이트를 더 써서 한다.) 수신 측은 나간 멤버의 필터 항목을 `sys` 퇴장 이벤트나 일정 시간 무수신으로 정리한다.
 - 현재 echo 서비스는 payload만 돌려준다. 표준 헤더를 쓰는 `HotRelayService`를 새로 두고 echo는 예제로 남긴다.
 
 ### 3.2 datagram 크기
@@ -110,7 +111,10 @@ trait SessionIo: Send {
 ### 4.2 송신 경로 둘
 
 - **Reliable 큐**: 지금의 `mpsc<OutFrame>`(C9 원칙: 세션 루프는 자기 큐를 기다리지 않음).
-- **Hot 슬롯**: 세션마다 작은 "최신값 맵" `(svc_id, key) → Bytes` + 키 없는 프레임용 짧은 FIFO(기본 64). 발행자는 슬롯에 넣기만 하고(덮어쓰기, 블로킹 없음), 세션 루프가 비울 때마다 `send_unreliable`로 보낸다. 깊은 큐가 없으므로 오래된 상태가 쌓이지 않는다.
+- **Hot 슬롯**: 세션마다 작은 "최신값 맵" **`(sender, svc_id, key) → Bytes`** + 키 없는 프레임용 짧은 FIFO(기본 64). 발행자는 슬롯에 넣기만 하고(덮어쓰기, 블로킹 없음), 세션 루프가 비울 때마다 `send_unreliable`로 보낸다. 깊은 큐가 없으므로 오래된 상태가 쌓이지 않는다.
+  - **키에 `sender`가 반드시 들어간다.** `key`는 송신자마다 따로 쓰는 이름 공간이라(§3.1), `(svc_id, key)`만 쓰면 두 플레이어가 둘 다 `key=0`("내 위치")으로 보낼 때 수신자 슬롯에서 서로를 덮어써 한 명의 움직임이 사라진다(개정 2에서 수정한 설계 버그).
+  - 슬롯 크기는 "룸 인원 × 키 수"로 커지므로 상한 `policy.max_slot_entries`(기본 1,024)를 두고, 초과 시 새 키를 드롭 + `wsprism_hot_dropped_total{reason="slot_full"}`. 기존 키의 덮어쓰기는 항상 허용.
+  - V2 스파이크 릴레이는 송신자당 키 1개(`(sender) → frame`)로 같은 구조다.
 - `OutFrame`에 전달 클래스를 추가한다: `OutFrame::Hot { key: Option<u32>, bytes }`. `RealtimeCore::deliver`가 `QoS::Lossy` 바이너리를 Hot 슬롯으로 보낸다.
 - 슬롯의 동시성(발행자 여러 task ↔ 세션 1개): 처음에는 세션별 `Mutex<작은 맵>` + `Notify`. 마이크로 벤치마크(`publish_room` 수신자당 비용)로 회귀를 측정하고, 문제가 되면 lock-free 구조로 바꾼다.
 - **틱 묶음 전송**: 세션 루프가 테넌트 설정 주기(예: 30/60 Hz)마다 슬롯을 비우며 여러 업데이트를 한 datagram(또는 한 WebSocket 프레임)에 묶는다. 패킷 수를 줄여 QUIC의 패킷당 비용(암호화, 시스템 콜)을 낮추는 핵심 수단이고, G5 판정은 이 기능을 켠 상태로 한다. 묶음 형식: `[count u8]` + `[len u16][hot frame]` 반복.
@@ -146,6 +150,16 @@ tenants:
 - 신규: `wsprism_hot_dropped_total{tenant,transport,reason="oversize|send_buffer_full|slot_overwritten"}`.
 - `slot_overwritten`은 정상 동작(최신값 우선)의 지표이지 오류가 아니다 — 대시보드에서 구분.
 
+### 4.6 서버 피어 (권위 게임 서버의 앞단)
+
+클라이언트끼리 릴레이만 하는 모델은 치트를 막을 수 없다. 권위 게임 서버가 wsPrism을 앞단으로 쓰는 경로:
+
+- **연결**: 게임 서버가 **신뢰된 장기 연결**로 붙는다(QUIC 또는 TCP, 인증은 테넌트 API 키 또는 mTLS). 브라우저 경로의 admission(Origin, 1회용 티켓)과는 별도 단계지만 같은 admission 파이프라인에 역할(`role = server_peer`)로 끼운다.
+- **수신**: 서버 피어는 자기가 맡은 룸들의 **클라이언트 Hot 프레임(입력)** 을 받는다. 입력은 유실되면 게임이 판단을 못 하므로 **신뢰 채널**(conflation 없음)이 기본이고, 테넌트 정책으로 비신뢰 선택 가능.
+- **발행**: 서버 피어가 보낸 Hot 프레임은 권위 상태로서 룸에 팬아웃된다(`sender` = 서버 피어의 member_id, Hot 슬롯·틱·전송 매핑은 일반 경로와 동일). 클라이언트 간 직접 릴레이는 룸 정책으로 끌 수 있다(`policy.hot_peer_relay: false`).
+- **경계**: 서버 피어는 `SessionIo` 구현 하나 + 역할로 표현된다. 따라서 T0의 `SessionIo`·전달 등급 설계가 "브라우저 세션"을 전제하지 않는지 확인하는 것이 T0의 완료 조건에 포함된다. 구현은 T.
+- 이로써 포지션은 "어느 언어로 짠 게임·실시간 서버든, 그 앞에서 브라우저 연결·정책·팬아웃·datagram을 떠맡는 사이드카"가 된다(ADR 0004).
+
 ## 5. 클라이언트 SDK (TypeScript, M2-lite에서 최소판)
 
 - `connect()`: 브라우저에 `WebTransport`가 있으면 WT를 1.5초 제한으로 시도 → 실패 시 WebSocket. 티켓은 시도마다 새로 발급(1회용).
@@ -167,7 +181,8 @@ tenants:
 
 | 지표 | 정의 | 역할 |
 |---|---|---|
-| **상태 신선도 AoI** | 수신자가 **60 Hz 렌더 틱**마다 `지금 - (보유한 가장 새로운 상태의 생성 시각)`을 기록. 유실은 AoI를 키우는 쪽으로 반영되므로 전송 간 공정 | **주 지표** (G1: p99) |
+| **상태 신선도 AoI** | 수신자가 **60 Hz 렌더 틱**마다 `지금 - (보유한 가장 새로운 상태의 생성 시각)`을 기록. 유실은 AoI를 키우는 쪽으로 반영되므로 전송 간 공정 | 주 지표의 원값 |
+| **초과 AoI** | AoI p99 − (같은 지연·같은 설정·손실 0%의 AoI p99). AoI의 바닥값(2구간 지연 + 송신 주기 톱니)은 어떤 전송도 줄일 수 없으므로 증가분으로 판정 | **G1** |
 | **끊김 비율** | AoI > 100 ms인 틱의 비율 | 주 지표 (G1), 버스트 손실에 민감 |
 | 메시지당 지연 | 송신 → 수신 (도착한 메시지만) | 보조 — 유실 패킷이 빠지는 생존 편향이 있어 판정에 쓰지 않는다 |
 | 전달률 | 받은 프로브 / (보낸 프로브 × 룸 인원) | 보조 |
@@ -189,19 +204,23 @@ tenants:
 
 ### 7.4 작업 계획
 
+**판정 칸과 동일 설정 원칙** (ADR 0004 관문): G1은 단방향 20 ms·60 Hz·균등 1%와 버스트(평균 1%, 길이 4)에서 판정, 지연 0은 참고값. 모든 실험은 틱 주기 {즉시, 60 Hz, 30 Hz} 각각에서 **같은 실행으로** AoI와 비용을 함께 기록하고, G1과 G5를 동시에 만족하는 틱이 있는지로 판정한다.
+
+**우선순위**: 판정의 대부분은 G1·G5가 정하므로 **V1~V5를 먼저** 끝내고, V6(MoQ)은 **시간 상한 3일**(Rust MoQ 클라이언트를 부하 생성기에 붙여야 해 무거울 수 있다 — 상한 안에 못 끝내면 정성 평가로 대체).
+
 **1주차 — 측정 장치와 스파이크**
 
 | # | 작업 | 산출물 |
 |---|---|---|
-| V1 | `bench/netns.sh up\|down` (서버·클라이언트 namespace + veth), `bench/netem.sh <dir> none\|uniform <p>\|burst <p> <len> [delay_ms]` | 스크립트 + 적용 확인(ping RTT·손실 방향별) |
-| V2 | `spikes/wt-hotlane/`(워크스페이스 밖): 같은 룸 팬아웃·틱 묶음 로직의 **최소 릴레이 3종** — WS(평문), WSS(rustls), WT datagram(wtransport, GSO 켬). 공정 비교를 위해 대칭 구현 | `relay` 바이너리, 자체 서명 인증서 + 해시 |
-| V3 | 부하 생성기: `--transport ws\|wss\|wt`, 프로브 `seq`, **60 Hz AoI 표본·끊김 비율**, 서버 CPU/RSS 수집 | `wsprism-loadgen` 확장 |
+| V1 ✅ | `bench/netlab.sh` — 비특권 user namespace 안의 서버·클라이언트 netns + veth, 방향별 netem(`none` / `delay` / `uniform` / `burst`), offload 끔. root 불필요 | 스크립트 + 적용 확인: 단방향 20 ms → RTT 약 40 ms, 2% 균등·버스트 → ping 1,000회 1.8%·1.6% |
+| V2 ✅ | `spikes/wt-hotlane/`(워크스페이스 밖): 같은 룸 팬아웃·틱 묶음 로직의 **최소 릴레이 3종** — WS(평문), WSS(rustls), WT datagram(wtransport, GSO 켬). 공정 비교를 위해 대칭 구현 | `relay` 바이너리, 자체 서명 인증서 + 해시 |
+| V3 ✅ | 부하 생성기 `statesync`: `--transport ws\|wss\|wt`, 프로브 `seq`, **60 Hz AoI 표본·끊김 비율**, 서버 CPU/RSS 수집 | `wsprism-loadgen` 확장 |
 
 **2주차 — 실험**
 
 | # | 작업 | 산출물 |
 |---|---|---|
-| V4 | 매트릭스: 손실 모델 {없음, 균등 0.5/1/2/5%, 버스트} × 지연 {0, 20 ms} × {20, 60} Hz, 대표 시나리오, 각 3회. 참고값으로 실제 게이트웨이 WS | `bench/results/v-*.jsonl`, BENCHMARKS.md 「V」 절 (**G1**) |
+| V4 | 매트릭스: 손실 모델 {없음, 균등 0.5/1/2/5%, 버스트} × 지연 {0, 20 ms} × {20, 60} Hz × 틱 {즉시, 60, 30 Hz}, 대표 시나리오, 각 3회. 참고값으로 `--fifo`(현재 게이트웨이 큐잉 근사) | `bench/results/v-*.jsonl`, BENCHMARKS.md 「V」 절 (**G1**) |
 | V5 | 비용: §7.3의 기준선 3종 × 대표·큰 방 시나리오 | BENCHMARKS.md 「비용」 절 (**G5**) |
 | V6 | **MoQ 평가**: moq-rs 릴레이에 대표 시나리오를 얹는다(엔티티별 track, 틱마다 새 group). AoI·끊김 비율·CPU를 같은 조건으로 측정, 테넌트 인증·정책을 얹을 수 있는 지점 조사 | 「직접 구현 vs MoQ 위 vs MoQ 호환」 판단 메모 |
 | V7 | 브라우저 확인 페이지: `serverCertificateHashes`로 접속, datagram 왕복. Windows의 Chrome·Edge·Firefox, Mac의 Safari 수동 확인(Safari가 해시 방식을 거부하면 mkcert 인증서로 재시도) | 체크리스트 결과 (**G2**) |
@@ -226,13 +245,14 @@ tenants:
 
 | 질문 | 확인 시점 |
 |---|---|
-| Safari가 `serverCertificateHashes`를 지원하는가 | V5 |
+| Safari가 `serverCertificateHashes`를 지원하는가 | V7 |
 | 기업망·공용 Wi-Fi의 UDP 차단 비율 (폴백 빈도) | T 이후 실사용 계측 |
-| QUIC의 CPU 비용이 처리량 목표를 깎는가 | V4 (CPU/메시지) |
+| QUIC의 CPU 비용이 처리량 목표를 깎는가 | V4·V5 (CPU/메시지) |
 | UDP 로드밸런서 뒤에서 클라이언트 IP(PROXY protocol v2) | T |
 | QUIC connection migration이 세션 식별·레이트리밋에 주는 영향 | T |
 | `wtransport` 1.0 이전 API 변경 위험 | 라이브러리 경계를 `WtIo` 한 곳에 가둬 완화 |
 | 직접 구현 vs MoQ 위 vs MoQ 호환 — MoQ의 "최신 그룹"이 키별 상태에 맞는가, 테넌트 정책을 얹을 수 있는가, Cloudflare 릴레이의 무료·가용성 조건 | V6 |
+| 서버 피어의 입력 채널을 신뢰/비신뢰 중 무엇으로 기본값을 둘 것인가, 서버 피어 1개당 룸 수 한도 | T |
 | QUIC 패킷당 비용을 틱 묶음 + GSO로 G5 안에 넣을 수 있는가 | V5 |
 
 ## 9. 작업 순서 (V 통과 후)
@@ -242,11 +262,13 @@ tenants:
 1. `SessionIo` 추출(능력: 순서 스트림 / 비신뢰 datagram, WebSocket은 datagram 능력 없음 → 스트림으로 대체) — 동작 변화 없이 리팩터링, 기존 테스트가 안전망.
 2. 송신 단위에 전달 등급: `OutFrame::Hot { key, bytes }`, `RealtimeCore::deliver`의 Lossy 바이너리 → Hot 슬롯.
 3. Hot 슬롯(키별 최신값 + 짧은 FIFO)과 틱 묶음 전송 — WebSocket에서 먼저. 지표: 큐 적체·드롭·AoI.
-4. Hot 프레임 헤더 확장(KEY/SENDER), `member_id`, `HotRelayService`, 크기 상한(PROTOCOL.md 명시).
+4. Hot 프레임 헤더 확장(KEY/SENDER), 연결별 `member_id`, `HotRelayService`, 크기 상한(PROTOCOL.md 명시).
+5. **완료 조건**: `SessionIo`·전달 등급이 브라우저 세션을 전제하지 않음을 확인(서버 피어 §4.6을 막지 않을 것).
 
 **T — 비신뢰 전송 (V6 결정에 따라 WebTransport 직접 구현 또는 MoQ)**
 
-5. `WtIo`(또는 MoQ 어댑터) + 설정 + admission 연결 + `transport` 메트릭 라벨.
-6. 1회용 티켓 경로(M2-lite의 발급 API 사용).
-7. TS SDK의 비신뢰 전송 우선·WS 폴백, `(sender, key, seq)` 신선도 필터.
-8. 통합 테스트(WT 클라이언트), 퍼징 대상 추가(제어 스트림·묶음 프레이밍), 벤치마크 시나리오 표준화(V의 매트릭스를 CI 외 정기 실행).
+6. `WtIo`(또는 MoQ 어댑터) + 설정 + admission 연결 + `transport` 메트릭 라벨.
+7. **서버 피어**(§4.6): 역할, 신뢰 장기 연결, 입력 수신·권위 상태 발행, `hot_peer_relay` 정책.
+8. 1회용 티켓 경로(M2-lite의 발급 API 사용).
+9. TS SDK의 비신뢰 전송 우선·WS 폴백, `(sender, key, seq)` 신선도 필터.
+10. 통합 테스트(WT·서버 피어), 퍼징 대상 추가(제어 스트림·묶음 프레이밍), 벤치마크 시나리오 표준화(V의 매트릭스를 CI 외 정기 실행).

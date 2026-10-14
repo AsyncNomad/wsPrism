@@ -12,6 +12,8 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 
 - **간판**: 전송이 아니라 **상태 동기화 의미론**. "WebTransport로 pub/sub"은 MoQ와 표준 인프라가 채우는 자리라 그 자체로는 차별점이 아니다. 손실이 있는 네트워크에서 상태 신선도(AoI)의 꼬리와 끊김을 TCP 기반 게이트웨이보다 크게 줄이되, 비용(CPU·메모리)은 WSS 대비 2배 이내. 설계: [Hot Lane over WebTransport](design/hot-lane-over-webtransport.md).
 - **대표 시나리오**: 모바일·Wi-Fi 환경의 20~60 Hz 웹 멀티플레이 상태 동기화. 특정 산업 특화는 목표가 아니다.
+- **포지션**: 어느 언어로 짠 게임·실시간 서버든, 그 앞에서 브라우저 연결·정책·팬아웃·datagram을 떠맡는 **사이드카**. 권위 게임 서버는 **서버 피어**로 붙는다(설계 §4.6). 엔진에 묶인 lightyear·aeronet과 달리 언어 무관.
+- **주장 방식**: 개별 요소는 모두 어딘가에 있다(Centrifugo WT는 실험 단계·스트림 하나, Sockudo는 datagram 없음, lightyear는 Bevy 전용, MoQ는 범용 릴레이). **조합 + 언어 무관 + 측정된 수치**로만 주장한다.
 - **기반**: 멀티테넌트 정책 엔진(admission 파이프라인, allowlist, 테넌트 한도, 세션 정책, Origin, 티켓 경로). 대기업급 요구사항의 핵심이지만 한 줄 소개는 아니다.
 - **대상 트래픽**: 최신 상태가 이기는 웹·게임 데이터. 게임 백엔드는 만들지 않는다(사용자 백엔드 앞의 전송 계층).
 - **따라잡기 기능**(프록시, 발행 API, 이력·복구, 멀티 노드)은 "갈아탈 때 막히지 않을 만큼"만.
@@ -27,7 +29,7 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 | 확장성 | 단일 노드 |
 | 성능 | 기준선 측정 완료([BENCHMARKS](BENCHMARKS.md)). TCP_NODELAY 수정으로 p99.9 26.7→3.6 ms. 메시지당 최대 비용은 메트릭(275 ns)과 팬아웃(수신자당 ~200 ns) |
 
-**M0, M1 완료 (브랜치 `m0/engine-prep`). 다음: 검증 단계 V → T0.**
+**M0, M1 완료 (브랜치 `m0/engine-prep`). 검증 V 진행 중(브랜치 `v/validation`): V1~V3 완료, 다음 V4·V5.**
 
 ## 목표를 측정 가능하게
 
@@ -35,8 +37,8 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 
 | | 내용 |
 |---|---|
-| 비교 대상 | **Sockudo**(Rust, 멀티테넌트 앱), Centrifugo(기능 기준선), **MoQ**(moq-rs / Cloudflare 릴레이), **Nakama relayed**, Colyseus, geckos.io(브라우저 UDP via WebRTC), uWS 기반 soketi(원시 처리량), Socket.IO(채택률) |
-| 승부 지표 | **상태 신선도(AoI) p99와 끊김 비율**(손실 0%·균등·버스트), 메시지당 지연은 보조(생존 편향) |
+| 비교 대상 | **Sockudo**(Rust, 멀티테넌트 앱), Centrifugo(기능 기준선, WT 실험 단계), **MoQ**(moq-rs / Cloudflare 릴레이), **Nakama relayed**, Colyseus, **lightyear·aeronet**(Bevy, WT datagram), geckos.io(브라우저 UDP via WebRTC), uWS 기반 soketi(원시 처리량), Socket.IO(채택률). Ably conflation은 수요 근거 |
+| 승부 지표 | **초과 AoI p99**(손실 0% 바닥값 대비 증가분)와 **끊김 비율** — 판정 칸: 단방향 20 ms·60 Hz·균등 1%와 버스트 둘 다. 메시지당 지연은 보조(생존 편향). AoI와 비용은 **같은 설정(틱 주기)** 에서 판정 |
 | 비용 지표 | **CPU/메시지, 연결당 메모리** — WSS(게이트웨이 TLS) 대비 2배 이내가 관문(G5). LB TLS 종단 WS와의 차이도 공개 |
 | 공개 지표 | 팬아웃 p50/p99/p999, 코어당 처리량, 노이즈 이웃 격리(정책 방향 전환 시) |
 | 원칙 | 수치 없이 성능을 주장하지 않는다. 같은 언어(Rust) 경쟁자와 TCP 위에서 겨뤄서는 "훨씬"을 만들 구조적 근거가 없다 — 구조적 차이(datagram)에서 이긴다 |
@@ -65,10 +67,10 @@ wsprism-sdk-*     클라이언트 SDK (TS → Unity C# → Dart). WebTransport �
 |---|---|---|
 | **M0 정리** ✅ | 테넌트 조회 `HashMap`, `run_session` 분해, 룸 기능을 서비스로 + 세션 컨텍스트 `&mut`([ADR 0001](adr/0001-session-context-and-room-service.md)), 전송 무관 `OutFrame`([ADR 0002](adr/0002-transport-agnostic-out-frame.md)) | 동작 변화 없이 기존 테스트 통과 |
 | **M1 정직한 기반** ✅ | admission 파이프라인, Origin 허용 목록, 신뢰 프록시 + XFF, 티켓 경로 + 버전 협상([ADR 0003](adr/0003-ticket-sources-and-subprotocol.md)), 에러 코드 목록·정보 노출 제거, `reply_to`, `--config`/`--check-config`, 문서 정합, 퍼징 5종, cargo-deny(`serde_yaml` 교체), 벤치마크 기준선(TCP_NODELAY 수정) | 기준선 수치 문서화, 퍼징·감사 CI |
-| **V 차별화 검증** (약 3주) | netns+veth 방향별 netem(균등·버스트 손실, 0% 대조군)으로 WS·WSS·WT datagram의 AoI·끊김·비용 비교, **MoQ 평가**, 브라우저 3종, 1시간 소크, UDP 차단 폴백. 노이즈 이웃 격리는 G1 실패 시에만. 세부: [설계 §7](design/hot-lane-over-webtransport.md#7-검증-단계-v-약-3주) | 관문 G1~G5 → ADR 0004 확정 / 하이브리드 / 전환 |
-| **T0 경계** | `SessionIo`(전송 능력), 전달 등급(`OutFrame::Hot`), Hot 슬롯(키별 최신값) + 틱 묶음 전송, Hot 헤더 확장·크기 상한 — **WebSocket만으로, M2 공개 트레이트 전에**. 세부: [설계 §9](design/hot-lane-over-webtransport.md#9-작업-순서-v-통과-후) | 동작 변화 없는 리팩터링 + WS에서 큐 적체 감소 측정 |
+| **V 차별화 검증** (약 3주) | ✅ V1 netlab(비특권, root 불필요) ✅ V2 스파이크 릴레이(WS·WSS·WT) ✅ V3 `loadgen statesync`(AoI·끊김·CPU·RSS). 남은 것: V4 매트릭스(틱 {즉시, 60, 30} 포함)·V5 비용 → G1·G5 우선, V6 MoQ(상한 3일), V7 브라우저, V8 소크, V9 폴백. 노이즈 이웃 격리는 G1 실패 시에만. 세부: [설계 §7](design/hot-lane-over-webtransport.md#7-검증-단계-v-약-3주) | 관문 G1~G5 → ADR 0004 확정 / 하이브리드 / 전환 |
+| **T0 경계** | `SessionIo`(전송 능력), 전달 등급(`OutFrame::Hot`), Hot 슬롯(`(sender, svc, key)` 최신값, 상한) + 틱 묶음 전송, Hot 헤더 확장·연결별 `member_id`·크기 상한 — **WebSocket만으로, M2 공개 트레이트 전에**. 서버 피어 경로를 막지 않을 것. 세부: [설계 §9](design/hot-lane-over-webtransport.md#9-작업-순서-v-통과-후) | 동작 변화 없는 리팩터링 + WS에서 큐 적체 감소 측정 |
 | **M2-lite 끼워 쓰기** | engine/server crate 분리, `Authenticator` 트레이트 + JWT(테넌트별 JWKS) + **1회용 티켓 발급 API**, HTTP 백엔드 프록시(connect·rpc), **서버 발행 API**(`/api/v1/publish`, `/api/v1/disconnect`), 최소 TS SDK(WS). gRPC·다양한 플러그인은 뒤로 | Node 또는 Spring 백엔드에 붙인 예제 앱 |
-| **T 비신뢰 전송** | V6 결정에 따라 WebTransport 직접 구현(`WtIo`) 또는 MoQ 경로, `transport` 메트릭 라벨, 1회용 티켓 경로, SDK의 비신뢰 우선·WS 폴백 | 같은 서비스 코드가 혼합 전송 룸에서 동작, V의 이득이 제품 경로에서 재현 |
+| **T 비신뢰 전송 + 서버 피어** | V6 결정에 따라 WebTransport 직접 구현(`WtIo`) 또는 MoQ 경로, **서버 피어**(권위 게임 서버의 신뢰 장기 연결: 입력 수신·권위 상태 발행), `transport` 메트릭 라벨, 1회용 티켓 경로, SDK의 비신뢰 우선·WS 폴백 | 같은 서비스 코드가 혼합 전송 룸에서 동작, V의 이득이 제품 경로에서 재현 |
 | **M3 신뢰성 (동등 수준)** | 채널 일반화, 채널별 이력 + offset/epoch + 재접속 복구, ACK. Hot Lane은 이력 없음 | 끊긴 사이 메시지 복구 테스트 |
 | **M4 멀티 노드 (동등 수준)** | Broker(Redis 먼저), 노드 로컬 구독 색인, 클러스터 강제 퇴장, 1회용 티켓 공유 저장소, 전역 한도의 정확/근사 결정 | 노드 강제 종료 카오스 테스트 |
 | **M5 성능 공개** | 메시지당 할당 제거(메트릭 라벨, 팬아웃), ID 인터닝, 프레임 사전 인코딩, 표준 메트릭 crate. 비교 대상 전체와 공개 벤치마크 | 재현 가능한 벤치 리포와 결과 |
