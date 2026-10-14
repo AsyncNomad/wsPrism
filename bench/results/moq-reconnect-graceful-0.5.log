@@ -1,0 +1,13 @@
+{"t_ms":1791963609344,"event":"sub_fail","attempt":1,"error":"closed, code=16"}
+{"t_ms":1791963609766,"event":"pub_connected"}
+{"t_ms":1791963609960,"event":"sub_ok","attempt":5}
+{"t_ms":1791963609960,"event":"rx_epoch","attempt":5,"seq":10}
+{"t_ms":1791963612768,"event":"pub_leaving","sent":181,"graceful":true}
+{"t_ms":1791963612809,"event":"sub_end","attempt":5,"reason":"error: done","received":171,"last_seq":180}
+{"t_ms":1791963613653,"event":"pub_connected"}
+{"t_ms":1791963613876,"event":"sub_ok","attempt":12}
+{"t_ms":1791963613876,"event":"rx_epoch","attempt":12,"seq":11}
+{"t_ms":1791963626321,"event":"pub_leaving","sent":901,"graceful":true}
+{"t_ms":1791963626363,"event":"sub_end","attempt":12,"reason":"error: done","received":891,"last_seq":901}
+{"t_ms":1791963631895,"event":"sub_fail","attempt":50,"error":"closed, code=16"}
+{"t_ms":1791963631968,"event":"sub_done"}

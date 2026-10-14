@@ -23,14 +23,14 @@ cargo build --release -p wsprism-loadgen
 
 | 관문 | 상태 | 근거 (결과 파일) |
 |---|---|---|
-| G1 체감 성능 | ✅ 통과 (60 Hz 판정 칸) | `v-judgment.jsonl`, 20 Hz 참고 `v-20hz.jsonl` |
+| G1 체감 성능 | ⏸ 보류 — 측정 결함(위상 고정·버스트 무효), 재측정 대기 | `v-judgment.jsonl`(결함 있음), BENCHMARKS 「측정 결함」 |
 | G2 호환성 | ⏳ 미측정 — 사용자 필요 | — |
 | G3 안정성 | ✅ 통과 | `v-soak*.{jsonl,log}` |
 | G4 폴백 | ✅ 통과 | `v-fallback.jsonl` |
-| G5 비용 | ❌ 실패 (메모리 2.6~2.9×, CPU는 틱 묶음 시 1.76×) | `v-mem-*`, `v-lean`, `v-cpu-scale` |
-| V6 MoQ | 🔄 진행 중 (아래) | `moq-*.jsonl` |
+| G5 비용 | ❌ 실패 (메모리 2.6~2.9×, CPU는 틱 묶음 시 1.76×) — 오프로드 켠 조건 재측정 대기 | `v-mem-*`, `v-lean`, `v-cpu-scale` |
+| V6 MoQ | ✅ 완료 — MoQ 위 구축 기각 (ADR 0004 개정 3) | `moq-*.jsonl`, `moq-reconnect-*.log` |
 
-현재 판정상 ADR 0004 분기 **"G5만 실패 → 하이브리드"**. 확정은 G2·MoQ 후.
+G1 재측정 전까지 분기 미정. G1이 유지되면 **"G5만 실패 → 하이브리드"**.
 
 ## 실험 재개 방법
 
@@ -55,13 +55,32 @@ bench/run-moq.sh moq-judgment 3
 - [x] M-1 `moq-relay-ietf` 0.7.29 설치(`cargo install moq-relay-ietf --version 0.7.29 --locked`), 실행마다 자가 서명 인증서(SAN IP 10.77.0.1)를 만들어 netlab에서 `--bind 10.77.0.1:4443`로 기동 — `bench/run-moq.sh`
 - [x] M-2 버리는 프로브 `spikes/moq-probe` (제품 부하 생성기에 넣지 않음 — MoQ 의존성을 제품 워크스페이스에 들이지 않기 위해). AoI·프레임·비용 코드는 부하 생성기 파일을 `#[path]`로 그대로 써서 지표가 같다. 참가자별 네임스페이스 `r<room>/p<id>`, 트랙 `state`, 업데이트마다 datagram 객체 1개, 같은 룸의 다른 참가자 트랙 구독(발행 전이면 100 ms 간격 재시도)
 - [x] M-3 스모크(20 ms, 손실 없음, 2×5, 5초): 구독 40/40, 전달률 1.0, 지연 p99 42.6 ms, AoI p99 51.2 ms → `moq-smoke.jsonl`
-- [ ] M-4 판정 칸 측정(재개 가능 스크립트로) → 커밋
+- [x] M-4 판정 칸 측정(재개 가능 스크립트로) → 커밋
   - [x] MoQ 9회 (`moq-judgment.jsonl`) — 중앙값: 초과 AoI 15.6~15.7 ms, 끊김 0, 지연 p99 46 ms, CPU 11.4~11.7 µs/msg, RSS 단순 평균 약 525 KB/conn
-  - [ ] 같은 세션 WSS·WT 기준(틱 0) 18회를 같은 파일에: `bench/run-v.sh moq-judgment 3 "none:20 uniform:1:20 burst:1:4:20" "0" "wss wt"` (재개 가능)
-  - [ ] 한계 메모리(연결 100 → 300): `bench/run-moq.sh moq-mem-10 3 none:20` / `bench/run-moq.sh moq-mem-30 3 none:20 "--rooms 30 --room-size 10 --rate 60 --sample-hz 60 --warmup 3 --duration 10"`
+  - [x] 같은 세션 WSS·WT 기준(틱 0) 18회를 같은 파일에: `bench/run-v.sh moq-judgment 3 "none:20 uniform:1:20 burst:1:4:20" "0" "wss wt"` (재개 가능)
+  - [x] 한계 메모리(연결 100 → 300, 약 477 KB/conn): `bench/run-moq.sh moq-mem-10 3 none:20` / `bench/run-moq.sh moq-mem-30 3 none:20 "--rooms 30 --room-size 10 --rate 60 --sample-hz 60 --warmup 3 --duration 10"`
   - 판정: `python3 bench/analyze-v.py --candidate moq bench/results/moq-judgment.jsonl`
-- [ ] M-5 발행자 재접속 시 구독자 동작 확인 — 프로브 `pub`/`sub` 하위 명령(별도 프로세스, `kill -9` = 비정상 종료, `--graceful` = 세션 닫기) 작성·빌드 완료, 실행 전
-- [ ] M-6 판단 메모: 직접 구현 / MoQ 위 / MoQ 호환 → BENCHMARKS·ADR 0004 갱신
+- [x] M-5 발행자 재접속: `bench/run-moq-reconnect.sh graceful|abrupt` — 정상 종료는 재구독으로 약 1.1초 공백, 비정상 종료는 재발행 거절·13초 넘게 정지
+- [x] M-6 판단: MoQ 위 구축 기각, 정면 경쟁 기각, 와이어 호환은 T 이후 재검토 → BENCHMARKS 「V6」, ADR 0004 개정 3
+
+## 4차 리뷰 후 순서 (사용자 승인 2026-10-14)
+
+1. **측정 수정 → G1·G5 재판정** (아래 R 체크리스트)
+2. 경쟁 게이트웨이(Centrifugo, Sockudo)와 WebSocket 경로 직접 비교 (netlab 안)
+3. 서버 피어 멤버 지정 송신을 설계 §4.6에 반영 (T0 경계 요건)
+4. G2 브라우저 실증 (사용자 필요)
+5. 수요 확인은 사용자 판단 영역
+
+### R: 측정 수정 체크리스트
+
+- [ ] R-1 부하 생성기 `--phase random|aligned`(기본 random, `--seed`) — 클라이언트별 송신·렌더 위상 무작위. `aligned`는 이전 결과 재현용
+- [ ] R-2 끊김 기준 민감도: JSON에 `stall_ratio_at` (50/100/150/200/300 ms), 분석기 출력
+- [ ] R-3 netlab `--outage MEAN_PERIOD_MS:LEN_MS`(양방향 동시 단절, `NETLAB_SEED`) + run-v.sh 손실 조건 `outage:<period>:<len>:<delay>`
+- [ ] R-4 netlab `NETLAB_OFFLOAD=on` (손실 없는 비용 측정 전용)
+- [ ] R-5 스모크 → 커밋
+- [ ] R-6 판정 칸 재측정: 손실 {없음, 균등 1%, 단절 1000:50, 단절 5000:250} × 틱 {0, 60, 30} × {ws, wss, wt} × 3회 → `v2-judgment.jsonl`
+- [ ] R-7 비용 재측정: 오프로드 켬, 연결 100·300, 틱 {0, 60} → `v2-cost-*.jsonl`
+- [ ] R-8 G1·G5 재판정 → BENCHMARKS·ADR 0004·이 문서 갱신
 
 ## 열린 항목
 

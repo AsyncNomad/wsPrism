@@ -58,7 +58,11 @@ pub async fn publish(a: PubArgs) -> anyhow::Result<()> {
     tokio::spawn(async move { session.run().await });
     let (mut tracks, _, reader) = serve::Tracks { namespace: ns(0, a.id) }.produce();
     let mut datagrams = tracks.create("state").expect("create track").datagrams()?;
-    tokio::spawn(async move { publisher.publish_namespace(reader).await });
+    // A namespace still held by a dead predecessor may be refused (Duplicate).
+    tokio::spawn(async move {
+        let r = publisher.publish_namespace(reader).await;
+        event("pub_namespace_end", serde_json::json!({ "result": format!("{r:?}") }));
+    });
     event("pub_connected", serde_json::json!({}));
 
     let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(a.rate.max(1))));

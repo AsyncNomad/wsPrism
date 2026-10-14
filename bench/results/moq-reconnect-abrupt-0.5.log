@@ -1,0 +1,12 @@
+{"t_ms":1791963633528,"event":"sub_fail","attempt":1,"error":"closed, code=16"}
+{"t_ms":1791963633939,"event":"pub_connected"}
+{"t_ms":1791963634146,"event":"sub_ok","attempt":5}
+{"t_ms":1791963634146,"event":"rx_epoch","attempt":5,"seq":10}
+{"event":"pub_killed","t_ms":1791963636770}
+bash: line 1: 249191 Killed                  /home/im_0619/code/wsPrism/spikes/moq-probe/target/release/moq-probe pub --url https://10.77.0.1:4443/wsprism --secs 1000
+{"t_ms":1791963637496,"event":"pub_connected"}
+{"t_ms":1791963637539,"event":"pub_namespace_end","result":"Err(Serve(Closed(32)))"}
+{"t_ms":1791963650808,"event":"sub_end","attempt":5,"reason":"error: done","received":161,"last_seq":170}
+{"t_ms":1791963650110,"event":"pub_leaving","sent":901,"graceful":true}
+{"t_ms":1791963654944,"event":"sub_fail","attempt":50,"error":"closed, code=16"}
+{"t_ms":1791963656096,"event":"sub_done"}
