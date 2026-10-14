@@ -84,7 +84,7 @@ bench/run-moq.sh moq-judgment 3
     "--rooms 10 --room-size 10 --rate 60 --sample-hz 60 --warmup 3 --duration 20"
   python3 bench/analyze-v.py bench/results/v2-judgment.jsonl
   ```
-- [ ] R-7 비용 재측정: 오프로드 켬, 연결 100·300, 틱 {0, 60} → `v2-cost-*.jsonl`
+- [x] R-7 비용 재측정(오프로드 켬, `v2-cost-{10,30}.jsonl`): 한계 메모리 WSS 30.7 / WT 85.5~90.1 KB/conn(**2.8~2.9×**, 실패 유지), CPU WT÷WSS 1.65~1.89×(기준 안, 오프로드 끈 측정 1.76×보다 약간 커짐)
 - [ ] R-8 G1·G5 재판정 → BENCHMARKS·ADR 0004·이 문서 갱신
 
 ## 열린 항목

@@ -39,6 +39,7 @@ def summarize(runs):
         "cpu": med([r["server_cpu_us_per_delivery"] for r in runs]),
         "rss": med([r["server_rss_kb_per_conn"] for r in runs]),
         "closed": sum(r["closed_early"] for r in runs),
+        "lg": med([r.get("loadgen_cores") for r in runs]),
     }
 
 
@@ -51,7 +52,7 @@ def main(path, base):
     for sc in sorted({k[0] for k in m}):
         print(f"== scenario {sc}")
         print(f"{'target':12} {'n':>2} | {'p50 ms':>7} {'p99':>7} {'p99.9':>7} | {'deliv':>6} {'deliv/s':>9} {'echo':>8} "
-              f"| {'us CPU/deliv':>12} {'KB/conn':>8} | vs {base}: cpu, mem, p99")
+              f"| {'us CPU/deliv':>12} {'KB/conn':>8} {'lg cores':>8} | vs {base}: cpu, mem, p99")
         b = m.get((sc, base))
         for t in sorted(k[1] for k in m if k[0] == sc):
             x = m[(sc, t)]
@@ -61,7 +62,7 @@ def main(path, base):
                 rel = f"{r(x['cpu'], b['cpu'])}, {r(x['rss'], b['rss'])}, {r(x['p99'], b['p99'])}"
             print(f"{t:12} {x['n']:>2} | {fmt(x['p50'], '7.2f')} {fmt(x['p99'], '7.2f')} {fmt(x['p999'], '7.2f')} | "
                   f"{fmt(x['deliv'], '6.3f')} {fmt(x['rate'], '9.0f')} {fmt(x['echo'], '8.0f')} | "
-                  f"{fmt(x['cpu'], '12.2f')} {fmt(x['rss'], '8.1f')} | {rel}"
+                  f"{fmt(x['cpu'], '12.2f')} {fmt(x['rss'], '8.1f')} {fmt(x['lg'], '8.2f')} | {rel}"
                   + (f"  closed_early={x['closed']}" if x["closed"] else ""))
         print()
 

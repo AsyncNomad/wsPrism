@@ -13,6 +13,9 @@ pub struct Cost {
     pub rss_before_kb: Option<u64>,
     pub start: Option<ProcSample>,
     pub end: Option<ProcSample>,
+    /// The load generator's own CPU over the same window.
+    pub loadgen: (Option<ProcSample>, Option<ProcSample>),
+    pub window: Duration,
 }
 
 pub struct Report {
@@ -30,6 +33,8 @@ pub struct Report {
     pub latency_us: Histogram<u64>,
     pub cpu_us_per_delivery: Option<f64>,
     pub rss_kb_per_conn: Option<f64>,
+    /// Cores the load generator used on average (compare with its CPU set).
+    pub loadgen_cores: Option<f64>,
 }
 
 impl Report {
@@ -59,6 +64,10 @@ impl Report {
             }
             _ => None,
         };
+        let loadgen_cores = match cost.loadgen {
+            (Some(a), Some(b)) => Some((b.cpu_secs - a.cpu_secs) / cost.window.as_secs_f64()),
+            _ => None,
+        };
         Self {
             conns: stats.len(),
             sent,
@@ -70,6 +79,7 @@ impl Report {
             latency_us,
             cpu_us_per_delivery,
             rss_kb_per_conn,
+            loadgen_cores,
         }
     }
 
@@ -118,6 +128,9 @@ impl Report {
         if let (Some(cpu), Some(rss)) = (self.cpu_us_per_delivery, self.rss_kb_per_conn) {
             println!("server: {cpu:.2} us CPU/delivery, {rss:.1} KB RSS/conn");
         }
+        if let Some(c) = self.loadgen_cores {
+            println!("loadgen: {c:.2} cores");
+        }
     }
 
     pub fn print_json(&self, args: &Args) {
@@ -140,6 +153,7 @@ impl Report {
             },
             "server_cpu_us_per_delivery": self.cpu_us_per_delivery,
             "server_rss_kb_per_conn": self.rss_kb_per_conn,
+            "loadgen_cores": self.loadgen_cores,
         });
         println!("{v}");
     }

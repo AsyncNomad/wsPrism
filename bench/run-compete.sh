@@ -5,7 +5,7 @@
 #
 #   bench/run-compete.sh <name> [RUNS] [SCENARIOS] [TARGETS]
 #
-# SCENARIOS: space-separated names from scenario() below.
+# SCENARIOS: space-separated NAME[:RATE] from scenario() below, e.g. "rooms:20 rooms:60".
 # TARGETS:   wsprism-ext wsprism-hot centrifugo sockudo
 # Each run appends one JSON line to bench/results/<name>.jsonl. Resumable:
 # a (target, label) already in the file is skipped.
@@ -18,7 +18,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NAME="${1:?name}"
 RUNS="${2:-3}"
-SCENARIOS="${3:-rooms broadcast}"
+SCENARIOS="${3:-rooms:20 broadcast:10}"
 TARGETS="${4:-wsprism-ext wsprism-hot centrifugo sockudo}"
 SERVER_CPUS="${SERVER_CPUS:-0-7}"
 LOADGEN_CPUS="${LOADGEN_CPUS:-8-23}"
@@ -39,13 +39,18 @@ trap 'rm -rf "$WORK"' EXIT
 sed 's|listen: "127.0.0.1:18080"|listen: "10.77.0.1:18080"|' "$ROOT/bench/gateway.yaml" > "$WORK/wsprism.yaml"
 grep -q '10.77.0.1:18080' "$WORK/wsprism.yaml"
 
-# scenario NAME -> loadgen arguments
+# scenario NAME[:RATE] -> loadgen arguments. RATE (messages/s per publisher)
+# sweeps the load toward saturation.
 scenario() {
-  case "$1" in
-    # 100 game rooms of 10, everyone publishes 20 Hz (state sync on WebSocket).
-    rooms) echo "--conns 1000 --rooms 100 --publishers 1000 --rate 20 --payload 64 --duration 20" ;;
-    # 10 rooms of 1000 listeners, 1 publisher per room at 10 Hz (live feed).
-    broadcast) echo "--conns 10000 --rooms 10 --publishers 10 --rate 10 --payload 64 --duration 20 --connect-concurrency 500" ;;
+  local kind="${1%%:*}" rate="${1#*:}"
+  [[ "$rate" == "$1" ]] && rate=""
+  case "$kind" in
+    # 100 game rooms of 10, everyone publishes (state sync on WebSocket).
+    # Deliveries to others/s = 9000 x RATE (default 20 Hz -> 180k/s).
+    rooms) echo "--conns 1000 --rooms 100 --publishers 1000 --rate ${rate:-20} --payload 64 --duration 20" ;;
+    # 10 rooms of 1000 listeners, 1 publisher per room (live feed).
+    # Deliveries/s = 9990 x RATE (default 10 Hz -> 100k/s).
+    broadcast) echo "--conns 10000 --rooms 10 --publishers 10 --rate ${rate:-10} --payload 64 --duration 20 --connect-concurrency 500" ;;
     *) echo "unknown scenario: $1" >&2; exit 2 ;;
   esac
 }
