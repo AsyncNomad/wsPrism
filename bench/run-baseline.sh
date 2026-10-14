@@ -33,7 +33,7 @@ run() {
   local base peak=0 tmp
   base="$(rss_kb)"
   tmp="$(mktemp)"
-  "$LG" --url "$URL" --json "$@" > "$tmp" &
+  "$LG" gateway --url "$URL" --json "$@" > "$tmp" &
   local lg=$!
   while kill -0 "$lg" 2>/dev/null; do
     local r; r="$(rss_kb)"; (( r > peak )) && peak=$r

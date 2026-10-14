@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use clap::{Parser, ValueEnum};
+use clap::ValueEnum;
 
 /// Which protocol lane the publishers use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -13,8 +13,7 @@ pub enum Lane {
     Ext,
 }
 
-#[derive(Debug, Parser)]
-#[command(about = "Measure wsPrism end-to-end latency and throughput")]
+#[derive(Debug, clap::Args)]
 pub struct Args {
     /// Gateway base URL.
     #[arg(long, default_value = "ws://127.0.0.1:8080")]

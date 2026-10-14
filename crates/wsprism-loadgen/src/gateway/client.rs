@@ -11,8 +11,8 @@ use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use crate::probe;
-use crate::scenario::Lane;
+use super::probe;
+use super::scenario::Lane;
 
 pub type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 

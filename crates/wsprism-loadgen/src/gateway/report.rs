@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use hdrhistogram::Histogram;
 
-use crate::client::ConnStats;
-use crate::scenario::Args;
+use super::client::ConnStats;
+use super::scenario::Args;
 
 pub struct Report {
     pub conns: usize,

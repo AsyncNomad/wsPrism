@@ -9,7 +9,7 @@ use std::time::Instant;
 
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::scenario::Lane;
+use super::scenario::Lane;
 
 fn epoch() -> Instant {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
