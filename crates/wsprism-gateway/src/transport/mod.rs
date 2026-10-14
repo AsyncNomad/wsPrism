@@ -3,6 +3,7 @@
 //! Exposes the WS upgrade handler and codec that decodes messages once before
 //! they reach policy/dispatcher layers.
 
+pub mod admission;
 pub mod codec;
 pub mod handshake;
 pub(crate) mod session;
