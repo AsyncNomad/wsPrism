@@ -73,12 +73,17 @@ bench/run-moq.sh moq-judgment 3
 
 ### R: 측정 수정 체크리스트
 
-- [ ] R-1 부하 생성기 `--phase random|aligned`(기본 random, `--seed`) — 클라이언트별 송신·렌더 위상 무작위. `aligned`는 이전 결과 재현용
-- [ ] R-2 끊김 기준 민감도: JSON에 `stall_ratio_at` (50/100/150/200/300 ms), 분석기 출력
-- [ ] R-3 netlab `--outage MEAN_PERIOD_MS:LEN_MS`(양방향 동시 단절, `NETLAB_SEED`) + run-v.sh 손실 조건 `outage:<period>:<len>:<delay>`
-- [ ] R-4 netlab `NETLAB_OFFLOAD=on` (손실 없는 비용 측정 전용)
-- [ ] R-5 스모크 → 커밋
-- [ ] R-6 판정 칸 재측정: 손실 {없음, 균등 1%, 단절 1000:50, 단절 5000:250} × 틱 {0, 60, 30} × {ws, wss, wt} × 3회 → `v2-judgment.jsonl`
+- [x] R-1 부하 생성기 `--phase random|aligned`(기본 random, `--seed`) — 클라이언트별 송신·렌더 위상 무작위. `aligned`는 이전 결과 재현용
+- [x] R-2 끊김 기준 민감도: JSON에 `stall_ratio_at` (50/100/150/200/300 ms), 분석기 출력
+- [x] R-3 netlab `--outage MEAN_PERIOD_MS:LEN_MS`(양방향 동시 단절, `NETLAB_SEED`) + run-v.sh 손실 조건 `outage:<period>:<len>:<delay>`
+- [x] R-4 netlab `NETLAB_OFFLOAD=on` (손실 없는 비용 측정 전용)
+- [x] R-5 스모크(`v2-smoke.jsonl`, n=1, 틱 0): 손실 0% AoI p50 49.4 / p99 57.8(계단 사라짐). 균등 1% 초과 AoI WT 9.8 vs WSS 53.8(5.5×), 단절 1000:50 초과 2.4×(기준 미달)·끊김 3.1% vs 13.2%
+- [ ] R-6 판정 칸 재측정: 손실 {없음, 균등 1%, 단절 1000:50, 단절 5000:250} × 틱 {0, 60, 30} × {ws, wss, wt} × 3회, 측정 20초 → `v2-judgment.jsonl` (108회, 약 1시간, 재개 가능):
+  ```bash
+  bench/run-v.sh v2-judgment 3 "none:20 uniform:1:20 outage:1000:50:20 outage:5000:250:20" "0 60 30" "ws wss wt" \
+    "--rooms 10 --room-size 10 --rate 60 --sample-hz 60 --warmup 3 --duration 20"
+  python3 bench/analyze-v.py bench/results/v2-judgment.jsonl
+  ```
 - [ ] R-7 비용 재측정: 오프로드 켬, 연결 100·300, 틱 {0, 60} → `v2-cost-*.jsonl`
 - [ ] R-8 G1·G5 재판정 → BENCHMARKS·ADR 0004·이 문서 갱신
 

@@ -69,6 +69,10 @@ def metrics(runs):
         "cpu_rng": rng([r["server_cpu_us_per_msg"] for r in runs]),
         "mem": med([r["server_rss_kb_per_conn"] for r in runs]),
         "broken": sum(r["broken_links"] for r in runs),
+        # Share of AoI samples above 50..300 ms (runs from before the phase fix lack it).
+        "stall_at": {k: med([r["stall_ratio_at"][k] for r in runs])
+                     for k in sorted(runs[0].get("stall_ratio_at") or {}, key=int)},
+        "phases": sorted({r.get("phase", "aligned") for r in runs}),
         "n": len(runs),
     }
 
@@ -129,6 +133,21 @@ def main(paths, cand):
         g5 = max(cpu) <= 2.0 and max(mem) <= 2.0
         notes.append(f"cost: cpu {min(cpu):.2f}-{max(cpu):.2f}x, mem {min(mem):.2f}-{max(mem):.2f}x")
         return g1, g5, notes
+
+    phases = sorted({p for x in m.values() for p in x["phases"]})
+    print(f"client phases in these runs: {', '.join(phases)}"
+          + ("  <- ALIGNED: AoI is a staircase, see BENCHMARKS 'measurement flaws'" if "aligned" in phases else ""))
+
+    # Does the stall verdict depend on the 100 ms threshold?
+    if any(x["stall_at"] for x in m.values()):
+        print("\nStall share above threshold (ms), candidate vs WSS at the same tick:")
+        for loss in lossy:
+            for tick in cticks:
+                c, w = m[(cand, loss, tick)]["stall_at"], m[("wss", loss, tick)]["stall_at"]
+                if c and w:
+                    cells = "  ".join(f"{k}: {c[k]*100:6.3f}% / {w[k]*100:6.3f}%" for k in c)
+                    print(f"  {loss:16} tick={tick:<3} {cells}")
+        print()
 
     any_pass = False
     for tick in cticks:
