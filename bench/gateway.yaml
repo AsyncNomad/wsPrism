@@ -1,0 +1,25 @@
+# Gateway config used by bench/run-baseline.sh (see docs/BENCHMARKS.md).
+# Limits are opened up so the gateway's data path, not its policies, is measured.
+version: 1
+gateway:
+  listen: "127.0.0.1:18080"
+  ping_interval_ms: 20000
+  idle_timeout_ms: 120000
+  writer_send_timeout_ms: 5000
+  session_queue_capacity: 1024
+  handshake_limit:
+    enabled: false
+tenants:
+  - id: bench
+    limits:
+      max_frame_bytes: 65536
+    policy:
+      rate_limit_rps: 100000
+      rate_limit_burst: 100000
+      sessions:
+        mode: multi
+        max_sessions_per_user: 1000000   # every loadgen conn uses ticket=dev
+        on_exceed: deny
+      ext_allowlist: ["room:*", "chat:*"]
+      hot_allowlist: ["1:*"]           # svc 1 = echo (room fan-out)
+      hot_requires_active_room: true
