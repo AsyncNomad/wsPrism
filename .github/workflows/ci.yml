@@ -37,15 +37,20 @@ jobs:
         run: cargo test --workspace --locked
 
   # JS SDK against a real gateway process (sdk/js/run-tests.sh).
+  # Node: every non-EOL LTS line the SDK supports (engines: >=22).
   sdk-js:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: ${{ matrix.node }}
       - name: SDK tests
         run: sdk/js/run-tests.sh
 

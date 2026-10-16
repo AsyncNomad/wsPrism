@@ -1,6 +1,8 @@
 # wsPrism JavaScript client
 
 Dependency-free ES module for browsers and Node 22+ (global `WebSocket`).
+Supported Node versions: every non-EOL LTS line from 22 (CI tests 22 and
+24; development uses `.nvmrc` = 24).
 Speaks protocol v2 (`wsprism.v2.json`). Files: `wsprism.js` (the client), `wsprism.d.ts` (types).
 
 ```js
