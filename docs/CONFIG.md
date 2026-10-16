@@ -193,6 +193,7 @@ backend, use the server API (`/api/v1/publish`).
 **Backend HTTP client** (connect and RPC proxies): one pooled client per
 process; it never follows redirects (a token must not reach a host the
 config didn't name), ignores `HTTP(S)_PROXY` environment variables, reads at
-most 1 MiB of a reply, and trusts the Mozilla root store bundled at build
-time (webpki-roots) for `https`.
+most 1 MiB of a reply, and verifies `https` against the **operating
+system's certificate store** (so a private CA installed on the host is
+trusted; minimal container images need the `ca-certificates` package).
 
