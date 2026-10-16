@@ -1,6 +1,6 @@
 # ADR 0006: 프로토콜 v2 — 인코딩·전달 의미 분리, 명시적 채널, 재접속 의미를 가진 종료 코드
 
-- 상태: **제안 (2026-10-16) — 사용자 승인 전, 구현하지 않음**
+- 상태: **채택 (2026-10-16, 리뷰 반영 후)** — 사용자 지시: "검토해서 문제가 없으면 진행". 리뷰에서 나온 문제 5건을 아래 「리뷰 반영」으로 고쳤다. 구현은 단계별(§8).
 - 관련: [PROTOCOL](../PROTOCOL.md)(v1), [ADR 0003](0003-ticket-sources-and-subprotocol.md)(버전 협상), [ADR 0004](0004-product-direction.md)(상태 동기화), [Hot Lane over WebTransport](../design/hot-lane-over-webtransport.md) §3, [성능 아키텍처](../design/performance-architecture.md) §3.5
 
 ## 배경
@@ -24,9 +24,9 @@
 Sec-WebSocket-Protocol: wsprism.v2.json, wsprism.v2.bin, wsprism.v1, wsprism.auth.<ticket>
 ```
 
-- 서버는 지원하는 것 중 **가장 앞의 하나**를 골라 그것만 돌려준다(인증 항목은 절대 돌려주지 않음, ADR 0003 그대로).
+- 서버는 클라이언트가 제시한 것 중 **서버 선호 순서(v2 → v1)로 첫 번째**를 골라 그것만 돌려준다(인증 항목은 절대 돌려주지 않음, ADR 0003 그대로).
 - `wsprism.v2.json`: 제어·Ext 메시지는 텍스트 프레임의 JSON. Hot은 바이너리 프레임.
-- `wsprism.v2.bin`: 모든 메시지가 바이너리 프레임. 제어·Ext는 **MessagePack**(같은 필드 이름), Hot은 §3의 바이너리 형식. 프레임 첫 바이트가 종류를 구분한다(§2).
+- `wsprism.v2.bin`: **예약만 한다(리뷰 반영 R1).** 모든 메시지를 바이너리로(제어·Ext는 MessagePack) 보내는 안. JSON 디코드는 프로파일 1.8%로 병목이 아니고, 인코딩이 둘이면 SDK·테스트 표면이 두 배가 된다. 바이너리 Ext 페이로드 수요가 확인되면 추가한다.
 - 헤더가 없거나 `wsprism.v1`이면 v1 동작(지금과 같음).
 - WebTransport(T)는 연결 URL의 `protocol=v2.json|v2.bin`으로 같은 선택을 한다.
 
@@ -83,15 +83,35 @@ flags: 0x01 KEY  0x02 SEQ  0x04 SENDER(서버→클라이언트 전용)
 |---|---|---|
 | 4000~4099 | **그대로 재접속하지 않음**(새 티켓·설정 변경 필요) | 4001 `auth_expired`, 4003 `policy`, 4004 `too_many_sessions`, 4005 `replaced`, 4006 `max_sessions_exceeded`, 4009 `message_too_big`, 4010 `decode_error`, 4011 `unsupported_version` |
 | 4100~4199 | **백오프 후 재접속**(최소 1초, 지수 + 지터) | 4100 `capacity`, 4101 `slow_consumer`, 4102 `rate_limited` |
-| 4200~4299 | **즉시 재접속** | 4200 `idle_timeout`, 4201 `draining`(+ `sys.reconnect{after_ms}` 힌트로 재배포 시 재접속 폭주 분산) |
+| 4100~4199 (계속) | | 4103 `draining` — 서버가 `sys.reconnect{after_ms}`(무작위 분산된 대기 시간)를 먼저 보낸다. 재배포 시 재접속 폭주를 나눈다 (리뷰 반영 R2: 초안은 42xx "즉시"였는데 분산 목적과 모순) |
+| 4200~4299 | **즉시 재접속** | 4200 `idle_timeout` |
 
 - `sys.error` 통지는 지금처럼 종료 직전에 보낸다.
-- 1009(크기 초과)는 tungstenite가 헤더 단계에서 끊는 경우 표준 코드로 남을 수 있다 → SDK는 1009를 4009와 같게 다룬다.
+- 크기 초과는 tungstenite가 헤더 단계에서 거절한 뒤 **우리가** 종료를 보내므로(S2 경로), v2 세션에는 4009를 보낸다(리뷰 반영 R4). SDK는 다른 구현과의 호환을 위해 1009도 4009와 같게 다룬다.
 
 ### 7. v1 호환과 폐기
 
 - v1은 협상으로 계속 받는다. 서버 내부는 v1 메시지를 v2 표현으로 바꿔 처리한다(v1 Hot 프레임 → `chan = active_room의 별칭`).
 - v1 폐기 공지는 TS SDK(v2 전용)가 나온 뒤 한 마이너 버전 이상 유지 후.
+
+### 8. 구현 단계
+
+| 단계 | 내용 | 비고 |
+|---|---|---|
+| v2-1 | 협상(`wsprism.v2`), 세션의 프로토콜 버전, v2 종료 코드 매핑 | 작음. v1 동작 불변 |
+| v2-2 | v2 제어 봉투(`ch`/`id`, 모르는 필드 무시 + 메트릭, `strict_envelope`) | v1 봉투는 그대로 |
+| v2-3 | 채널 별칭·`member_id`(join 응답), v2 Hot 프레임 디코드·라우팅, `HotRelayService`(`sender` 부착), 버전별 인코딩 캐시 | T0-3(Hot 슬롯)과 함께 |
+| v2-4 | 묶음 프레임 + 틱 송신 | T0-3 |
+
+### 9. 리뷰 반영 (2026-10-16)
+
+| # | 문제 | 수정 |
+|---|---|---|
+| R1 | `v2.bin`(MessagePack)은 근거 없는 범위 확장 | 토큰만 예약, 구현 보류 |
+| R2 | `draining`을 "즉시 재접속"에 둠 — 재접속 분산 목적과 모순 | 4103(백오프 범위) + `sys.reconnect{after_ms}` |
+| R3 | v1·v2 클라이언트가 섞인 룸에서 "한 번 인코딩해 공유"가 깨짐 | 송신 프레임이 구조화된 Hot 데이터를 들고, **버전별 인코딩을 처음 필요할 때 한 번만 만들어 캐시**(발행당 최대 버전 수만큼). 수신자들은 그 바이트를 공유 |
+| R4 | 1009를 표준 코드로 남김 | 종료는 우리가 보내므로 v2는 4009 |
+| R5 | 모르는 채널 별칭의 Hot 프레임 처리 미정 | 드롭 + `policy_decisions{reason="unknown_channel"}`, `hot_error_mode: sys_error`면 `sys.error` |
 
 ## 기각한 대안
 
