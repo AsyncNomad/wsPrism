@@ -198,6 +198,7 @@ impl Session {
                 session_key: session_key.into(),
                 trace_id: id.trace_id.into(),
                 protocol: id.protocol,
+                permissions: id.permissions,
             },
             Arc::new(t_cfg.limits.clone()),
             conn,

@@ -14,7 +14,7 @@ use axum::http::{
 use axum::response::{IntoResponse, Response};
 
 use crate::app_state::AppState;
-use crate::auth::{AuthError, AuthRequest};
+use crate::auth::{AuthError, AuthRequest, Identity};
 use crate::config::TenantConfig;
 use crate::policy::TenantPolicyRuntime;
 use crate::transport::credentials;
@@ -37,7 +37,8 @@ pub struct HandshakeRequest<'a> {
 
 /// A request that passed every check.
 pub struct Admitted {
-    pub user_id: String,
+    /// Who the client is and what it may do (ADR 0008).
+    pub identity: Identity,
     /// Subprotocol to echo in the upgrade response, if one was negotiated.
     pub subprotocol: Option<&'static str>,
     /// Client address (resolved through trusted proxies).
@@ -114,10 +115,10 @@ async fn check_all(
     let offered = Offered::parse(req.headers);
     let subprotocol = negotiate_protocol(&offered)?;
     origin_allowed(&policy, req)?;
-    let user_id = authenticate(app, tenant, &policy, req, &offered, client_ip).await?;
+    let identity = authenticate(app, tenant, &policy, req, &offered, client_ip).await?;
     tenant_capacity(app, tenant)?;
     Ok(Admitted {
-        user_id,
+        identity,
         subprotocol,
         client_ip,
         max_frame_bytes: tenant.limits.max_frame_bytes,
@@ -187,7 +188,7 @@ async fn authenticate(
     req: &HandshakeRequest<'_>,
     offered: &Offered<'_>,
     client_ip: IpAddr,
-) -> Result<String, Rejection> {
+) -> Result<Identity, Rejection> {
     let token = credentials::find(policy.ticket_sources(), req, offered)
         .ok_or_else(|| Rejection::new(StatusCode::UNAUTHORIZED, "auth_missing", "Unauthorized"))?;
     let chain = app
@@ -199,7 +200,7 @@ async fn authenticate(
         client_ip,
     };
     match chain.authenticate(&auth_req).await {
-        Ok(identity) => Ok(identity.user_id),
+        Ok(identity) => Ok(identity),
         Err(AuthError::Unavailable(why)) => {
             tracing::warn!(tenant = %tenant.id, why, "authentication unavailable");
             Err(Rejection::new(

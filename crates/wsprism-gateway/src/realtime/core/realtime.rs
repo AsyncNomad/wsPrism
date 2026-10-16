@@ -19,6 +19,8 @@ use wsprism_core::error::{Result, WsPrismError};
 use wsprism_core::protocol::hot::HotFrame;
 use wsprism_core::protocol::ProtocolVersion;
 
+use crate::auth::Permissions;
+
 static DROP_COUNT: AtomicU64 = AtomicU64::new(0);
 static SLOT_OVERWRITE_COUNT: AtomicU64 = AtomicU64::new(0);
 static SLOT_FULL_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -221,6 +223,8 @@ pub struct RealtimeCtx {
     conn: Connection,
     /// Wire protocol of this session (reply shapes, Hot routing).
     protocol: ProtocolVersion,
+    /// What this user may do with rooms (ADR 0008 §2).
+    permissions: Permissions,
     /// Rooms this session has joined, with their ids (small; linear scan).
     joined: Vec<(Arc<str>, Joined)>,
     core: Arc<RealtimeCore>,
@@ -236,6 +240,7 @@ pub struct CtxIdentity {
     pub session_key: Arc<str>,
     pub trace_id: Arc<str>,
     pub protocol: ProtocolVersion,
+    pub permissions: Permissions,
 }
 
 impl RealtimeCtx {
@@ -259,6 +264,7 @@ impl RealtimeCtx {
             limits,
             conn,
             protocol: id.protocol,
+            permissions: id.permissions,
             joined: Vec::new(),
             core,
         }
@@ -319,9 +325,26 @@ impl RealtimeCtx {
         self.protocol
     }
 
+    /// Every publish through the context is checked against the user's
+    /// publish permission, whichever service does it.
+    fn check_publish(&self, room: &str) -> Result<()> {
+        if self.permissions.can_publish(room) {
+            Ok(())
+        } else {
+            Err(WsPrismError::NotAllowed(
+                "not allowed to publish to that room".into(),
+            ))
+        }
+    }
+
     /// Join `room`, enforcing the tenant's room limits. Returns the room id
     /// and this membership's id (protocol v2 `chan` / `sender`).
     pub fn join_room(&mut self, room: &str) -> Result<Joined> {
+        if !self.permissions.can_subscribe(room) {
+            return Err(WsPrismError::NotAllowed(
+                "not allowed to join that room".into(),
+            ));
+        }
         let rk = self.room_key(room);
         let member = Member {
             key: Arc::clone(&self.session_key),
@@ -380,10 +403,12 @@ impl RealtimeCtx {
         Ok(())
     }
     pub fn publish_room_lossy(&self, room: &str, out: Outgoing) -> Result<()> {
+        self.check_publish(room)?;
         let rk = self.room_key(room);
         self.core.publish_room_lossy(&rk, out)
     }
     pub fn publish_room_reliable(&self, room: &str, out: Outgoing) -> Result<()> {
+        self.check_publish(room)?;
         let rk = self.room_key(room);
         self.core.publish_room_reliable(&rk, out)
     }

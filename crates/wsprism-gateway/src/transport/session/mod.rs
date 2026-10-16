@@ -26,6 +26,7 @@ use tokio::time::{timeout, Duration};
 use wsprism_core::error::{ClientCode, Result, WsPrismError};
 
 use crate::app_state::AppState;
+use crate::auth::Permissions;
 use crate::dispatch::Dispatcher;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::ConnRateLimiter;
@@ -55,6 +56,8 @@ pub(crate) struct SessionIdentity {
     pub protocol: ProtocolVersion,
     pub tenant: String,
     pub user_id: String,
+    /// Room permissions from the authenticator (ADR 0008 §2).
+    pub permissions: Permissions,
     /// Client-facing session id (client-provided or generated; not unique).
     pub sid: String,
     pub trace_id: String,

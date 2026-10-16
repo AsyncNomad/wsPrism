@@ -81,7 +81,8 @@ pub async fn ws_upgrade(
         .on_upgrade(move |socket| {
             let sid = q.sid.clone().unwrap_or_else(gen_sid);
             let trace_id = gen_trace();
-            let user_id = admitted.user_id;
+            let user_id = admitted.identity.user_id;
+            let permissions = admitted.identity.permissions;
             let ip = admitted.client_ip;
             // C6: instrument the whole session future instead of entering the
             // span across awaits (clippy.toml bans holding span guards there).
@@ -91,6 +92,7 @@ pub async fn ws_upgrade(
                 protocol,
                 tenant: q.tenant,
                 user_id,
+                permissions,
                 sid,
                 trace_id,
             };

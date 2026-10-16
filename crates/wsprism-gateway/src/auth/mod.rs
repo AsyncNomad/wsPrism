@@ -8,6 +8,7 @@
 //! new implementations; admission and sessions don't change.
 
 mod dev;
+mod permissions;
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -18,6 +19,7 @@ use async_trait::async_trait;
 use crate::config::schema::AuthConfig;
 
 pub use dev::DevAuthenticator;
+pub use permissions::{Permissions, RoomPattern};
 
 /// What an authenticator gets to see of a connection attempt.
 #[derive(Debug, Clone, Copy)]
@@ -31,6 +33,8 @@ pub struct AuthRequest<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Identity {
     pub user_id: String,
+    /// Room permissions (default: unrestricted).
+    pub permissions: Permissions,
     /// When the credential stops being valid (`None` = no expiry).
     pub expires_at: Option<SystemTime>,
 }
@@ -39,6 +43,7 @@ impl Identity {
     pub fn user(user_id: impl Into<String>) -> Self {
         Self {
             user_id: user_id.into(),
+            permissions: Permissions::default(),
             expires_at: None,
         }
     }
