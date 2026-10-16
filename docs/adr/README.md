@@ -10,5 +10,6 @@
 | [0003](0003-ticket-sources-and-subprotocol.md) | 티켓 전달 경로와 서브프로토콜 버전 협상 | 채택 (M1) |
 | [0004](0004-product-direction.md) | 제품 방향: 실시간 상태 동기화 (개정 2) | 조건부 채택 (검증 V 후 확정) |
 | [0005](0005-session-transport-seam.md) | 세션 전송 경계 — `SessionTx` / `SessionRx` | 채택 (T0-1) |
+| [0006](0006-protocol-v2.md) | 프로토콜 v2 — 인코딩·전달 의미 분리, 명시적 채널, 재접속 의미를 가진 종료 코드 | **제안** (승인 전) |
 
 새 ADR은 다음 번호로 만들고, 결정이 바뀌면 기존 ADR을 고치지 말고 새 ADR에서 "대체함"을 밝힌다.
