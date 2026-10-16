@@ -38,3 +38,9 @@ hdrhistogram = "7.6"
 clap = { version = "4.6", features = ["derive"] }
 async-trait = "0.1"
 ipnet = "2"
+
+# CPU profiling builds (bench/profile-gateway.sh): release codegen plus symbols.
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = false
