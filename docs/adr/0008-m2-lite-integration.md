@@ -1,6 +1,6 @@
 # ADR 0008: M2-lite — 인증·권한·서버 API·백엔드 프록시·SDK
 
-- 상태: **채택 (2026-10-16)**, M2-1~M2-7 완료 — 사용자 결정: "상용 프로그램 수준으로 기능 확장을 먼저, 성능은 나중에". 단계별 구현(§9), 새 의존성은 해당 단계 착수 전에 확인(§8)
+- 상태: **채택 (2026-10-16)**, M2-1~M2-8 완료 (**M2 완료 기준 충족**; M2-9 크레이트 분리 남음) — 사용자 결정: "상용 프로그램 수준으로 기능 확장을 먼저, 성능은 나중에". 단계별 구현(§9), 새 의존성은 해당 단계 착수 전에 확인(§8)
 - 관련: [ROADMAP](../ROADMAP.md) M2, [ADR 0003](0003-ticket-sources-and-subprotocol.md)(티켓 전달 경로), [ADR 0006](0006-protocol-v2.md)(프로토콜 v2), [ADR 0005](0005-session-transport-seam.md)
 
 ## 배경
@@ -128,8 +128,16 @@ pub struct Identity {
 | M2-5 ✅ | JWT 인증기 (정적 키; JWKS는 M2-6 HTTP 클라이언트 이후) | `jsonwebtoken` 9.3.1 (사용자 승인 2026-10-16) |
 | M2-6 ✅ | connect·RPC 프록시 | `reqwest` 0.12 (rustls, 사용자 승인 2026-10-16) |
 | M2-7 ✅ | JS SDK + 통합 테스트 (`sdk/js`, CI `sdk-js`) | 없음 |
-| M2-8 | 예제 앱(Node 백엔드 + SDK 채팅·상태 동기화) — **M2 완료 기준** | 없음 |
+| M2-8 ✅ | 예제 앱(Node 백엔드 + SDK 채팅·상태 동기화) — **M2 완료 기준** (`examples/chat-and-state`, CI E2E) | 없음 |
 | M2-9 | engine/server 크레이트 분리, 공개 API 최소화 | 없음 |
+
+### 10. 예제 앱 (M2-8)
+
+- `examples/chat-and-state`: 로그인→1회용 티켓(권한: lobby만)→SDK 접속, 내장 채팅, RPC(주사위 — 백엔드가 답하고 서버 API로 룸에 발행), Hot 커서(30 Hz 틱). 백엔드는 의존성 없는 Node(`backend.mjs`) — "사용자가 쓰는 부분"이 한 파일에 보이도록.
+- 완료 기준 검증: `test/example.test.mjs`가 예제의 `gateway.yaml`을 포트만 바꿔 실제 게이트웨이와 `backend.mjs`를 띄우고, SDK 클라이언트 둘이 페이지와 같은 흐름을 밟는다(CI `sdk-js`).
+- 결정: Spring 예제는 만들지 않음 — 연동 계약(HTTP JSON)이 언어 무관이라 하나로 충분하고, 두 번째 언어는 유지 비용만 든다. 수요가 확인되면 추가.
+- 사각지대: `index.html`은 **실제 브라우저로 자동 검증하지 않았다**(이 환경에 브라우저 없음; Origin 검사·DOM 렌더링은 수동 확인 필요). E2E는 Node의 WebSocket으로 같은 SDK·같은 흐름을 검증한다. 브라우저 자동화(Playwright)는 G2 브라우저 측정과 함께.
+- 개발 메모: 실행 스크립트가 공유하는 `sdk/js/find-node.sh`(`$NODE` → `node` → nvm 최신 순으로 22+를 찾음).
 
 ## 기각한 대안
 

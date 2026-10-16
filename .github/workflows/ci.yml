@@ -53,6 +53,8 @@ jobs:
           node-version: ${{ matrix.node }}
       - name: SDK tests
         run: sdk/js/run-tests.sh
+      - name: Example app (end to end)
+        run: examples/chat-and-state/run-tests.sh
       - name: SDK type declarations
         run: npx --yes -p typescript@5 tsc -p sdk/js
 
