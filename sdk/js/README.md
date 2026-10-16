@@ -40,6 +40,7 @@ There is no in-band token refresh: when a token expires the gateway closes the c
 
 ```sh
 sdk/js/run-tests.sh   # builds the gateway, starts it on 127.0.0.1, runs node:test
+npx -p typescript@5 tsc -p sdk/js   # checks wsprism.d.ts against test/types-check.ts
 ```
 
 The tests run against a real gateway process: one-time tickets come from the server API, an expiring JWT exercises the 4001 reconnect, and a local HTTP server acts as the RPC backend.

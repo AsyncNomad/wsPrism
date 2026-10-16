@@ -75,7 +75,7 @@ pub struct Identity {
   - HMAC 비밀은 설정 파일에 직접 쓰지 못한다(`secret_file`/`secret_env`만). 길이는 해시 출력 이상(RFC 7518 §3.2). 키는 기동 시 읽어 `--check-config`가 잡는다.
   - 세션 만료 = `exp + leeway_s`. 연결마다 타이머 task를 두지 않고 기존 1초 스위퍼가 `SessionSignals`의 만료 시각(AtomicU64, 8바이트/연결)을 확인해 `auth_expired`(v2 4001, v1 1008)로 닫는다. 오차 최대 ~1초. 기각: 연결별 `sleep_until` — 세션 future 크기·타이머 휠 부담(P0-d에서 없앤 것과 같은 비용).
   - 토큰 갱신(재접속 없이 새 토큰 제시)은 아직 없다. 클라이언트는 4001을 받으면 새 토큰으로 재접속한다. Centrifugo의 `refresh`에 해당하는 것은 SDK(M2-7)와 함께 다시 판단.
-  - 크레이트 버전: 최신은 11.x지만 9.3.1을 쓴다. 9.x는 lock에 이미 있는 `ring`을 쓰고 새 크레이트가 2개뿐이다. 10.x 이상은 백엔드로 `aws-lc-rs`(C 빌드) 또는 RustCrypto(`rsa` 크레이트 — RUSTSEC-2023-0071 Marvin 권고 대상)를 골라야 한다. 9.x 지원이 끊기면 다시 판단. `cargo-audit`가 설치되어 있지 않아 이번 단계에서는 권고 검사를 못 돌렸다.
+  - 크레이트 버전: 최신은 11.x지만 9.3.1을 쓴다. 9.x는 lock에 이미 있는 `ring`을 쓰고 새 크레이트가 2개뿐이다. 10.x 이상은 백엔드로 `aws-lc-rs`(C 빌드) 또는 RustCrypto(`rsa` 크레이트 — RUSTSEC-2023-0071 Marvin 권고 대상)를 골라야 한다. 9.x 지원이 끊기면 다시 판단. 권고 검사: `cargo deny check`(로컬에 이미 설치된 0.20.2, CI와 같은 도구) — advisories·bans·licenses·sources 모두 ok(2026-10-16, 중복 버전 경고만).
 
 ### 6. 백엔드 프록시 (언어 무관 연동의 핵심)
 
@@ -103,7 +103,8 @@ pub struct Identity {
   - `send`(대기 없음)와 `request`(답을 기다림)를 나눈다. `chat.send`처럼 성공 시 답이 없는 연산을 `request`로 보내면 타임아웃까지 매달리기 때문. 모든 송신에 `seq`를 붙여 `send`의 오류도 `error` 이벤트로 식별 가능.
   - Hot 수신의 오래된 `seq` 폐기는 `(chan, sender, key)`별, u32 순환 비교(RFC 1982식). 재접속 시 기록을 지운다(룸 id·member id가 바뀐다).
   - 재접속 백오프: `min(30s, 1s·2^(n-1))`의 [½, 1) 구간 지터. "즉시"도 연속 실패 2회째부터는 백오프(인증 서버 장애 시 폭주 방지).
-  - 타입은 손으로 쓴 `.d.ts`(빌드 단계·의존성 없음). 오프라인이라 `tsc` 검증은 못 했다 — 패키지 배포(npm) 단계에서 `tsc --noEmit` 검사를 붙일 것.
+  - 타입은 손으로 쓴 `.d.ts`(빌드 단계·의존성 없음). `test/types-check.ts`가 앱처럼 API를 써 보고(`@ts-expect-error`로 틀린 사용도 확인) `tsc -p sdk/js`(strict)로 검사한다. typescript는 리포 의존성이 아니라 `npx`로만 받는다(로컬 scratchpad, CI `sdk-js`). 일부러 틀린 타입을 넣으면 실패하는 것을 확인.
+  - Node 지원 정책: engines `>=22`(전역 `WebSocket`이 기본 활성인 첫 LTS), CI는 지원 중인 LTS 전부(지금 22·24), 개발 기본은 `.nvmrc` = 24. 22는 2027-04 EOL — 그때 매트릭스에서 빼고 26을 넣는다.
   - 개발 환경 메모: 이 WSL의 기본 `node`는 v18(전역 WebSocket 없음). `run-tests.sh`는 22 미만이면 nvm의 v22+를 찾는다.
   - 발견한 게이트웨이 쪽 어긋남: allowlist에 없는 `svc:type`(그리고 빈 allowlist)은 `BAD_REQUEST`로 답했는데, PROTOCOL.md 정의상 `NOT_ALLOWED`(정책상 금지)가 맞다. **v1·v2 모두 `NOT_ALLOWED`로 수정**(사용자 결정 2026-10-16). 0.x·배포된 클라이언트 없음 → 호환 깨짐을 감수하고, 버전별 분기를 영구히 남기지 않는다. 기각: v2에서만 변경 — 오류 코드가 프로토콜 버전마다 달라지는 분기가 남는다. 이 코드를 검사하는 테스트가 없었다(변경해도 아무것도 안 깨졌다) → `reply_correlation`에 단언 추가.
 

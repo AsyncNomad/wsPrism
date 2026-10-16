@@ -18,6 +18,7 @@
   },
   "license": "Apache-2.0",
   "scripts": {
-    "test": "./run-tests.sh"
+    "test": "./run-tests.sh",
+    "check-types": "npx -p typescript@5 tsc -p ."
   }
 }
