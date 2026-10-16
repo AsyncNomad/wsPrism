@@ -189,6 +189,7 @@ impl Session {
             .map_err(|_| WsPrismError::Internal("outbound queue unavailable".into()))?;
 
         let gw = &app.cfg().gateway;
+        let session_key_for_phase = session_key.clone();
         let ctx = RealtimeCtx::new(
             CtxIdentity {
                 tenant: id.tenant.into(),
@@ -202,6 +203,7 @@ impl Session {
             conn,
             core,
         );
+        let hot_tick = policy.hot_tick();
         Ok(Admission::Admitted(Box::new(Session {
             ctx,
             conn_limiter: policy.new_connection_limiter(),
@@ -212,8 +214,20 @@ impl Session {
             writer_timeout: Duration::from_millis(gw.writer_send_timeout_ms),
             signals,
             hot_buf: Vec::new(),
+            hot_tick,
+            hot_tick_phase_ms: tick_phase_ms(&session_key_for_phase, hot_tick),
             hot_op_counter: 0,
             _cleanup: cleanup,
         })))
     }
+}
+
+/// A stable offset within the tick period for this session, so paced
+/// sessions spread their flushes over the period instead of all at once.
+fn tick_phase_ms(session_key: &str, tick: Option<Duration>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let Some(period) = tick else { return 0 };
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    session_key.hash(&mut h);
+    h.finish() % (period.as_millis() as u64).max(1)
 }

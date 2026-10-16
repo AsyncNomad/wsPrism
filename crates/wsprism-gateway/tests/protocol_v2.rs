@@ -287,3 +287,57 @@ tenants:
     assert!(got < SENT, "conflated: got {got} of {SENT}");
     drain.abort();
 }
+
+/// v2-4: with `hot_tick_hz`, a session's Hot slot is sent at most once per
+/// tick, so a burst of keyed updates arrives as about one frame per tick,
+/// newest last.
+#[tokio::test]
+async fn hot_tick_paces_keyed_updates_to_one_per_tick() {
+    let gw = spawn(
+        r#"
+version: 1
+tenants:
+  - id: t
+    limits:
+      max_frame_bytes: 1024
+    policy:
+      rate_limit_rps: 100000
+      rate_limit_burst: 100000
+      ext_allowlist: ["room:*"]
+      hot_allowlist: ["1:*"]
+      hot_tick_hz: 10
+"#,
+    )
+    .await;
+    let (mut a, _) = connect_as(&gw, "a", V2).await;
+    let (mut b, _) = connect_as(&gw, "b", V2).await;
+    let chan = join_v(&mut a, "r", false).await["chan"].as_u64().unwrap() as u32;
+    join_v(&mut b, "r", false).await;
+    let (mut a_tx, mut a_rx) = futures_util::StreamExt::split(a);
+    let drain =
+        tokio::spawn(
+            async move { while futures_util::StreamExt::next(&mut a_rx).await.is_some() {} },
+        );
+
+    // 50 updates of one key over ~500 ms: 5 ticks at 10 Hz.
+    for seq in 1..=50u32 {
+        a_tx.send(Message::Binary(hot_v2(
+            0x03,
+            chan,
+            Some(0),
+            Some(seq),
+            b"s",
+        )))
+        .await
+        .expect("send");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    let (mut got, mut last_seq) = (0u32, 0u32);
+    while let Some(f) = next_binary(&mut b, 400).await {
+        got += 1;
+        last_seq = u32_at(&f, 12);
+    }
+    assert_eq!(last_seq, 50, "the newest value arrives last");
+    assert!(got <= 8, "paced to ~1 per 100 ms tick: got {got}");
+    drain.abort();
+}

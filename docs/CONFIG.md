@@ -30,3 +30,13 @@ tenants:
 There is **no hot reload yet**: configuration changes need a restart (drain
 first; see `drain_grace_ms`). Hot reload of tenant policies is planned for
 roadmap milestone M6.
+
+---
+
+## Hot Lane pacing (`tenants[].policy.hot_tick_hz`)
+
+`0` (default): keyed Hot state is sent as soon as it arrives. `1..=240`: each
+session's pending keyed state (latest value per sender/svc/key) is sent at
+most once per tick, at a per-session phase within the period. Fewer flushes
+when updates arrive faster than the tick, at the cost of up to one tick of
+extra latency. Unkeyed frames are not paced.

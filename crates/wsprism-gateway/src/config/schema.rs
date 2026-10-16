@@ -436,6 +436,12 @@ pub struct TenantPolicy {
     #[serde(default = "default_hot_requires_active_room")]
     pub hot_requires_active_room: bool,
 
+    /// Send each session's pending keyed Hot state at most this many times
+    /// per second (0 = as soon as it arrives). Fewer flushes under heavy
+    /// update rates, at the cost of up to one tick of extra latency.
+    #[serde(default)]
+    pub hot_tick_hz: u32,
+
     /// Browser origins allowed to open sockets (CSWSH protection). Requests
     /// without an `Origin` header (non-browser clients) are always allowed.
     /// Empty (default) = deny every browser origin. See `policy::origin`.
@@ -479,6 +485,7 @@ impl Default for TenantPolicy {
             sessions: SessionPolicy::default(),
             hot_error_mode: default_hot_error_mode(),
             hot_requires_active_room: default_hot_requires_active_room(),
+            hot_tick_hz: 0,
             allowed_origins: Vec::new(),
             ticket_sources: default_ticket_sources(),
         }
@@ -487,6 +494,11 @@ impl Default for TenantPolicy {
 
 impl TenantPolicy {
     pub fn validate(&self) -> Result<()> {
+        if self.hot_tick_hz > 240 {
+            return Err(WsPrismError::BadRequest(
+                "policy.hot_tick_hz must be 0 (immediate) or at most 240".into(),
+            ));
+        }
         if self.rate_limit_rps == 0 || self.rate_limit_burst == 0 {
             return Err(WsPrismError::BadRequest(
                 "policy.rate_limit_rps and rate_limit_burst must be > 0".into(),

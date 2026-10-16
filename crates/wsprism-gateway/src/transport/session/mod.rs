@@ -30,7 +30,7 @@ use crate::dispatch::Dispatcher;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::ConnRateLimiter;
 use crate::policy::TenantPolicyRuntime;
-use crate::realtime::core::{CloseRequest, SessionSignals};
+use crate::realtime::core::{now_ms, CloseRequest, SessionSignals};
 use crate::realtime::{close_code, CloseSpec, HotOut, OutFrame, RealtimeCtx};
 use crate::sys;
 use crate::transport::subprotocol::ProtocolVersion;
@@ -120,6 +120,11 @@ struct Session {
     signals: Arc<SessionSignals>,
     /// Reused buffer for draining the Hot slot (empty until first used).
     hot_buf: Vec<Arc<HotOut>>,
+    /// Hot slot pacing (`policy.hot_tick_hz`, v2-4): `None` = send on arrival.
+    hot_tick: Option<Duration>,
+    /// This session's offset within the tick period, so sessions don't all
+    /// flush at the same instant.
+    hot_tick_phase_ms: u64,
     conn_limiter: Option<ConnRateLimiter>,
     /// Hot Lane latency sampling counter (1/1024).
     hot_op_counter: u64,
@@ -136,13 +141,34 @@ impl Session {
     ) -> Exit {
         // Held outside `self` so the select! below can borrow `self` mutably.
         let signals = Arc::clone(&self.signals);
+        // Hot slot pacing: one reusable timer per paced session, armed only
+        // while the slot holds data (idle sessions never wake for it).
+        let mut tick_sleep = self
+            .hot_tick
+            .map(|_| Box::pin(tokio::time::sleep(Duration::ZERO)));
+        let mut hot_due = false;
         loop {
             let flow = tokio::select! {
                 // C8: kick / replace / drain requests from other tasks.
                 // C8: kick / replace / drain / slow consumer / idle requests.
                 req = signals.closed() => Flow::Break(Exit::Close(self.close_spec(req))),
                 out = out_rx.recv() => self.write(tx, out_rx, out).await,
-                _ = signals.hot.ready() => self.write_hot(tx, &signals).await,
+                _ = signals.hot.ready(), if !hot_due => match (self.hot_tick, tick_sleep.as_mut()) {
+                    (Some(period), Some(sleep)) => {
+                        sleep.as_mut().reset(self.next_hot_tick(period));
+                        hot_due = true;
+                        Flow::Continue(())
+                    }
+                    _ => self.write_hot(tx, &signals).await,
+                },
+                () = async {
+                    if let Some(sleep) = tick_sleep.as_mut() {
+                        sleep.as_mut().await;
+                    }
+                }, if hot_due => {
+                    hot_due = false;
+                    self.write_hot(tx, &signals).await
+                },
                 incoming = rx.recv() => self.on_incoming(incoming).await,
             };
             if let ControlFlow::Break(exit) = flow {
@@ -195,6 +221,14 @@ impl Session {
         frames.shrink_to(MAX_WRITE_BATCH);
         self.hot_buf = frames;
         flow
+    }
+
+    /// The next tick boundary for this session's phase.
+    fn next_hot_tick(&self, period: Duration) -> tokio::time::Instant {
+        let p = (period.as_millis() as u64).max(1);
+        let now = now_ms();
+        let since = now.wrapping_sub(self.hot_tick_phase_ms) % p;
+        tokio::time::Instant::now() + Duration::from_millis(p - since)
     }
 
     /// Drive a write burst under the slow-consumer deadline.
