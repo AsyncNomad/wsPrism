@@ -6,7 +6,7 @@
 //! contention to preserve throughput.
 
 use crate::config::schema::TenantLimits;
-use crate::realtime::core::{now_ms, CloseRequest, Connection, Presence, SessionRegistry};
+use crate::realtime::core::{now_ms, CloseRequest, Connection, Member, Presence, SessionRegistry};
 use crate::realtime::types::{close_code, CloseSpec, OutFrame, Outgoing, Payload, QoS};
 use crate::sys;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -133,14 +133,14 @@ impl RealtimeCore {
         Ok(())
     }
 
-    /// Publish to every session in a room (honours `out.qos`).
+    /// Publish to every session in a room (honours `out.qos`). Members carry
+    /// their delivery handles, so this is one shard read lock per publish and
+    /// a `try_send` per recipient — no lookup, key copy or handle clone.
     pub fn publish_room(&self, room_key: &str, out: Outgoing) -> Result<()> {
         let frame = OutFrame::from_payload(&out.payload)?;
-        for key in self.presence.sessions_in(room_key) {
-            if let Some(conn) = self.sessions.get_session(&key) {
-                self.deliver(&key, &conn, frame.clone(), &out.qos);
-            }
-        }
+        self.presence.for_each_member(room_key, |m| {
+            self.deliver(&m.key, &m.conn, frame.clone(), &out.qos);
+        });
         Ok(())
     }
 
@@ -185,37 +185,42 @@ pub struct RealtimeCtx {
     /// `seq` of the request being handled, for reply correlation.
     request_seq: Option<u64>,
     limits: Arc<TenantLimits>,
+    /// This session's own delivery handles (room membership, replies).
+    conn: Connection,
     core: Arc<RealtimeCore>,
+}
+
+/// Who a session is, fixed for its lifetime (input to [`RealtimeCtx::new`]).
+pub struct CtxIdentity {
+    pub tenant: Arc<str>,
+    pub user: Arc<str>,
+    /// Client-facing sid (may repeat across connections).
+    pub session_id: Arc<str>,
+    /// Gateway-internal, per-connection unique key (see S4 in docs/HARDENING.md).
+    pub session_key: Arc<str>,
+    pub trace_id: Arc<str>,
 }
 
 impl RealtimeCtx {
     /// Construct the context for one session.
-    ///
-    /// `session_key` is the gateway-internal, per-connection unique key (see
-    /// S4 in docs/HARDENING.md); `session_id` is the client-facing sid.
     pub fn new(
-        tenant: impl Into<Arc<str>>,
-        user: impl Into<Arc<str>>,
-        session_id: impl Into<Arc<str>>,
-        session_key: impl Into<Arc<str>>,
-        trace_id: impl Into<Arc<str>>,
+        id: CtxIdentity,
         limits: Arc<TenantLimits>,
+        conn: Connection,
         core: Arc<RealtimeCore>,
     ) -> Self {
-        let tenant = tenant.into();
-        let user = user.into();
-        let user_key: Arc<str> = Arc::from(format!("{}::{}", tenant, user));
-
+        let user_key: Arc<str> = Arc::from(format!("{}::{}", id.tenant, id.user));
         Self {
-            tenant,
-            user,
+            tenant: id.tenant,
+            user: id.user,
             user_key,
-            session_id: session_id.into(),
-            session_key: session_key.into(),
-            trace_id: trace_id.into(),
+            session_id: id.session_id,
+            session_key: id.session_key,
+            trace_id: id.trace_id,
             active_room: None,
             request_seq: None,
             limits,
+            conn,
             core,
         }
     }
@@ -274,13 +279,13 @@ impl RealtimeCtx {
     /// Join `room`, enforcing the tenant's room limits.
     pub fn join_room(&self, room: &str) -> Result<()> {
         let rk = self.room_key(room);
-        self.core.presence.try_join(
-            self.tenant(),
-            &rk,
-            self.user_key(),
-            self.session_key(),
-            &self.limits,
-        )
+        let member = Member {
+            key: Arc::clone(&self.session_key),
+            conn: self.conn.clone(),
+        };
+        self.core
+            .presence
+            .try_join(self.tenant(), &rk, self.user_key(), member, &self.limits)
     }
 
     /// True if this session has joined `room`.
@@ -299,8 +304,12 @@ impl RealtimeCtx {
     pub fn send_to_user(&self, out: Outgoing) -> Result<()> {
         self.core.send_to_user(self.user_key(), out)
     }
+    /// Send to this session, through its own handles (no registry lookup).
     pub fn send_to_session(&self, out: Outgoing) -> Result<()> {
-        self.core.send_to_session(self.session_key(), out)
+        let frame = OutFrame::from_payload(&out.payload)?;
+        self.core
+            .deliver(self.session_key(), &self.conn, frame, &out.qos);
+        Ok(())
     }
     pub fn publish_room_lossy(&self, room: &str, out: Outgoing) -> Result<()> {
         let rk = self.room_key(room);

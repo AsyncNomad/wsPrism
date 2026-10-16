@@ -11,7 +11,7 @@ use super::{Session, SessionIdentity};
 use crate::app_state::AppState;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::OnExceed;
-use crate::realtime::core::{CloseRequest, Connection, SessionSignals};
+use crate::realtime::core::{CloseRequest, Connection, CtxIdentity, SessionSignals};
 use crate::realtime::{close_code, CloseSpec, OutFrame, RealtimeCore, RealtimeCtx};
 use crate::sys;
 
@@ -155,15 +155,16 @@ impl Session {
         }
 
         let signals = SessionSignals::new();
+        let conn = Connection {
+            tx: out_tx.clone(),
+            signals: signals.clone(),
+        };
         if let Err(e) = core.sessions.try_insert(
             id.tenant.clone(),
             user_key.clone(),
             session_key.clone(),
             id.sid.clone(),
-            Connection {
-                tx: out_tx.clone(),
-                signals: signals.clone(),
-            },
+            conn.clone(),
             t_cfg.limits.max_sessions_total,
         ) {
             return Ok(Admission::Rejected(CloseSpec::new(
@@ -189,12 +190,15 @@ impl Session {
 
         let gw = &app.cfg().gateway;
         let ctx = RealtimeCtx::new(
-            id.tenant,
-            id.user_id,
-            id.sid,
-            session_key,
-            id.trace_id,
+            CtxIdentity {
+                tenant: id.tenant.into(),
+                user: id.user_id.into(),
+                session_id: id.sid.into(),
+                session_key: session_key.into(),
+                trace_id: id.trace_id.into(),
+            },
             Arc::new(t_cfg.limits.clone()),
+            conn,
             core,
         );
         Ok(Admission::Admitted(Box::new(Session {

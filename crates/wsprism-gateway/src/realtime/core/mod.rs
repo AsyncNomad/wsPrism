@@ -8,7 +8,9 @@ mod realtime;
 mod session_registry;
 mod signals;
 
-pub use presence::Presence;
-pub use realtime::{egress_drop_count, egress_slow_consumer_count, RealtimeCore, RealtimeCtx};
+pub use presence::{Member, Presence};
+pub use realtime::{
+    egress_drop_count, egress_slow_consumer_count, CtxIdentity, RealtimeCore, RealtimeCtx,
+};
 pub use session_registry::{Connection, SessionRegistry};
 pub use signals::{now_ms, CloseRequest, SessionSignals};

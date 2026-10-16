@@ -3,6 +3,9 @@ use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+
+use super::session_registry::Connection;
 use wsprism_core::error::{Result, WsPrismError};
 
 /// Atomically replace the value with `f(value)` (CAS loop); `None` from `f`
@@ -46,14 +49,25 @@ fn add_to_set(map: &SetIndex, key: &str, item: &str) {
         .insert(item.to_string());
 }
 
-/// Room presence: `room_key -> sessions`, `session_key -> rooms`.
+/// One room member as the fan-out sees it: the session's internal key and
+/// its delivery handles, so publishing needs no registry lookup, key copy or
+/// handle clone per recipient (performance-architecture §2.2).
+#[derive(Clone)]
+pub struct Member {
+    pub key: Arc<str>,
+    pub conn: Connection,
+}
+
+/// Room presence: `room_key -> members`, `session_key -> rooms`.
 ///
 /// Sprint 5: Added user-level indexing and tenant counters for governance.
 /// See `try_join` for which limits are exact and which are best-effort.
 #[derive(Default)]
 pub struct Presence {
-    // Routing indices
-    room_to_sessions: SetIndex,
+    // Routing indices. Members are a plain `Vec`: publishing iterates it
+    // under the shard read lock (contiguous, no allocation); joins push, and
+    // a join is idempotent per session, so no duplicate check is needed.
+    room_to_sessions: DashMap<String, Vec<Member>>,
     session_to_rooms: SetIndex,
 
     // Governance indices
@@ -89,14 +103,21 @@ impl Presence {
     /// `max_users_per_room` / `max_rooms_per_user` remain best-effort: their
     /// checks read the governance indices without locking them, so heavy
     /// contention can overshoot them slightly.
+    ///
+    /// Idempotent: a session already in the room is left unchanged (joining
+    /// twice used to count the user's room reference twice, so one leave
+    /// left a dangling user<->room link).
     pub fn try_join(
         &self,
         tenant_id: &str,
         room_key: &str,
         user_key: &str,
-        session_key: &str,
+        member: Member,
         limits: &TenantLimits,
     ) -> Result<()> {
+        if self.is_member(room_key, &member.key) {
+            return Ok(());
+        }
         // --- 1. Check Room Capacity (Max Users per Room) ---
         if limits.max_users_per_room > 0 {
             if let Some(users) = self.room_to_users.get(room_key) {
@@ -122,16 +143,15 @@ impl Presence {
 
         // --- 3. Routing. Creating the room set reserves a tenant room slot
         //        atomically, under the room's shard lock.
+        let session_key = Arc::clone(&member.key);
         match self.room_to_sessions.entry(room_key.to_string()) {
-            Entry::Occupied(mut room) => {
-                room.get_mut().insert(session_key.to_string());
-            }
+            Entry::Occupied(mut room) => room.get_mut().push(member),
             Entry::Vacant(slot) => {
                 self.reserve_room_slot(tenant_id, limits.max_rooms_total)?;
-                slot.insert(HashSet::from([session_key.to_string()]));
+                slot.insert(vec![member]);
             }
         }
-        add_to_set(&self.session_to_rooms, session_key, room_key);
+        add_to_set(&self.session_to_rooms, &session_key, room_key);
 
         // --- 4. Governance (ref-counted per user+room for multi-session).
         //        The user indices are updated while holding the ref entry, so
@@ -161,15 +181,48 @@ impl Presence {
         .map_err(|_| WsPrismError::ResourceExhausted("tenant room limit reached".into()))
     }
 
+    /// Leave `room_key`. A no-op unless the session is a member, so the
+    /// governance reference counts stay balanced.
     pub fn leave(&self, tenant_id: &str, room_key: &str, user_key: &str, session_key: &str) {
-        // 1. Routing. Removing the room set and releasing its tenant slot
-        //    only happens if it is still empty under the shard lock (C5).
-        if remove_from_set(&self.room_to_sessions, room_key, session_key) {
+        // Only this session's own task (or its final cleanup) changes its
+        // room set, so membership checked here cannot change under us.
+        let was_member = self
+            .session_to_rooms
+            .get_mut(session_key)
+            .is_some_and(|mut rooms| rooms.remove(room_key));
+        if !was_member {
+            return;
+        }
+        self.session_to_rooms
+            .remove_if(session_key, |_, rooms| rooms.is_empty());
+        self.leave_routing_and_governance(tenant_id, room_key, user_key, session_key);
+    }
+
+    /// The part of a leave shared with `cleanup_session` (which has already
+    /// removed the session's room set as a whole).
+    fn leave_routing_and_governance(
+        &self,
+        tenant_id: &str,
+        room_key: &str,
+        user_key: &str,
+        session_key: &str,
+    ) {
+        // 1. Routing. Removing the member and dropping an emptied room (and
+        //    its tenant slot) is one step under the shard lock (C5).
+        let room_dropped = self
+            .room_to_sessions
+            .remove_if_mut(room_key, |_, members| {
+                if let Some(i) = members.iter().position(|m| &*m.key == session_key) {
+                    members.swap_remove(i);
+                }
+                members.is_empty()
+            })
+            .is_some();
+        if room_dropped {
             if let Some(counter) = self.tenant_room_counts.get(tenant_id) {
                 let _ = cas_update(&counter, |n| n.checked_sub(1));
             }
         }
-        remove_from_set(&self.session_to_rooms, session_key, room_key);
 
         // 2. Governance: drop the user<->room link when this user's last
         //    session leaves, still holding the ref entry (see try_join).
@@ -192,19 +245,28 @@ impl Presence {
             .is_some_and(|rooms| rooms.contains(room_key))
     }
 
-    pub fn sessions_in(&self, room_key: &str) -> Vec<String> {
-        self.room_to_sessions
-            .get(room_key)
-            .map(|set| set.iter().cloned().collect())
-            .unwrap_or_default()
+    /// Call `f` for every member of `room_key`, under the room's shard read
+    /// lock: `f` must not block and must not touch presence (delivering via
+    /// `try_send` / `request_close` is fine). Concurrent publishes share the
+    /// lock; a join/leave in the same shard waits for them.
+    pub fn for_each_member(&self, room_key: &str, mut f: impl FnMut(&Member)) {
+        if let Some(members) = self.room_to_sessions.get(room_key) {
+            members.iter().for_each(&mut f);
+        }
+    }
+
+    #[cfg(test)]
+    fn member_keys(&self, room_key: &str) -> Vec<String> {
+        let mut keys = Vec::new();
+        self.for_each_member(room_key, |m| keys.push(m.key.to_string()));
+        keys
     }
 
     // Called by RAII Drop
     pub fn cleanup_session(&self, tenant_id: &str, user_key: &str, session_key: &str) {
         if let Some(rooms) = self.session_to_rooms.remove(session_key).map(|(_, v)| v) {
             for room_key in &rooms {
-                // Use the full leave logic to ensure ref-counts and limits are updated correctly
-                self.leave(tenant_id, room_key, user_key, session_key);
+                self.leave_routing_and_governance(tenant_id, room_key, user_key, session_key);
             }
         }
     }
@@ -222,6 +284,17 @@ mod tests {
         TenantLimits::default()
     }
 
+    fn member(session_key: &str) -> Member {
+        let (tx, _) = tokio::sync::mpsc::channel(1);
+        Member {
+            key: Arc::from(session_key),
+            conn: Connection {
+                tx,
+                signals: super::super::SessionSignals::new(),
+            },
+        }
+    }
+
     /// C5: two sessions churn join/leave on the same room. A leave that sees
     /// the room momentarily empty must never delete the other's fresh join.
     #[test]
@@ -234,9 +307,10 @@ mod tests {
                 s.spawn(move || {
                     let sk = format!("t::{who}::s");
                     let uk = format!("t::{who}");
+                    let m = member(&sk);
                     for _ in 0..ITERS {
-                        p.try_join("t", "t::r", &uk, &sk, &limits()).unwrap();
-                        if !p.sessions_in("t::r").contains(&sk) {
+                        p.try_join("t", "t::r", &uk, m.clone(), &limits()).unwrap();
+                        if !p.member_keys("t::r").contains(&sk) {
                             lost.store(true, Ordering::Relaxed);
                         }
                         p.leave("t", "t::r", &uk, &sk);
@@ -262,9 +336,10 @@ mod tests {
                     // Two sessions of the same user share the user<->room index.
                     let uk = format!("t::u{}", i % 2);
                     let sk = format!("{uk}::s{i}");
+                    let m = member(&sk);
                     for n in 0..ITERS / 4 {
                         let rk = format!("t::r{}", n % 3);
-                        p.try_join("t", &rk, &uk, &sk, &limits()).unwrap();
+                        p.try_join("t", &rk, &uk, m.clone(), &limits()).unwrap();
                         p.leave("t", &rk, &uk, &sk);
                     }
                 });
@@ -297,12 +372,44 @@ mod tests {
                 s.spawn(move || {
                     let uk = format!("t::u{i}");
                     let sk = format!("{uk}::s");
+                    let m = member(&sk);
                     for n in 0..50 {
-                        let _ = p.try_join("t", &format!("t::r{i}-{n}"), &uk, &sk, lim);
+                        let _ = p.try_join("t", &format!("t::r{i}-{n}"), &uk, m.clone(), lim);
                     }
                 });
             }
         });
         assert_eq!(p.room_to_sessions.len(), 5);
+    }
+
+    /// Joining the same room twice is a no-op, so one leave fully leaves
+    /// (previously the user's room reference was counted twice).
+    #[test]
+    fn repeated_join_then_one_leave_leaves_no_residue() {
+        let p = Presence::new();
+        let m = member("t::u::s");
+        p.try_join("t", "t::r", "t::u", m.clone(), &limits())
+            .unwrap();
+        p.try_join("t", "t::r", "t::u", m, &limits()).unwrap();
+        assert_eq!(p.member_keys("t::r"), vec!["t::u::s".to_string()]);
+        p.leave("t", "t::r", "t::u", "t::u::s");
+        assert!(p.room_to_sessions.is_empty());
+        assert!(p.user_to_rooms.is_empty(), "user<->room link left behind");
+        assert!(p.user_room_refs.is_empty());
+    }
+
+    /// Leaving a room the session never joined changes nothing.
+    #[test]
+    fn leave_without_membership_is_a_no_op() {
+        let p = Presence::new();
+        p.try_join("t", "t::r", "t::u", member("t::u::a"), &limits())
+            .unwrap();
+        // Another session of the same user leaves a room it never joined.
+        p.leave("t", "t::r", "t::u", "t::u::b");
+        assert_eq!(p.member_keys("t::r"), vec!["t::u::a".to_string()]);
+        assert!(p
+            .user_to_rooms
+            .get("t::u")
+            .is_some_and(|r| r.contains("t::r")));
     }
 }

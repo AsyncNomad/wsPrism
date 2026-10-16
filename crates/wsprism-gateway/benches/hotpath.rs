@@ -11,7 +11,7 @@ use tokio::sync::mpsc;
 use wsprism_gateway::config::schema::{TenantLimits, TenantPolicy};
 use wsprism_gateway::obs::metrics::GatewayMetrics;
 use wsprism_gateway::policy::TenantPolicyRuntime;
-use wsprism_gateway::realtime::core::{Connection, SessionSignals};
+use wsprism_gateway::realtime::core::{Connection, Member, SessionSignals};
 use wsprism_gateway::realtime::{OutFrame, Outgoing, Payload, QoS, RealtimeCore};
 
 fn policy(c: &mut Criterion) {
@@ -63,21 +63,26 @@ fn room(members: usize) -> (Arc<RealtimeCore>, Vec<mpsc::Receiver<OutFrame>>) {
         let (tx, rx) = mpsc::channel(BATCH * 2);
         let user_key = format!("t::u{i}");
         let session_key = format!("{user_key}::s#{i}");
+        let conn = Connection {
+            tx,
+            signals: SessionSignals::new(),
+        };
         core.sessions
             .try_insert(
                 "t".into(),
                 user_key.clone(),
                 session_key.clone(),
                 "s".into(),
-                Connection {
-                    tx,
-                    signals: SessionSignals::new(),
-                },
+                conn.clone(),
                 0,
             )
             .expect("insert");
+        let member = Member {
+            key: session_key.as_str().into(),
+            conn,
+        };
         core.presence
-            .try_join("t", "t::r", &user_key, &session_key, &limits)
+            .try_join("t", "t::r", &user_key, member, &limits)
             .expect("join");
         rxs.push(rx);
     }
