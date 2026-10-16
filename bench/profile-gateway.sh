@@ -21,7 +21,9 @@ RUSTFLAGS="-C force-frame-pointers=yes" CARGO_TARGET_DIR="$TGT" \
 cargo build -q --release --manifest-path "$ROOT/Cargo.toml" -p wsprism-loadgen
 GW="$TGT/profiling/wsprism-gateway"; LG="$ROOT/target/release/wsprism-loadgen"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
-sed 's|listen: "127.0.0.1:18080"|listen: "10.77.0.1:18080"|' "$ROOT/bench/gateway.yaml" > "$W/wsprism.yaml"
+# PROFILE_TRANSPORT=raw profiles the experimental send path (ADR 0007).
+sed 's|listen: "127.0.0.1:18080"|listen: "10.77.0.1:18080"|' "$ROOT/bench/gateway.yaml" \
+  | sed "s|^gateway:|gateway:\n  transport: ${PROFILE_TRANSPORT:-tungstenite}|" > "$W/wsprism.yaml"
 "$ROOT/bench/netlab.sh" --srv-egress none --cli-egress none \
   --server "taskset -c 0-7 perf record -F 999 --call-graph fp -o $W/perf.data -- env RUST_LOG=warn $GW --config $W/wsprism.yaml" \
   --client "taskset -c 8-23 $LG gateway --target wsprism --lane ext --url ws://10.77.0.1:18080 $SCEN --seed 1 --json --label 'profile $NAME'" \
