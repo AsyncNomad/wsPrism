@@ -1,6 +1,7 @@
 use crate::config::schema::TenantLimits;
 use dashmap::mapref::entry::Entry;
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use wsprism_core::error::{Result, WsPrismError};
 
@@ -21,14 +22,28 @@ fn cas_update(a: &AtomicU64, f: impl Fn(u64) -> Option<u64>) -> std::result::Res
     }
 }
 
+/// A set-valued index. The inner set is a plain `HashSet`: the outer map's
+/// shard lock already serializes every access to it, and a nested `DashMap`
+/// would allocate (CPU count x 4) shards per key (performance-architecture
+/// §2.1). An empty set allocates nothing.
+type SetIndex = DashMap<String, HashSet<String>>;
+
 /// Remove `item` from the set at `key`, dropping the set if that left it
-/// empty. The emptiness check and the removal are one atomic step under the
-/// shard lock, so an insert racing with us is never lost (C5).
-fn remove_from_set(map: &DashMap<String, DashSet<String>>, key: &str, item: &str) {
-    if let Some(set) = map.get(key) {
+/// empty. Both happen in one step under the shard write lock, so an insert
+/// racing with us is never lost (C5). Returns true if the set was dropped.
+fn remove_from_set(map: &SetIndex, key: &str, item: &str) -> bool {
+    map.remove_if_mut(key, |_, set| {
         set.remove(item);
-    }
-    map.remove_if(key, |_, set| set.is_empty());
+        set.is_empty()
+    })
+    .is_some()
+}
+
+/// Add `item` to the set at `key`, creating the set if needed.
+fn add_to_set(map: &SetIndex, key: &str, item: &str) {
+    map.entry(key.to_string())
+        .or_default()
+        .insert(item.to_string());
 }
 
 /// Room presence: `room_key -> sessions`, `session_key -> rooms`.
@@ -38,12 +53,12 @@ fn remove_from_set(map: &DashMap<String, DashSet<String>>, key: &str, item: &str
 #[derive(Default)]
 pub struct Presence {
     // Routing indices
-    room_to_sessions: DashMap<String, DashSet<String>>,
-    session_to_rooms: DashMap<String, DashSet<String>>,
+    room_to_sessions: SetIndex,
+    session_to_rooms: SetIndex,
 
     // Governance indices
-    room_to_users: DashMap<String, DashSet<String>>,
-    user_to_rooms: DashMap<String, DashSet<String>>,
+    room_to_users: SetIndex,
+    user_to_rooms: SetIndex,
 
     // Multi-session ref-counting: user::room -> session_count
     user_room_refs: DashMap<String, usize>,
@@ -108,20 +123,15 @@ impl Presence {
         // --- 3. Routing. Creating the room set reserves a tenant room slot
         //        atomically, under the room's shard lock.
         match self.room_to_sessions.entry(room_key.to_string()) {
-            Entry::Occupied(room) => {
-                room.get().insert(session_key.to_string());
+            Entry::Occupied(mut room) => {
+                room.get_mut().insert(session_key.to_string());
             }
             Entry::Vacant(slot) => {
                 self.reserve_room_slot(tenant_id, limits.max_rooms_total)?;
-                let sessions = DashSet::new();
-                sessions.insert(session_key.to_string());
-                slot.insert(sessions);
+                slot.insert(HashSet::from([session_key.to_string()]));
             }
         }
-        self.session_to_rooms
-            .entry(session_key.to_string())
-            .or_default()
-            .insert(room_key.to_string());
+        add_to_set(&self.session_to_rooms, session_key, room_key);
 
         // --- 4. Governance (ref-counted per user+room for multi-session).
         //        The user indices are updated while holding the ref entry, so
@@ -130,14 +140,8 @@ impl Presence {
         let mut refs = self.user_room_refs.entry(ref_key).or_insert(0);
         *refs += 1;
         if *refs == 1 {
-            self.room_to_users
-                .entry(room_key.to_string())
-                .or_default()
-                .insert(user_key.to_string());
-            self.user_to_rooms
-                .entry(user_key.to_string())
-                .or_default()
-                .insert(room_key.to_string());
+            add_to_set(&self.room_to_users, room_key, user_key);
+            add_to_set(&self.user_to_rooms, user_key, room_key);
         }
 
         Ok(())
@@ -160,14 +164,7 @@ impl Presence {
     pub fn leave(&self, tenant_id: &str, room_key: &str, user_key: &str, session_key: &str) {
         // 1. Routing. Removing the room set and releasing its tenant slot
         //    only happens if it is still empty under the shard lock (C5).
-        if let Some(set) = self.room_to_sessions.get(room_key) {
-            set.remove(session_key);
-        }
-        if self
-            .room_to_sessions
-            .remove_if(room_key, |_, set| set.is_empty())
-            .is_some()
-        {
+        if remove_from_set(&self.room_to_sessions, room_key, session_key) {
             if let Some(counter) = self.tenant_room_counts.get(tenant_id) {
                 let _ = cas_update(&counter, |n| n.checked_sub(1));
             }
@@ -198,15 +195,14 @@ impl Presence {
     pub fn sessions_in(&self, room_key: &str) -> Vec<String> {
         self.room_to_sessions
             .get(room_key)
-            .map(|set| set.iter().map(|u| u.key().to_string()).collect())
+            .map(|set| set.iter().cloned().collect())
             .unwrap_or_default()
     }
 
     // Called by RAII Drop
     pub fn cleanup_session(&self, tenant_id: &str, user_key: &str, session_key: &str) {
         if let Some(rooms) = self.session_to_rooms.remove(session_key).map(|(_, v)| v) {
-            for r in rooms.iter() {
-                let room_key = r.key();
+            for room_key in &rooms {
                 // Use the full leave logic to ensure ref-counts and limits are updated correctly
                 self.leave(tenant_id, room_key, user_key, session_key);
             }

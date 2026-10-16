@@ -1,4 +1,5 @@
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
+use std::collections::HashSet;
 use tokio::sync::mpsc;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,7 +34,9 @@ struct SessionEntry {
 #[derive(Default)]
 pub struct SessionRegistry {
     sessions: DashMap<String, SessionEntry>,
-    user_index: DashMap<String, DashSet<String>>,
+    /// `user_key -> {session_key}`. Plain inner set: the outer shard lock
+    /// serializes access (see `presence::SetIndex`).
+    user_index: DashMap<String, HashSet<String>>,
     // Sprint 5: O(1) Tenant Counter
     tenant_counts: DashMap<String, AtomicU64>,
     seq: AtomicU64,
@@ -111,12 +114,13 @@ impl SessionRegistry {
     }
 
     pub fn remove_session(&self, user_key: &str, session_key: &str) -> Option<Connection> {
-        if let Some(set) = self.user_index.get(user_key) {
+        // C5: remove the key and drop the user's set if it became empty in
+        // one step under the shard lock; inserts go through `entry` and hold
+        // the same lock.
+        self.user_index.remove_if_mut(user_key, |_, set| {
             set.remove(session_key);
-        }
-        // C5: drop the user's set only if it is still empty under the shard
-        // lock; inserts go through `entry` and hold the same lock.
-        self.user_index.remove_if(user_key, |_, set| set.is_empty());
+            set.is_empty()
+        });
 
         if let Some((_, entry)) = self.sessions.remove(session_key) {
             // Sprint 5: Decrement tenant counter
@@ -139,7 +143,7 @@ impl SessionRegistry {
     pub fn user_session_keys(&self, user_key: &str) -> Vec<String> {
         self.user_index
             .get(user_key)
-            .map(|set| set.iter().map(|k| k.key().clone()).collect())
+            .map(|set| set.iter().cloned().collect())
             .unwrap_or_default()
     }
 
@@ -194,7 +198,7 @@ impl SessionRegistry {
     ) -> Vec<(String, u64)> {
         // Snapshot keys first so no user_index guard is held while reading `sessions`.
         let keys: Vec<String> = match self.user_index.get(user_key) {
-            Some(set) => set.iter().map(|k| k.key().clone()).collect(),
+            Some(set) => set.iter().cloned().collect(),
             None => return Vec::new(),
         };
         keys.into_iter()
