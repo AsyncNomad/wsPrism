@@ -10,7 +10,7 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 
 > **웹·게임을 위한 실시간 상태 동기화 — 키별 최신값·틱 단위 전송·테넌트 정책을 가장 좋은 비신뢰 전송(WebTransport datagram / MoQ) 위에서, 안 되면 WebSocket 폴백. 대기업 수준의 안정성.**
 
-- **간판**: 전송이 아니라 **상태 동기화 의미론**. "WebTransport로 pub/sub"은 MoQ와 표준 인프라가 채우는 자리라 그 자체로는 차별점이 아니다. 손실이 있는 네트워크에서 상태 신선도(AoI)의 꼬리와 끊김을 TCP 기반 게이트웨이보다 크게 줄이되, 비용(CPU·메모리)은 WSS 대비 2배 이내. 설계: [Hot Lane over WebTransport](design/hot-lane-over-webtransport.md).
+- **간판**: 전송이 아니라 **상태 동기화 의미론**. "WebTransport로 pub/sub"은 MoQ와 표준 인프라가 채우는 자리라 그 자체로는 차별점이 아니다. 손실이 있는 네트워크에서 상태 신선도(AoI)의 꼬리와 끊김을 TCP 기반 게이트웨이보다 크게 줄인다(검증 V: 균등 손실 초과 AoI 6~16× 감소, 링크 복구 후 추가 지연 107~156 → 0~19 ms). 비용은 연결당 메모리 약 2.8×라서 **하이브리드**로 쓴다: 소규모 인터랙티브 룸은 비신뢰 전송, 대규모 방송 룸은 WebSocket(룸 정책). 설계: [Hot Lane over WebTransport](design/hot-lane-over-webtransport.md).
 - **대표 시나리오**: 모바일·Wi-Fi 환경의 20~60 Hz 웹 멀티플레이 상태 동기화. 특정 산업 특화는 목표가 아니다.
 - **포지션**: 어느 언어로 짠 게임·실시간 서버든, 그 앞에서 브라우저 연결·정책·팬아웃·datagram을 떠맡는 **사이드카**. 권위 게임 서버는 **서버 피어**로 붙는다(설계 §4.6). 엔진에 묶인 lightyear·aeronet과 달리 언어 무관.
 - **주장 방식**: 개별 요소는 모두 어딘가에 있다(Centrifugo WT는 실험 단계·스트림 하나, Sockudo는 datagram 없음, lightyear는 Bevy 전용, MoQ는 범용 릴레이). **조합 + 언어 무관 + 측정된 수치**로만 주장한다.
@@ -27,9 +27,9 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 | 백엔드 연동 | 없음. 서비스는 Rust로 함께 컴파일, 서버 발행 API 없음 |
 | 확장 지점 | 서비스는 `AppState::new`에서 직접 등록, 인증은 티켓 `dev`만 통과하는 스텁 |
 | 확장성 | 단일 노드 |
-| 성능 | 기준선 측정 완료([BENCHMARKS](BENCHMARKS.md)). TCP_NODELAY 수정으로 p99.9 26.7→3.6 ms. 메시지당 최대 비용은 메트릭(275 ns)과 팬아웃(수신자당 ~200 ns) |
+| 성능 | 기준선 측정 완료([BENCHMARKS](BENCHMARKS.md)). TCP_NODELAY 수정으로 p99.9 26.7→3.6 ms. 메시지당 최대 비용은 메트릭(275 ns)과 팬아웃(수신자당 ~200 ns). **경쟁 비교(WebSocket)**: 연결당 메모리 최소(Centrifugo 대비 1.4~3.6×, Sockudo 대비 9~14× 적음), CPU 우위 1.07~1.25×, 8코어 포화점은 Centrifugo가 더 높음(216만 전달/s) |
 
-**M0, M1 완료 (브랜치 `m0/engine-prep`). 검증 V 진행 중(브랜치 `v/validation`): V1~V3 완료, 다음 V4·V5.**
+**M0, M1 완료 (브랜치 `m0/engine-prep`). 검증 V(브랜치 `v/validation`): G1·G3·G4 통과, G5 실패(메모리) → ADR 0004 분기 "하이브리드". 남은 것 G2(브라우저). 다음: T0.**
 
 ## 목표를 측정 가능하게
 

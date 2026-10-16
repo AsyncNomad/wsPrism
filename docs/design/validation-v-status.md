@@ -23,14 +23,14 @@ cargo build --release -p wsprism-loadgen
 
 | 관문 | 상태 | 근거 (결과 파일) |
 |---|---|---|
-| G1 체감 성능 | ⏳ **확인 측정 중** — 개정 3 기준은 단절 칸에서 실패(시드 1~3). 사용자 결정(2026-10-16): 단절 칸 기준을 "복구 지연"으로 **사전 등록**(ADR 0004 개정 4)하고 새 시드 4~6으로 확인 측정 | `v2-judgment.jsonl`(탐색), `v2-confirm.jsonl`(판정) |
+| G1 체감 성능 | ✅ **통과 (개정 4 사전 등록 기준, 시드 4~6 확인 측정)** — 즉시·60 Hz 모두. 개정 3 기준으로는 단절 칸 실패(공개) | `v2-judgment.jsonl`(탐색), `v2-confirm.jsonl`(판정) |
 | G2 호환성 | ⏳ 미측정 — 사용자 필요 | — |
 | G3 안정성 | ✅ 통과 | `v-soak*.{jsonl,log}` |
 | G4 폴백 | ✅ 통과 | `v-fallback.jsonl` |
 | G5 비용 | ❌ 실패 — 오프로드 켬 조건: 한계 메모리 2.8~2.9×, CPU 1.65~1.89×(기준 안) | `v2-cost-{10,30}`, `v-mem-*`, `v-cpu-scale` |
 | V6 MoQ | ✅ 완료 — MoQ 위 구축 기각 (ADR 0004 개정 3) | `moq-*.jsonl`, `moq-reconnect-*.log` |
 
-분기: 확인 측정이 통과하면 "G5만 실패 → 하이브리드", 실패하면 "G1·G5 모두 실패". 기준은 결과를 본 뒤 바꾸지 않는다.
+**분기 확정: "G5만 실패 → 하이브리드"** (2026-10-16). ADR 0004 확정은 G2 후. 다음 작업: T0 (아래 「T0 진행」).
 
 ## 실험 재개 방법
 
@@ -70,6 +70,7 @@ bench/run-moq.sh moq-judgment 3
    ```bash
    bench/run-compete.sh compete-v1 3 "rooms:160 rooms:240" "wsprism-ext centrifugo"
    ```
+   ✅ 완료: 216만 전달/s에서 wsPrism 포화(전달률 0.65~0.86), Centrifugo 유지 → T0 쓰기 묶음 후 재측정.
    본 측정 명령:
    ```bash
    bench/competitors/fetch.sh   # Centrifugo 6.9.7, Sockudo 5.1.0 (체크섬 검증)
@@ -95,13 +96,14 @@ bench/run-moq.sh moq-judgment 3
   ```
 - [x] R-7 비용 재측정(오프로드 켬, `v2-cost-{10,30}.jsonl`): 한계 메모리 WSS 30.7 / WT 85.5~90.1 KB/conn(**2.8~2.9×**, 실패 유지), CPU WT÷WSS 1.65~1.89×(기준 안, 오프로드 끈 측정 1.76×보다 약간 커짐)
 - [x] R-8a 단절 칸 기준 사전 등록(ADR 0004 개정 4) + 판정 코드 `bench/analyze-g1-confirm.py`(탐색 데이터로 손계산 재현 확인) — 측정 전 커밋
-- [ ] R-8b 확인 측정(시드 4~6, 36회, 약 25분, 재개 가능):
+- [x] R-8b 확인 측정(시드 4~6, 36회, 약 25분, 재개 가능):
   ```bash
   FIRST_RUN=4 bench/run-v.sh v2-confirm 3 "none:20 outage:1000:50:20 outage:5000:250:20" "0 60" "wss wt" \
     "--rooms 10 --room-size 10 --rate 60 --sample-hz 60 --warmup 3 --duration 20"
   python3 bench/analyze-g1-confirm.py bench/results/v2-confirm.jsonl
   ```
-- [ ] R-8c G1·G5 최종 판정 → BENCHMARKS·ADR 0004(분기 확정)·ROADMAP·이 문서
+- [x] R-8b 결과: G1 통과(즉시·60 Hz), 가장 얇은 여유 60 Hz·50 ms 단절 끊김 4.71% (기준 5.34%)
+- [x] R-8c G1·G5 최종 판정 → BENCHMARKS·ADR 0004(분기 확정)·ROADMAP·이 문서
 
 ## 열린 항목
 
@@ -110,3 +112,14 @@ bench/run-moq.sh moq-judgment 3
 - **WT 연결 꼬리**: UDP가 열려 있어도 100명 동시 접속 시 연결 p99 약 1.13초(초기 패킷 손실 + 약 1초 PTO 추정, 가설: 서버 UDP 수신 버퍼). 폴백 예산 1.5초에 가까움 → T 과제.
 - **소크 끊김 비율 6.5%**: 판정 칸보다 큼. 부하 생성기 포화 추정, 미검증.
 - **G2 진행 방식**: Windows 브라우저는 릴레이를 WSL localhost에 띄워 확인(장치 안 트래픽). Mac Safari는 **Mac에서 릴레이를 직접 실행**해야 트래픽이 장치 밖으로 나가지 않는다 — 사용자 확인 대기.
+
+## T0 진행 (경계, WebSocket만 — 설계 §9)
+
+브랜치: `v/validation`에서 이어서 한다(로컬 커밋만). 각 단계는 동작 변화 없는 리팩터링이거나, 동작 변화가 있으면 테스트를 먼저 쓴다. 게이트: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`.
+
+- [ ] T0-1 `SessionIo` 추출: 세션 루프·종료 처리가 axum `WebSocket`(Split 타입) 대신 트레이트를 쓴다. WebSocket 구현 `WsIo`는 `wire`·`close`·`codec`을 감싼다. 동작 변화 없음
+- [ ] T0-2 전달 등급: `OutFrame::Hot { key, bytes }`, `RealtimeCore::deliver`의 Lossy 바이너리 → Hot 경로
+- [ ] T0-3 Hot 슬롯 `(sender, svc, key)` 최신값 + 짧은 FIFO + 상한, 틱 묶음 전송(WebSocket) — 큐 적체·드롭 지표, 포화점 시나리오(`rooms:160·240`) 재측정
+- [ ] T0-4 Hot 헤더 확장(KEY/SENDER), 연결별 `member_id`, `HotRelayService`, 크기 상한(PROTOCOL.md)
+- [ ] T0-5 코어 전달 API를 `Audience`(룸·멤버 지정·세션·사용자)로 통합 — 서버 피어 멤버 지정 송신 경계(설계 §4.6)
+- [ ] T0-6 완료 조건 확인: `SessionIo`·전달 등급이 브라우저 세션을 전제하지 않음
