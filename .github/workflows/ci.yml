@@ -36,6 +36,19 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+  # JS SDK against a real gateway process (sdk/js/run-tests.sh).
+  sdk-js:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: SDK tests
+        run: sdk/js/run-tests.sh
+
   # Dependency policy: RustSec advisories (what cargo-audit checks), licenses,
   # sources and bans, as configured in deny.toml.
   deny:

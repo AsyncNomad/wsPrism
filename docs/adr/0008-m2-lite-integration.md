@@ -1,6 +1,6 @@
 # ADR 0008: M2-lite — 인증·권한·서버 API·백엔드 프록시·SDK
 
-- 상태: **채택 (2026-10-16)**, M2-1~M2-6 완료 — 사용자 결정: "상용 프로그램 수준으로 기능 확장을 먼저, 성능은 나중에". 단계별 구현(§9), 새 의존성은 해당 단계 착수 전에 확인(§8)
+- 상태: **채택 (2026-10-16)**, M2-1~M2-7 완료 — 사용자 결정: "상용 프로그램 수준으로 기능 확장을 먼저, 성능은 나중에". 단계별 구현(§9), 새 의존성은 해당 단계 착수 전에 확인(§8)
 - 관련: [ROADMAP](../ROADMAP.md) M2, [ADR 0003](0003-ticket-sources-and-subprotocol.md)(티켓 전달 경로), [ADR 0006](0006-protocol-v2.md)(프로토콜 v2), [ADR 0005](0005-session-transport-seam.md)
 
 ## 배경
@@ -87,7 +87,7 @@ pub struct Identity {
   - 라우팅: 디스패처는 전역, RPC는 테넌트별이라 세션이 시작 시 자기 테넌트의 `RpcProxy`를 받아 `dispatch_text`에서 먼저 확인한다(내장 이름은 설정 검증에서 금지하므로 순서가 결과를 바꾸지 않는다). 메트릭 라벨은 `"rpc"`(정적, S5). 기동 시 allowlist↔서비스 검사는 RPC가 덮는 svc를 등록된 것으로 본다.
   - 응답 매핑: `200 {data}` → `sys.reply`, `200 {error:{code,msg}}` → `sys.error`(코드 `[A-Z0-9_]{1,32}` 검증, 메시지 512바이트 절단), 그 밖 → `UNAVAILABLE`(새 `ClientCode`). **백엔드 본문은 절대 그대로 전달하지 않는다**(스택 트레이스 유출 방지, 테스트로 확인).
   - connect 프록시: `401`/`403`만 거절, 나머지 실패는 503+`Retry-After`(장애를 "잘못된 자격 증명"으로 보고하면 클라이언트가 재로그인 루프에 빠진다). 동시 호출 상한(세마포어, 기본 256) — 접속 폭주가 백엔드에 무한정 쌓이지 않게. 응답의 `expires_at`은 JWT와 같은 세션 만료 경로(4001).
-  - HTTP 클라이언트: 프로세스당 하나(풀), **리다이렉트 안 따름**(토큰이 설정에 없는 호스트로 가지 않게), `HTTP(S)_PROXY` 환경 변수 무시(`no_proxy`, 트래픽 경로는 설정이 정한다), 응답 1 MiB 상한, 루트 인증서는 webpki-roots(빌드 시 번들 — 시스템 저장소 대신 재현성 우선; 사설 CA가 필요해지면 `ca_file` 옵션 추가). `reqwest` 기본 기능은 끄고 rustls·http2만 — 새 크레이트 12개, rustls는 기존 0.23.46 재사용.
+  - HTTP 클라이언트: 프로세스당 하나(풀), **리다이렉트 안 따름**(토큰이 설정에 없는 호스트로 가지 않게), `HTTP(S)_PROXY` 환경 변수 무시(`no_proxy`, 트래픽 경로는 설정이 정한다), 응답 1 MiB 상한, 루트 인증서는 **OS 저장소**(`rustls-native-certs`, 이미 lock에 있음). 처음엔 webpki-roots(빌드 시 번들)를 골랐으나 기각 — 라이선스 CDLA-Permissive-2.0이 `deny.toml` 허용 목록 밖이라 CI가 깨지고, 사내망 백엔드의 사설 CA를 신뢰할 수 없다. 대가: 최소 컨테이너 이미지는 `ca-certificates` 필요(문서화). `reqwest` 기본 기능은 끄고 rustls·http2만, rustls는 기존 0.23.46 재사용.
   - 백엔드 인증: `secret_env`의 값을 `Authorization: Bearer`로 보낸다(값은 기동 시 읽고 헤더는 sensitive 표시). mTLS·HMAC 서명은 수요가 확인되면.
   - 아직 없는 것: JWKS URL(이제 HTTP 클라이언트가 있으므로 다음 후보), RPC 재시도(멱등성을 게이트웨이가 알 수 없어 의도적으로 없음), 실패 로그 샘플링(지금은 호출마다 `warn` — 백엔드 장애 때 로그가 많아질 수 있음; 메트릭 정비(P0-e) 때 함께).
 - 내장 서비스(`chat`, `room`, echo)는 그대로 두고, 같은 `svc`가 RPC 대상이면 RPC가 우선하지 않는다 — 내장 서비스 이름은 RPC `allow`에 쓸 수 없게 설정 검증에서 막는다.
@@ -97,6 +97,15 @@ pub struct Identity {
 - 의존성 없는 ESM(`sdk/js/wsprism.js`) + 손으로 쓴 타입 선언(`wsprism.d.ts`). 브라우저와 Node 22+(전역 `WebSocket`)에서 같은 코드.
 - 기능: v2 협상, 티켓을 서브프로토콜로 전달, `request(svc, type, data)`(seq ↔ `reply_to` Promise), `join/leave`, `onMessage`, Hot `sendState(chan, key, bytes)` / `onState` + `(sender, key)`별 오래된 `seq` 폐기, **종료 코드 범위에 따른 재접속**(40xx 안 함, 41xx 지수 백오프 + 지터, 42xx 즉시), 재접속 후 룸 재입장.
 - 테스트: Node 내장 `node:test`로 실제 게이트웨이(테스트 프로세스가 띄움)에 붙어 검증.
+- 구현 결정(M2-7):
+  - **v2 전용.** v1을 함께 지원하면 Hot 경로(활성 룸 암묵 라우팅)와 종료 코드 해석이 두 벌이 된다. 새 클라이언트는 v2로 시작하면 된다.
+  - `getTicket()`을 **접속 시도마다** 호출한다(1회용 티켓은 재사용 불가, JWT는 새로 발급). 그래서 `4001 auth_expired`는 40xx지만 "즉시 재접속"으로 다룬다 — "그대로 재접속하지 말 것"의 "그대로"가 새 자격 증명으로 해소되기 때문. 이것이 토큰 갱신의 현재 형태다(대역 내 갱신은 없음; 필요해지면 `sys.refresh` 설계).
+  - `send`(대기 없음)와 `request`(답을 기다림)를 나눈다. `chat.send`처럼 성공 시 답이 없는 연산을 `request`로 보내면 타임아웃까지 매달리기 때문. 모든 송신에 `seq`를 붙여 `send`의 오류도 `error` 이벤트로 식별 가능.
+  - Hot 수신의 오래된 `seq` 폐기는 `(chan, sender, key)`별, u32 순환 비교(RFC 1982식). 재접속 시 기록을 지운다(룸 id·member id가 바뀐다).
+  - 재접속 백오프: `min(30s, 1s·2^(n-1))`의 [½, 1) 구간 지터. "즉시"도 연속 실패 2회째부터는 백오프(인증 서버 장애 시 폭주 방지).
+  - 타입은 손으로 쓴 `.d.ts`(빌드 단계·의존성 없음). 오프라인이라 `tsc` 검증은 못 했다 — 패키지 배포(npm) 단계에서 `tsc --noEmit` 검사를 붙일 것.
+  - 개발 환경 메모: 이 WSL의 기본 `node`는 v18(전역 WebSocket 없음). `run-tests.sh`는 22 미만이면 nvm의 v22+를 찾는다.
+  - 발견한 게이트웨이 쪽 어긋남: allowlist에 없는 `svc:type`은 `BAD_REQUEST`("svc/type not allowed")로 답하는데, PROTOCOL.md 정의상 `NOT_ALLOWED`(정책상 금지)가 맞다. 클라이언트 호환에 영향이 있으므로 v2에서만 바꿀지 따로 판단(미결).
 
 ### 8. 의존성
 
@@ -117,7 +126,7 @@ pub struct Identity {
 | M2-4 ✅ | 1회용 티켓 발급 + `ticket` 인증기 | 없음 |
 | M2-5 ✅ | JWT 인증기 (정적 키; JWKS는 M2-6 HTTP 클라이언트 이후) | `jsonwebtoken` 9.3.1 (사용자 승인 2026-10-16) |
 | M2-6 ✅ | connect·RPC 프록시 | `reqwest` 0.12 (rustls, 사용자 승인 2026-10-16) |
-| M2-7 | JS SDK + 통합 테스트 | 없음 |
+| M2-7 ✅ | JS SDK + 통합 테스트 (`sdk/js`, CI `sdk-js`) | 없음 |
 | M2-8 | 예제 앱(Node 백엔드 + SDK 채팅·상태 동기화) — **M2 완료 기준** | 없음 |
 | M2-9 | engine/server 크레이트 분리, 공개 API 최소화 | 없음 |
 
