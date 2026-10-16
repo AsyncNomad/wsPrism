@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use wsprism_core::error::{Result, WsPrismError};
 
-use crate::auth::AuthChain;
+use crate::auth::{AuthChain, TicketStore};
 use crate::dispatch::Dispatcher;
 use crate::obs::metrics::GatewayMetrics;
 use crate::realtime::RealtimeCore;
@@ -43,6 +43,8 @@ struct AppStateInner {
     tenant_auth: HashMap<String, Arc<AuthChain>>,
     /// SHA-256 of each tenant API key -> tenant id (server API, ADR 0008 §3).
     api_keys: HashMap<[u8; 32], String>,
+    /// Outstanding one-time tickets (ADR 0008 §4).
+    tickets: Arc<TicketStore>,
     tenant_policy: HashMap<String, Arc<policy::TenantPolicyRuntime>>,
     /// tenant id -> index into `cfg.tenants` (O(1) lookup per upgrade).
     tenant_index: HashMap<String, usize>,
@@ -102,9 +104,10 @@ impl AppState {
         }
 
         // Authentication chains.
+        let tickets = Arc::new(TicketStore::default());
         let mut tenant_auth = HashMap::new();
         for t in &cfg.tenants {
-            let chain = AuthChain::from_config(&t.auth);
+            let chain = AuthChain::from_config(&t.auth, &tickets);
             if chain.is_dev_only() {
                 tracing::warn!(
                     tenant = %t.id,
@@ -172,6 +175,7 @@ impl AppState {
             inner: Arc::new(AppStateInner {
                 tenant_auth,
                 api_keys,
+                tickets,
                 tenant_index: cfg
                     .tenants
                     .iter()
@@ -206,6 +210,11 @@ impl AppState {
     /// The tenant whose API key has this SHA-256, if any.
     pub fn api_key_tenant(&self, digest: &[u8; 32]) -> Option<String> {
         self.inner.api_keys.get(digest).cloned()
+    }
+
+    /// Outstanding one-time tickets.
+    pub fn tickets(&self) -> Arc<TicketStore> {
+        Arc::clone(&self.inner.tickets)
     }
 
     /// The tenant's authentication chain.

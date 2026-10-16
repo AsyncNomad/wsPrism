@@ -315,6 +315,8 @@ pub struct ApiKeyConfig {
 pub enum AuthConfig {
     /// `dev` -> `user:dev`, `dev:<id>` -> `user:<id>`. Development only.
     Dev,
+    /// One-time tickets issued through the server API (`wpt_...`).
+    Ticket,
 }
 
 impl TenantConfig {

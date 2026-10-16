@@ -64,6 +64,9 @@ async fn sweeper(state: AppState) {
     loop {
         tick.tick().await;
         state.realtime().sweep(idle_ms, ping_ms);
+        state
+            .tickets()
+            .sweep(tokio::time::Instant::now().into_std());
     }
 }
 

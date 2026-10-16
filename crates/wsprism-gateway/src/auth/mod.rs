@@ -9,6 +9,7 @@
 
 mod dev;
 mod permissions;
+mod ticket;
 
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -20,6 +21,9 @@ use crate::config::schema::AuthConfig;
 
 pub use dev::DevAuthenticator;
 pub use permissions::{Permissions, RoomPattern};
+pub use ticket::{
+    IssueError, TicketAuthenticator, TicketStore, DEFAULT_TICKET_TTL, MAX_TICKET_TTL, TICKET_PREFIX,
+};
 
 /// What an authenticator gets to see of a connection attempt.
 #[derive(Debug, Clone, Copy)]
@@ -79,7 +83,7 @@ impl AuthChain {
 
     /// Build a tenant's chain from config. An empty `auth` list means the
     /// development stub (see [`AuthChain::is_dev_only`]).
-    pub fn from_config(auth: &[AuthConfig]) -> Self {
+    pub fn from_config(auth: &[AuthConfig], tickets: &Arc<TicketStore>) -> Self {
         if auth.is_empty() {
             return Self::new(vec![Arc::new(DevAuthenticator)]);
         }
@@ -88,10 +92,16 @@ impl AuthChain {
             .map(|a| -> Arc<dyn Authenticator> {
                 match a {
                     AuthConfig::Dev => Arc::new(DevAuthenticator),
+                    AuthConfig::Ticket => Arc::new(TicketAuthenticator::new(Arc::clone(tickets))),
                 }
             })
             .collect();
         Self::new(links)
+    }
+
+    /// True if some link has this kind (e.g. "ticket").
+    pub fn has_kind(&self, kind: &str) -> bool {
+        self.links.iter().any(|l| l.kind() == kind)
     }
 
     /// True if only the development stub can admit anyone — worth a loud
@@ -168,6 +178,6 @@ mod tests {
 
     #[test]
     fn empty_config_is_the_dev_stub_and_says_so() {
-        assert!(AuthChain::from_config(&[]).is_dev_only());
+        assert!(AuthChain::from_config(&[], &Arc::default()).is_dev_only());
     }
 }

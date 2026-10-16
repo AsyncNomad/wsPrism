@@ -19,6 +19,9 @@ use serde_json::{json, Value};
 use wsprism_core::protocol::hot::{encode_hot_frame_v2, HotOutV2};
 
 use crate::app_state::AppState;
+use crate::auth::{
+    Identity, IssueError, Permissions, RoomPattern, DEFAULT_TICKET_TTL, MAX_TICKET_TTL,
+};
 use crate::realtime::core::{CloseRequest, RealtimeCore};
 use crate::realtime::{close_code, CloseSpec, HotOut, Outgoing, Payload, QoS};
 use crate::sys;
@@ -30,6 +33,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/publish", post(publish))
         .route("/api/v1/disconnect", post(disconnect))
+        .route("/api/v1/tickets", post(tickets))
         .route("/api/v1/rooms/:room/presence", get(presence))
         .with_state(state)
 }
@@ -224,4 +228,74 @@ async fn presence(
         .filter_map(|k| k.strip_prefix(&prefix).map(str::to_string))
         .collect();
     Json(json!({"room": room, "users": users})).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TicketReq {
+    user: String,
+    /// Seconds, 1..=300 (default 30).
+    #[serde(default)]
+    ttl_s: Option<u64>,
+    #[serde(default)]
+    permissions: Option<PermissionsReq>,
+}
+
+/// Room patterns (exact, or trailing `*`); an omitted list = unrestricted.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PermissionsReq {
+    #[serde(default)]
+    subscribe: Option<Vec<String>>,
+    #[serde(default)]
+    publish: Option<Vec<String>>,
+}
+
+async fn tickets(
+    State(app): State<AppState>,
+    ApiTenant(tenant): ApiTenant,
+    Json(req): Json<TicketReq>,
+) -> Response {
+    if !crate::ident::is_safe_id(&req.user) {
+        return bad_request("user must be 1-64 characters of [A-Za-z0-9_-]");
+    }
+    let ttl = match req.ttl_s {
+        None => DEFAULT_TICKET_TTL,
+        Some(s) if (1..=MAX_TICKET_TTL.as_secs()).contains(&s) => std::time::Duration::from_secs(s),
+        Some(_) => return bad_request("ttl_s must be 1-300"),
+    };
+    if !app.auth(&tenant).is_some_and(|c| c.has_kind("ticket")) {
+        return bad_request(
+            "this tenant does not accept tickets (add {kind: ticket} to tenants[].auth)",
+        );
+    }
+    let parse =
+        |v: Option<Vec<String>>| v.map(|ps| ps.iter().map(|p| RoomPattern::parse(p)).collect());
+    let permissions = req
+        .permissions
+        .map(|p| Permissions {
+            subscribe: parse(p.subscribe),
+            publish: parse(p.publish),
+        })
+        .unwrap_or_default();
+    let identity = Identity {
+        user_id: req.user,
+        permissions,
+        expires_at: None,
+    };
+    match app.tickets().issue(&tenant, identity, ttl) {
+        Ok(ticket) => {
+            Json(json!({"ticket": ticket, "expires_in_s": ttl.as_secs()})).into_response()
+        }
+        Err(IssueError::Full) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({"error": "too many outstanding tickets"})),
+        )
+            .into_response(),
+        Err(IssueError::Random) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": "random source unavailable"})),
+        )
+            .into_response(),
+    }
 }

@@ -52,12 +52,25 @@ or passes a token it doesn't recognise to the next one.
 tenants:
   - id: acme
     auth:
+      - kind: ticket     # one-time `wpt_...` tickets from POST /api/v1/tickets
       - kind: dev        # development only: `dev` / `dev:<id>`
 ```
 
 Omitting `auth` means `[dev]` and logs a startup warning: anyone presenting
-`dev` is admitted. Production authenticators (one-time tickets, JWT, backend
-connect proxy) arrive in the next M2 steps.
+`dev` is admitted. JWT and the backend connect proxy arrive in the next M2
+steps.
+
+**One-time tickets** (`kind: ticket`): the backend calls
+`POST /api/v1/tickets` (server API, below) and hands the ticket to the
+client, which presents it like any other ticket (header, subprotocol, or
+query if `ticket_sources` allows it). A ticket is bound to the tenant whose
+API key issued it, is valid for `ttl_s` (default 30, max 300) and is
+**consumed on first use** — including a failed use (wrong tenant), so a
+leaked ticket cannot be retried. Because tickets are single-use and
+short-lived, enabling the `query` source for browsers is a reasonable
+trade-off (the long-lived credential never enters a URL). Tickets live in
+process memory: a restart invalidates outstanding ones (single node; a
+shared store comes with M4).
 
 ---
 
@@ -86,3 +99,4 @@ Requests send `Authorization: Bearer <key>`; the key selects the tenant.
 | `POST /api/v1/publish` | `{"room": "r", "data": {...}}` (Ext, reliable by default) or `{"room": "r", "hot": {"svc": 1, "op": 2, "key": 0, "data_b64": "..."}}` (Hot, lossy by default); optional `"qos": "reliable"\|"lossy"` | `{"recipients": n}` |
 | `POST /api/v1/disconnect` | `{"user": "u", "sid": "optional", "reason": "optional"}` | `{"closed": n}` |
 | `GET /api/v1/rooms/{room}/presence` | — | `{"room": "r", "users": [...]}` |
+| `POST /api/v1/tickets` | `{"user": "u", "ttl_s": 30, "permissions": {"subscribe": ["match:*"], "publish": ["match:42"]}}` (`ttl_s`, `permissions` and each list optional; an omitted list = unrestricted, `[]` = nothing) | `{"ticket": "wpt_...", "expires_in_s": 30}`; 400 if the tenant's `auth` has no `ticket` |
