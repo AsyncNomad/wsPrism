@@ -1,8 +1,8 @@
 //! Ext Lane envelope (JSON).
 //!
 //! The core stores `data` as `RawValue` to enable lazy parsing by downstream
-//! services and plugins. Unknown fields are rejected to keep the contract
-//! strict and predictable.
+//! services and plugins. Protocol v1 rejects unknown fields; v2 ignores them
+//! so clients and servers can be upgraded independently (ADR 0006 §5).
 
 use serde::Deserialize;
 use serde_json::value::RawValue;
@@ -51,4 +51,36 @@ pub fn decode_envelope(s: &str) -> Result<Envelope> {
         return Err(WsPrismError::UnsupportedVersion);
     }
     Ok(env)
+}
+
+/// Protocol v2 wire form: unknown fields are ignored, and `v` / `flags` are
+/// optional and ignored (the version is negotiated per connection).
+#[derive(Deserialize)]
+struct EnvelopeV2 {
+    svc: String,
+    #[serde(rename = "type")]
+    msg_type: String,
+    #[serde(default)]
+    seq: Option<u64>,
+    #[serde(default)]
+    room: Option<String>,
+    #[serde(default)]
+    data: Option<Box<RawValue>>,
+}
+
+/// Parse a protocol v2 Ext envelope into the canonical [`Envelope`]
+/// (`v` = [`EXT_PROTOCOL_VERSION`], `flags` = 0). Malformed JSON or a
+/// missing `svc` / `type` is a `BadRequest`.
+pub fn decode_envelope_v2(s: &str) -> Result<Envelope> {
+    let e: EnvelopeV2 = serde_json::from_str(s)
+        .map_err(|e| WsPrismError::BadRequest(format!("invalid envelope json: {e}")))?;
+    Ok(Envelope {
+        v: EXT_PROTOCOL_VERSION,
+        svc: e.svc,
+        msg_type: e.msg_type,
+        flags: 0,
+        seq: e.seq,
+        room: e.room,
+        data: e.data,
+    })
 }

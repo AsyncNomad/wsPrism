@@ -13,17 +13,22 @@ use futures_util::{SinkExt, StreamExt};
 use super::io::{RecvError, SessionRx, SessionTx};
 use crate::realtime::OutFrame;
 use crate::transport::codec::{decode, Inbound};
+use crate::transport::subprotocol::ProtocolVersion;
 
 /// How long to keep the socket open after sending close 1009 (see S2).
 const CLOSE_LINGER: Duration = Duration::from_millis(500);
 
 pub(crate) struct WsTx(SplitSink<WebSocket, Message>);
-pub(crate) struct WsRx(SplitStream<WebSocket>);
+pub(crate) struct WsRx {
+    stream: SplitStream<WebSocket>,
+    /// Decides which envelope rules apply to text messages.
+    protocol: ProtocolVersion,
+}
 
 /// Split an upgraded socket into the session's two halves.
-pub(crate) fn split(socket: WebSocket) -> (WsTx, WsRx) {
-    let (tx, rx) = socket.split();
-    (WsTx(tx), WsRx(rx))
+pub(crate) fn split(socket: WebSocket, protocol: ProtocolVersion) -> (WsTx, WsRx) {
+    let (tx, stream) = socket.split();
+    (WsTx(tx), WsRx { stream, protocol })
 }
 
 /// Convert a queued frame to the wire message.
@@ -89,8 +94,8 @@ impl SessionTx for WsTx {
 
 impl SessionRx for WsRx {
     async fn recv(&mut self) -> Option<Result<Inbound, RecvError>> {
-        Some(match self.0.next().await? {
-            Ok(msg) => decode(msg).map_err(RecvError::Decode),
+        Some(match self.stream.next().await? {
+            Ok(msg) => decode(msg, self.protocol).map_err(RecvError::Decode),
             Err(e) => Err(if is_message_too_long(e) {
                 RecvError::TooBig
             } else {
@@ -100,7 +105,7 @@ impl SessionRx for WsRx {
     }
 
     async fn await_peer_close(&mut self) {
-        while let Some(Ok(m)) = self.0.next().await {
+        while let Some(Ok(m)) = self.stream.next().await {
             if matches!(m, Message::Close(_)) {
                 break;
             }

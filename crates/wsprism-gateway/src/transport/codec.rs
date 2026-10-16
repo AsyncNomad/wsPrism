@@ -4,6 +4,7 @@
 //! - Binary frames => HotFrame (panic-free bytes::Buf parsing)
 //! - Ping/Pong/Close are surfaced for lifecycle management
 
+use crate::transport::subprotocol::ProtocolVersion;
 use axum::extract::ws::Message;
 use wsprism_core::{
     error::Result,
@@ -30,11 +31,15 @@ pub enum Inbound {
     Close,
 }
 
-pub fn decode(msg: Message) -> Result<Inbound> {
+/// Decode one WebSocket message for a session speaking `protocol`.
+pub fn decode(msg: Message, protocol: ProtocolVersion) -> Result<Inbound> {
     match msg {
         Message::Text(s) => {
             let bytes_len = s.len();
-            let env = text::decode_envelope(&s)?;
+            let env = match protocol {
+                ProtocolVersion::V1 => text::decode_envelope(&s)?,
+                ProtocolVersion::V2 => text::decode_envelope_v2(&s)?,
+            };
             Ok(Inbound::Text { env, bytes_len })
         }
         Message::Binary(b) => {

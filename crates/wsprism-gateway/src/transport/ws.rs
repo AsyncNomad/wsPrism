@@ -86,15 +86,18 @@ pub async fn ws_upgrade(
             // C6: instrument the whole session future instead of entering the
             // span across awaits (clippy.toml bans holding span guards there).
             let span = tracing::info_span!("ws", %trace_id, t=%q.tenant, u=%user_id, s=%sid, %ip);
+            let protocol = ProtocolVersion::from_selected(admitted.subprotocol);
             let id = SessionIdentity {
-                protocol: ProtocolVersion::from_selected(admitted.subprotocol),
+                protocol,
                 tenant: q.tenant,
                 user_id,
                 sid,
                 trace_id,
             };
             async move {
-                if let Err(e) = session::run(app, id, session::split_websocket(socket)).await {
+                if let Err(e) =
+                    session::run(app, id, session::split_websocket(socket, protocol)).await
+                {
                     tracing::error!("session error: {}", e);
                 }
             }

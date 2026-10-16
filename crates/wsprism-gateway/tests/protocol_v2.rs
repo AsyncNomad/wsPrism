@@ -92,3 +92,26 @@ async fn v1_keeps_standard_codes() {
         .expect("send");
     assert_eq!(close_of(&mut ws).await.0, 1002);
 }
+
+/// v2 control messages ignore unknown fields and need no `v` (ADR 0006 §5,
+/// R6); v1 keeps rejecting them.
+#[tokio::test]
+async fn v2_envelope_ignores_unknown_fields_and_needs_no_version() {
+    let gw = spawn(YAML).await;
+    let (mut ws, _) = connect_as(&gw, "a", V2).await;
+    let join = serde_json::json!({"svc":"room","type":"join","room":"r","future_field":{"x":1}});
+    ws.send(Message::Text(join.to_string()))
+        .await
+        .expect("send");
+    match next_event(&mut ws).await {
+        Event::Json(v) => assert_eq!(v["type"], "joined", "{v}"),
+        other => panic!("expected sys.joined, got {other:?}"),
+    }
+
+    let (mut v1, _) = connect_as(&gw, "b", ("sec-websocket-protocol", "wsprism.v1")).await;
+    let join = serde_json::json!({"v":1,"svc":"room","type":"join","room":"r","future_field":1});
+    v1.send(Message::Text(join.to_string()))
+        .await
+        .expect("send");
+    assert_eq!(close_of(&mut v1).await.0, 1002, "v1 stays strict");
+}
