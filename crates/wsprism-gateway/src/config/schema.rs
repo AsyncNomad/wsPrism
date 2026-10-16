@@ -290,6 +290,9 @@ pub struct TenantConfig {
     /// Keys a backend presents to the server API; the key selects this tenant.
     #[serde(default)]
     pub api_keys: Vec<ApiKeyConfig>,
+    /// Forward matching Ext requests to a backend (ADR 0008 §6).
+    #[serde(default)]
+    pub rpc: Option<RpcConfig>,
 }
 
 /// The server API listener.
@@ -319,6 +322,107 @@ pub enum AuthConfig {
     Ticket,
     /// Signed JWTs (`sub` = user), verified with one pinned algorithm.
     Jwt(JwtConfig),
+    /// Ask a backend over HTTP (ADR 0008 §6). Accepts every token, so it
+    /// belongs last in the chain.
+    Proxy(ProxyAuthConfig),
+}
+
+/// `kind: proxy`: `POST url {tenant, token, client_ip}` ->
+/// `200 {user, permissions?, expires_at?}` / `401`·`403`.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyAuthConfig {
+    pub url: String,
+    #[serde(default = "default_connect_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Environment variable whose value is sent as `Authorization: Bearer`.
+    #[serde(default)]
+    pub secret_env: Option<String>,
+    /// Concurrent calls at most; beyond it connections get 503.
+    #[serde(default = "default_connect_in_flight")]
+    pub max_in_flight: u32,
+}
+
+fn default_connect_timeout_ms() -> u64 {
+    2_000
+}
+
+fn default_connect_in_flight() -> u32 {
+    256
+}
+
+/// `tenants[].rpc`: Ext messages matching `allow` go to
+/// `POST url {tenant, user, sid, svc, type, room, data}`; the answer
+/// `{data}` / `{error: {code, msg}}` comes back as `sys.reply` / `sys.error`.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RpcConfig {
+    pub url: String,
+    /// `svc:type` / `svc:*` rules (built-in services excluded).
+    pub allow: Vec<String>,
+    #[serde(default = "default_rpc_timeout_ms")]
+    pub timeout_ms: u64,
+    /// Calls in flight per session; more are answered `RATE_LIMITED`.
+    #[serde(default = "default_rpc_in_flight")]
+    pub max_in_flight: u32,
+    #[serde(default)]
+    pub secret_env: Option<String>,
+}
+
+fn default_rpc_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_rpc_in_flight() -> u32 {
+    16
+}
+
+/// A backend URL: `http` or `https`, with a host.
+fn validate_backend_url(what: &str, url: &str) -> Result<()> {
+    let rest = url
+        .strip_prefix("http://")
+        .or_else(|| url.strip_prefix("https://"))
+        .ok_or_else(|| {
+            WsPrismError::BadRequest(format!("{what}.url must start with http:// or https://"))
+        })?;
+    if rest.is_empty() || rest.starts_with('/') {
+        return Err(WsPrismError::BadRequest(format!("{what}.url has no host")));
+    }
+    Ok(())
+}
+
+fn validate_timeout(what: &str, ms: u64, in_flight: u32) -> Result<()> {
+    if !(1..=60_000).contains(&ms) {
+        return Err(WsPrismError::BadRequest(format!(
+            "{what}.timeout_ms must be 1-60000"
+        )));
+    }
+    if in_flight == 0 {
+        return Err(WsPrismError::BadRequest(format!(
+            "{what}.max_in_flight must be > 0"
+        )));
+    }
+    Ok(())
+}
+
+impl ProxyAuthConfig {
+    pub fn validate(&self) -> Result<()> {
+        validate_backend_url("auth proxy", &self.url)?;
+        validate_timeout("auth proxy", self.timeout_ms, self.max_in_flight)
+    }
+}
+
+impl RpcConfig {
+    pub fn validate(&self) -> Result<()> {
+        validate_backend_url("rpc", &self.url)?;
+        validate_timeout("rpc", self.timeout_ms, self.max_in_flight)?;
+        if self.allow.is_empty() {
+            return Err(WsPrismError::BadRequest(
+                "rpc.allow must not be empty".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// `kind: jwt` (ADR 0008 §5). Exactly one key source: `secret_file` /
@@ -415,12 +519,19 @@ impl TenantConfig {
                 )));
             }
         }
+        let in_tenant = |e: WsPrismError| {
+            WsPrismError::BadRequest(format!("tenant {}: {}", self.id, e.client_message()))
+        };
         for a in &self.auth {
-            if let AuthConfig::Jwt(j) = a {
-                j.validate().map_err(|e| {
-                    WsPrismError::BadRequest(format!("tenant {}: {}", self.id, e.client_message()))
-                })?;
+            match a {
+                AuthConfig::Jwt(j) => j.validate(),
+                AuthConfig::Proxy(p) => p.validate(),
+                AuthConfig::Dev | AuthConfig::Ticket => Ok(()),
             }
+            .map_err(in_tenant)?;
+        }
+        if let Some(rpc) = &self.rpc {
+            rpc.validate().map_err(in_tenant)?;
         }
         if self.limits.max_frame_bytes == 0 {
             return Err(WsPrismError::BadRequest(

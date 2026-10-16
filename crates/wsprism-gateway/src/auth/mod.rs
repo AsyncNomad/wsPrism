@@ -10,6 +10,7 @@
 mod dev;
 mod jwt;
 mod permissions;
+mod proxy;
 mod ticket;
 
 use std::net::IpAddr;
@@ -25,6 +26,7 @@ type BuildResult<T> = wsprism_core::error::Result<T>;
 pub use dev::DevAuthenticator;
 pub use jwt::{expiry_deadline_ms, JwtAuthenticator};
 pub use permissions::{Permissions, RoomPattern};
+pub use proxy::ProxyAuthenticator;
 pub use ticket::{
     IssueError, TicketAuthenticator, TicketStore, DEFAULT_TICKET_TTL, MAX_TICKET_TTL, TICKET_PREFIX,
 };
@@ -87,7 +89,11 @@ impl AuthChain {
 
     /// Build a tenant's chain from config. An empty `auth` list means the
     /// development stub (see [`AuthChain::is_dev_only`]).
-    pub fn from_config(auth: &[AuthConfig], tickets: &Arc<TicketStore>) -> BuildResult<Self> {
+    pub fn from_config(
+        auth: &[AuthConfig],
+        tickets: &Arc<TicketStore>,
+        backend: &crate::backend::Backend,
+    ) -> BuildResult<Self> {
         if auth.is_empty() {
             return Ok(Self::new(vec![Arc::new(DevAuthenticator)]));
         }
@@ -98,6 +104,7 @@ impl AuthChain {
                     AuthConfig::Dev => Arc::new(DevAuthenticator),
                     AuthConfig::Ticket => Arc::new(TicketAuthenticator::new(Arc::clone(tickets))),
                     AuthConfig::Jwt(j) => Arc::new(JwtAuthenticator::from_config(j)?),
+                    AuthConfig::Proxy(p) => Arc::new(ProxyAuthenticator::from_config(p, backend)?),
                 })
             })
             .collect::<BuildResult<_>>()?;
@@ -183,8 +190,12 @@ mod tests {
 
     #[test]
     fn empty_config_is_the_dev_stub_and_says_so() {
-        assert!(AuthChain::from_config(&[], &Arc::default())
-            .unwrap()
-            .is_dev_only());
+        assert!(AuthChain::from_config(
+            &[],
+            &Arc::default(),
+            &crate::backend::Backend::new().unwrap()
+        )
+        .unwrap()
+        .is_dev_only());
     }
 }

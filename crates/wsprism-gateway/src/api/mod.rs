@@ -19,9 +19,7 @@ use serde_json::{json, Value};
 use wsprism_core::protocol::hot::{encode_hot_frame_v2, HotOutV2};
 
 use crate::app_state::AppState;
-use crate::auth::{
-    Identity, IssueError, Permissions, RoomPattern, DEFAULT_TICKET_TTL, MAX_TICKET_TTL,
-};
+use crate::auth::{Identity, IssueError, Permissions, DEFAULT_TICKET_TTL, MAX_TICKET_TTL};
 use crate::realtime::core::{CloseRequest, RealtimeCore};
 use crate::realtime::{close_code, CloseSpec, HotOut, Outgoing, Payload, QoS};
 use crate::sys;
@@ -269,14 +267,9 @@ async fn tickets(
             "this tenant does not accept tickets (add {kind: ticket} to tenants[].auth)",
         );
     }
-    let parse =
-        |v: Option<Vec<String>>| v.map(|ps| ps.iter().map(|p| RoomPattern::parse(p)).collect());
     let permissions = req
         .permissions
-        .map(|p| Permissions {
-            subscribe: parse(p.subscribe),
-            publish: parse(p.publish),
-        })
+        .map(|p| Permissions::from_lists(p.subscribe, p.publish))
         .unwrap_or_default();
     let identity = Identity {
         user_id: req.user,

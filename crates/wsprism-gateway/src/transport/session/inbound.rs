@@ -124,12 +124,24 @@ impl Session {
 
     async fn dispatch_text(&mut self, env: Envelope) -> Flow {
         // Label with the registered (static) service name, never the raw svc (S5).
-        let svc = self
-            .dispatcher
-            .text_service_name(&env.svc)
-            .unwrap_or("unknown");
+        let rpc = self
+            .rpc
+            .as_ref()
+            .filter(|r| r.handles(&env.svc, &env.msg_type))
+            .cloned();
+        let svc = match rpc {
+            Some(_) => "rpc",
+            None => self
+                .dispatcher
+                .text_service_name(&env.svc)
+                .unwrap_or("unknown"),
+        };
         let start = Instant::now();
-        let res = self.dispatcher.dispatch_text(&mut self.ctx, env).await;
+        // RPC only starts the call here; the backend's answer arrives later.
+        let res = match rpc {
+            Some(rpc) => rpc.call(&self.ctx, env),
+            None => self.dispatcher.dispatch_text(&mut self.ctx, env).await,
+        };
         // Always measure Ext lane
         self.metrics.dispatch_duration.observe(
             &[("tenant", self.tenant()), ("lane", "ext")],

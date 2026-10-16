@@ -6,7 +6,7 @@
 //! front) and the two per-session timers (ping, idle) that woke every
 //! session's task once a second.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
@@ -39,6 +39,8 @@ pub struct SessionSignals {
     last_ping_ms: AtomicU64,
     /// When the credential expires (`now_ms` scale; `u64::MAX` = never).
     expires_at_ms: AtomicU64,
+    /// Requests being answered by another task (`DeferredReply`).
+    deferred: AtomicU32,
     /// Latest keyed Hot frame per `(sender, svc, key)` (T0-3).
     pub hot: HotSlot,
 }
@@ -52,6 +54,7 @@ impl SessionSignals {
             last_activity_ms: AtomicU64::new(now),
             last_ping_ms: AtomicU64::new(now),
             expires_at_ms: AtomicU64::new(u64::MAX),
+            deferred: AtomicU32::new(0),
             hot: HotSlot::new(DEFAULT_SLOT_CAP),
         })
     }
@@ -107,6 +110,25 @@ impl SessionSignals {
         now >= self.expires_at_ms.load(Ordering::Relaxed)
     }
 
+    /// Reserve one deferred answer if fewer than `max` are outstanding.
+    pub fn try_begin_deferred(&self, max: u32) -> bool {
+        let mut n = self.deferred.load(Ordering::Acquire);
+        while n < max {
+            match self
+                .deferred
+                .compare_exchange_weak(n, n + 1, Ordering::AcqRel, Ordering::Acquire)
+            {
+                Ok(_) => return true,
+                Err(now) => n = now,
+            }
+        }
+        false
+    }
+
+    pub fn end_deferred(&self) {
+        self.deferred.fetch_sub(1, Ordering::AcqRel);
+    }
+
     /// True (and the ping clock restarted) if a keep-alive ping is due.
     pub fn take_ping_due(&self, now: u64, interval_ms: u64) -> bool {
         let last = self.last_ping_ms.load(Ordering::Relaxed);
@@ -138,6 +160,16 @@ mod tests {
             CloseRequest::Spec(spec) => assert_eq!(spec.reason, "replaced"),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn deferred_answers_are_bounded_and_released() {
+        let s = SessionSignals::new();
+        assert!(s.try_begin_deferred(2));
+        assert!(s.try_begin_deferred(2));
+        assert!(!s.try_begin_deferred(2), "budget of 2 exhausted");
+        s.end_deferred();
+        assert!(s.try_begin_deferred(2), "released slot is reusable");
     }
 
     #[test]

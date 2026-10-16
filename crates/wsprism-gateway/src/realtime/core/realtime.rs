@@ -217,6 +217,30 @@ impl RealtimeCore {
     }
 }
 
+/// An answer to one request, sent later from another task (Reliable, with
+/// `reply_to` set like a direct reply). Dropping it without sending frees
+/// the slot too; a session that ended in the meantime just ignores it.
+pub struct DeferredReply {
+    core: Arc<RealtimeCore>,
+    conn: Connection,
+    session_key: Arc<str>,
+    seq: Option<u64>,
+}
+
+impl DeferredReply {
+    pub fn send(self, msg: serde_json::Value) {
+        let frame = OutFrame::text(sys::reply_to(msg, self.seq).to_string());
+        self.core
+            .deliver(&self.session_key, &self.conn, frame, &QoS::Reliable);
+    }
+}
+
+impl Drop for DeferredReply {
+    fn drop(&mut self) {
+        self.conn.signals.end_deferred();
+    }
+}
+
 /// A session's view of the realtime core, handed to services.
 ///
 /// One context lives for the whole session (owned by the session task) and
@@ -339,6 +363,22 @@ impl RealtimeCtx {
 
     pub fn protocol(&self) -> ProtocolVersion {
         self.protocol
+    }
+
+    /// A handle that answers the current request later, from another task
+    /// (e.g. after a backend call), so the session loop never waits for it.
+    /// `None` if this session already has `max_outstanding` such answers
+    /// pending.
+    pub fn defer_reply(&self, max_outstanding: u32) -> Option<DeferredReply> {
+        self.conn
+            .signals
+            .try_begin_deferred(max_outstanding)
+            .then(|| DeferredReply {
+                core: Arc::clone(&self.core),
+                conn: self.conn.clone(),
+                session_key: Arc::clone(&self.session_key),
+                seq: self.request_seq,
+            })
     }
 
     /// Every publish through the context is checked against the user's

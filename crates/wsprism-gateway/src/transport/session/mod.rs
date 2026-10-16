@@ -33,6 +33,7 @@ use crate::policy::engine::ConnRateLimiter;
 use crate::policy::TenantPolicyRuntime;
 use crate::realtime::core::{now_ms, CloseRequest, SessionSignals};
 use crate::realtime::{close_code, CloseSpec, HotOut, OutFrame, RealtimeCtx};
+use crate::rpc::RpcProxy;
 use crate::sys;
 use crate::transport::subprotocol::ProtocolVersion;
 
@@ -117,6 +118,8 @@ struct Session {
     ctx: RealtimeCtx,
     policy: Arc<TenantPolicyRuntime>,
     dispatcher: Arc<Dispatcher>,
+    /// The tenant's RPC proxy: matching Ext requests go to its backend.
+    rpc: Option<Arc<RpcProxy>>,
     metrics: Arc<GatewayMetrics>,
     out_tx: mpsc::Sender<OutFrame>,
     writer_timeout: Duration,

@@ -10,9 +10,11 @@ use std::sync::Arc;
 use wsprism_core::error::{Result, WsPrismError};
 
 use crate::auth::{AuthChain, TicketStore};
+use crate::backend::Backend;
 use crate::dispatch::Dispatcher;
 use crate::obs::metrics::GatewayMetrics;
 use crate::realtime::RealtimeCore;
+use crate::rpc::RpcProxy;
 use crate::services::{ChatService, EchoBinaryService, RoomService};
 use crate::{
     config::{GatewayConfig, TenantConfig},
@@ -45,6 +47,8 @@ struct AppStateInner {
     api_keys: HashMap<[u8; 32], String>,
     /// Outstanding one-time tickets (ADR 0008 §4).
     tickets: Arc<TicketStore>,
+    /// Per-tenant RPC proxy (`tenants[].rpc`, ADR 0008 §6).
+    tenant_rpc: HashMap<String, Arc<RpcProxy>>,
     tenant_policy: HashMap<String, Arc<policy::TenantPolicyRuntime>>,
     /// tenant id -> index into `cfg.tenants` (O(1) lookup per upgrade).
     tenant_index: HashMap<String, usize>,
@@ -105,9 +109,10 @@ impl AppState {
 
         // Authentication chains.
         let tickets = Arc::new(TicketStore::default());
+        let backend = Backend::new()?;
         let mut tenant_auth = HashMap::new();
         for t in &cfg.tenants {
-            let chain = AuthChain::from_config(&t.auth, &tickets).map_err(|e| {
+            let chain = AuthChain::from_config(&t.auth, &tickets, &backend).map_err(|e| {
                 WsPrismError::BadRequest(format!("tenant {}: {}", t.id, e.client_message()))
             })?;
             if chain.is_dev_only() {
@@ -128,6 +133,23 @@ impl AppState {
         dispatcher.register_text(Arc::new(ChatService::new()));
         dispatcher.register_hot(Arc::new(EchoBinaryService::new(1)));
 
+        // RPC proxies (may not claim a built-in service name).
+        let mut tenant_rpc = HashMap::new();
+        for t in &cfg.tenants {
+            if let Some(rpc) = &t.rpc {
+                let proxy =
+                    RpcProxy::from_config(rpc, &backend, &dispatcher.registered_text_svcs())
+                        .map_err(|e| {
+                            WsPrismError::BadRequest(format!(
+                                "tenant {}: {}",
+                                t.id,
+                                e.client_message()
+                            ))
+                        })?;
+                tenant_rpc.insert(t.id.clone(), Arc::new(proxy));
+            }
+        }
+
         // allowlist <-> dispatcher sanity check
         {
             let text_svcs = dispatcher.registered_text_svcs();
@@ -142,7 +164,10 @@ impl AppState {
                         if exempt_text.contains(&svc) {
                             continue;
                         }
-                        if !text_svcs.contains(&svc) {
+                        let by_rpc = tenant_rpc
+                            .get(&t.id)
+                            .is_some_and(|r: &Arc<RpcProxy>| r.covers_svc(svc));
+                        if !text_svcs.contains(&svc) && !by_rpc {
                             tracing::warn!(tenant=%t.id, rule=%rule, "ext_allowlist refers to unregistered text service");
                             if FAIL_FAST_ON_MISMATCH {
                                 return Err(WsPrismError::BadRequest(format!(
@@ -178,6 +203,7 @@ impl AppState {
                 tenant_auth,
                 api_keys,
                 tickets,
+                tenant_rpc,
                 tenant_index: cfg
                     .tenants
                     .iter()
@@ -212,6 +238,11 @@ impl AppState {
     /// The tenant whose API key has this SHA-256, if any.
     pub fn api_key_tenant(&self, digest: &[u8; 32]) -> Option<String> {
         self.inner.api_keys.get(digest).cloned()
+    }
+
+    /// The tenant's RPC proxy, if it has one.
+    pub fn rpc(&self, tenant_id: &str) -> Option<Arc<RpcProxy>> {
+        self.inner.tenant_rpc.get(tenant_id).cloned()
     }
 
     /// Outstanding one-time tickets.

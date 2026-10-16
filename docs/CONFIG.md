@@ -57,7 +57,27 @@ tenants:
 ```
 
 Omitting `auth` means `[dev]` and logs a startup warning: anyone presenting
-`dev` is admitted. The backend connect proxy arrives in the next M2 step.
+`dev` is admitted.
+
+**Connect proxy** (`kind: proxy`): the backend decides. It accepts every
+token, so put it **last** in the chain.
+
+```yaml
+      - kind: proxy
+        url: "http://10.0.0.5:9000/wsprism/connect"
+        timeout_ms: 2000        # default 2000 (1-60000)
+        max_in_flight: 256      # concurrent calls; beyond it connections get 503
+        secret_env: BACKEND_SECRET   # optional: sent as `Authorization: Bearer <value>`
+```
+
+The gateway sends `POST url {"tenant", "token", "client_ip"}`. The backend
+answers `200 {"user": "alice", "permissions": {"subscribe": [...],
+"publish": [...]}, "expires_at": <unix seconds>}` (`permissions` and
+`expires_at` optional) to admit, `401`/`403` to reject (client gets 401).
+Any other status, a timeout, an unreachable backend or a malformed reply is
+**503 with `Retry-After`**, so an outage is never reported to clients as bad
+credentials. The token is forwarded to the backend: use `https` outside a
+trusted network.
 
 **JWT** (`kind: jwt`): `sub` is the user id (`[A-Za-z0-9_-]{1,64}`), `exp`
 is required, `nbf` is honoured. The algorithm is fixed per link — a token
@@ -135,3 +155,44 @@ Requests send `Authorization: Bearer <key>`; the key selects the tenant.
 | `POST /api/v1/disconnect` | `{"user": "u", "sid": "optional", "reason": "optional"}` | `{"closed": n}` |
 | `GET /api/v1/rooms/{room}/presence` | — | `{"room": "r", "users": [...]}` |
 | `POST /api/v1/tickets` | `{"user": "u", "ttl_s": 30, "permissions": {"subscribe": ["match:*"], "publish": ["match:42"]}}` (`ttl_s`, `permissions` and each list optional; an omitted list = unrestricted, `[]` = nothing) | `{"ticket": "wpt_...", "expires_in_s": 30}`; 400 if the tenant's `auth` has no `ticket` |
+
+---
+
+## RPC proxy (`tenants[].rpc`, ADR 0008 §6)
+
+Ext requests matching `allow` are answered by your backend, in any
+language, instead of a built-in service.
+
+```yaml
+tenants:
+  - id: acme
+    rpc:
+      url: "http://10.0.0.5:9000/wsprism/rpc"
+      allow: ["game:*", "shop:buy"]   # svc:type / svc:*; built-in services (room, chat, sys) are refused
+      timeout_ms: 5000                # default 5000 (1-60000)
+      max_in_flight: 16               # pending calls per connection (default 16)
+      secret_env: BACKEND_SECRET      # optional: `Authorization: Bearer <value>`
+    policy:
+      ext_allowlist: ["room:*", "game:*", "shop:buy"]   # still required: allow routes, the allowlist admits
+```
+
+For each matching request the gateway sends
+`POST url {"tenant", "user", "sid", "svc", "type", "room", "data"}` and
+answers the client with:
+
+| Backend reply | Client receives |
+|---|---|
+| `200 {"data": <any>}` | `sys.reply` with that `data` (and `reply_to`) |
+| `200 {"error": {"code": "NOT_FOUND", "msg": "..."}}` | `sys.error` with that code (`[A-Z0-9_]{1,32}`, else `RPC_ERROR`) and `msg` (≤ 512 bytes) |
+| anything else / timeout / unreachable | `sys.error UNAVAILABLE` (the backend's body is never forwarded) |
+
+The session never waits for the backend: the call runs on its own task and
+other messages keep flowing. To push messages to rooms or users from the
+backend, use the server API (`/api/v1/publish`).
+
+**Backend HTTP client** (connect and RPC proxies): one pooled client per
+process; it never follows redirects (a token must not reach a host the
+config didn't name), ignores `HTTP(S)_PROXY` environment variables, reads at
+most 1 MiB of a reply, and trusts the Mozilla root store bundled at build
+time (webpki-roots) for `https`.
+

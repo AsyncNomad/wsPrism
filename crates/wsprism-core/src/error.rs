@@ -36,6 +36,8 @@ pub enum ClientCode {
     SlowConsumer,
     /// No activity within the idle timeout.
     Timeout,
+    /// A backend the gateway depends on did not answer in time (RPC proxy).
+    Unavailable,
     /// Internal server error.
     Internal,
 }
@@ -54,6 +56,7 @@ impl ClientCode {
             ClientCode::TooManySessions => "TOO_MANY_SESSIONS",
             ClientCode::SlowConsumer => "SLOW_CONSUMER",
             ClientCode::Timeout => "TIMEOUT",
+            ClientCode::Unavailable => "UNAVAILABLE",
             ClientCode::Internal => "INTERNAL",
         }
     }

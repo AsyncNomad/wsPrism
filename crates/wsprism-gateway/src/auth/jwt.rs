@@ -18,9 +18,7 @@ use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
-use super::{
-    AuthError, AuthRequest, Authenticator, Identity, Permissions, RoomPattern, TICKET_PREFIX,
-};
+use super::{AuthError, AuthRequest, Authenticator, Identity, Permissions, TICKET_PREFIX};
 use crate::config::schema::{JwtAlgorithm, JwtConfig};
 use wsprism_core::error::{Result, WsPrismError};
 
@@ -219,14 +217,9 @@ impl Authenticator for JwtAuthenticator {
             }
             _ => {}
         }
-        let parse =
-            |v: Option<Vec<String>>| v.map(|ps| ps.iter().map(|p| RoomPattern::parse(p)).collect());
         Ok(Identity {
             user_id: claims.sub,
-            permissions: Permissions {
-                subscribe: parse(ws.subscribe),
-                publish: parse(ws.publish),
-            },
+            permissions: Permissions::from_lists(ws.subscribe, ws.publish),
             // The session may outlive `exp` by the tolerated skew, no more.
             expires_at: Some(UNIX_EPOCH + Duration::from_secs(claims.exp) + self.leeway),
         })

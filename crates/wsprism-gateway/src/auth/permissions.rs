@@ -41,6 +41,17 @@ pub struct Permissions {
 }
 
 impl Permissions {
+    /// From optional pattern lists (token claims, backend replies, API
+    /// requests): `None` = unrestricted, `Some([])` = nothing.
+    pub fn from_lists(subscribe: Option<Vec<String>>, publish: Option<Vec<String>>) -> Self {
+        let parse =
+            |v: Option<Vec<String>>| v.map(|ps| ps.iter().map(|p| RoomPattern::parse(p)).collect());
+        Self {
+            subscribe: parse(subscribe),
+            publish: parse(publish),
+        }
+    }
+
     /// Restricted permissions from pattern strings (e.g. token claims).
     pub fn restricted(subscribe: &[&str], publish: &[&str]) -> Self {
         let parse = |v: &[&str]| Some(v.iter().map(|p| RoomPattern::parse(p)).collect());

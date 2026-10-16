@@ -25,6 +25,7 @@
 pub mod api;
 pub mod app_state;
 pub mod auth;
+pub mod backend;
 pub mod config;
 pub mod context;
 pub mod dispatch;
@@ -34,6 +35,7 @@ pub mod ops;
 pub mod policy;
 pub mod realtime;
 pub mod router;
+pub mod rpc;
 pub mod server;
 pub mod services;
 pub(crate) mod sys;

@@ -140,6 +140,14 @@ Messages a backend publishes through the server API arrive as
 `{"v":1,"svc":"server","type":"publish","room":"<room>","data":{...}}` (Ext)
 or as a Hot frame from sender `0` (v1: payload only).
 
+### RPC replies
+
+When the tenant routes a `svc:type` to its backend (`tenants[].rpc`), the
+answer is `{"v":1,"svc":"sys","type":"reply","reply_to":<seq>,"data":...}`
+(or a `sys.error`). Send a `seq` to correlate: backend answers can arrive
+out of order with respect to other replies. More than `max_in_flight`
+pending calls on one connection are answered `RATE_LIMITED` immediately.
+
 ## 4) Ping/Pong & Idle timeout
 Gateway periodically pings; client must pong. Idle connections are closed.
 
@@ -171,7 +179,12 @@ Gateway periodically pings; client must pong. Idle connections are closed.
 | `TOO_MANY_SESSIONS` | Per-user session limit reached (`on_exceed: deny`) |
 | `SLOW_CONSUMER` | The client could not keep up with its outbound queue |
 | `TIMEOUT` | No activity within the idle timeout |
+| `UNAVAILABLE` | A backend the request depends on (RPC proxy) failed or timed out; retry later |
 | `INTERNAL` | Internal error (`msg` is always `internal error`) |
+
+Requests answered by an **RPC backend** (`tenants[].rpc`) may also carry the
+backend's own application code (`[A-Z0-9_]{1,32}`, e.g. `NOT_FOUND`); an
+invalid one becomes `RPC_ERROR`.
 
 ---
 

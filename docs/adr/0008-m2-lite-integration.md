@@ -1,6 +1,6 @@
 # ADR 0008: M2-lite — 인증·권한·서버 API·백엔드 프록시·SDK
 
-- 상태: **채택 (2026-10-16)**, M2-1~M2-5 완료 — 사용자 결정: "상용 프로그램 수준으로 기능 확장을 먼저, 성능은 나중에". 단계별 구현(§9), 새 의존성은 해당 단계 착수 전에 확인(§8)
+- 상태: **채택 (2026-10-16)**, M2-1~M2-6 완료 — 사용자 결정: "상용 프로그램 수준으로 기능 확장을 먼저, 성능은 나중에". 단계별 구현(§9), 새 의존성은 해당 단계 착수 전에 확인(§8)
 - 관련: [ROADMAP](../ROADMAP.md) M2, [ADR 0003](0003-ticket-sources-and-subprotocol.md)(티켓 전달 경로), [ADR 0006](0006-protocol-v2.md)(프로토콜 v2), [ADR 0005](0005-session-transport-seam.md)
 
 ## 배경
@@ -82,6 +82,14 @@ pub struct Identity {
 - **connect 프록시** (`auth: [{kind: proxy, url}]`): `POST url {tenant, token, client_ip}` → 백엔드가 `200 {user, permissions?, expires_at?}` / `401·403`. 타임아웃(기본 2초) 초과는 거절(503 + `Retry-After`).
 - **RPC 프록시** (`tenants[].rpc: {url, allow: ["game:*"], timeout_ms}`): allowlist를 통과하고 `rpc.allow`에 맞는 Ext 메시지를 `POST url {tenant, user, sid, svc, type, room, data}`로 넘기고, 응답 `{data}`를 `sys.reply`(요청 `seq`에 `reply_to`)로 돌려준다. 오류는 `sys.error`.
   - **세션 루프를 막지 않는다**(C1·C9 원칙): HTTP 호출은 별도 task, 응답은 세션 큐로. 세션당 동시 호출 상한(기본 16) 초과는 `RATE_LIMITED`.
+- 구현 결정(M2-6):
+  - **`DeferredReply`(새 경계)**: `RealtimeCtx::defer_reply(max)`가 지금 요청(`reply_to` 포함)에 *나중에* 다른 task에서 답하는 핸들을 준다. 세션당 미결 개수는 `SessionSignals`의 `AtomicU32`로 제한하고, 핸들이 drop되면 반납된다(돌연변이 검사로 확인). RPC 전용이 아니라 앞으로의 비동기 서비스(WASM 등)도 같은 경계를 쓴다. 기각: RPC 안에 세션별 `DashMap<session, count>` — 세션 종료 시 정리 누락 위험, 경계가 RPC에 갇힘.
+  - 라우팅: 디스패처는 전역, RPC는 테넌트별이라 세션이 시작 시 자기 테넌트의 `RpcProxy`를 받아 `dispatch_text`에서 먼저 확인한다(내장 이름은 설정 검증에서 금지하므로 순서가 결과를 바꾸지 않는다). 메트릭 라벨은 `"rpc"`(정적, S5). 기동 시 allowlist↔서비스 검사는 RPC가 덮는 svc를 등록된 것으로 본다.
+  - 응답 매핑: `200 {data}` → `sys.reply`, `200 {error:{code,msg}}` → `sys.error`(코드 `[A-Z0-9_]{1,32}` 검증, 메시지 512바이트 절단), 그 밖 → `UNAVAILABLE`(새 `ClientCode`). **백엔드 본문은 절대 그대로 전달하지 않는다**(스택 트레이스 유출 방지, 테스트로 확인).
+  - connect 프록시: `401`/`403`만 거절, 나머지 실패는 503+`Retry-After`(장애를 "잘못된 자격 증명"으로 보고하면 클라이언트가 재로그인 루프에 빠진다). 동시 호출 상한(세마포어, 기본 256) — 접속 폭주가 백엔드에 무한정 쌓이지 않게. 응답의 `expires_at`은 JWT와 같은 세션 만료 경로(4001).
+  - HTTP 클라이언트: 프로세스당 하나(풀), **리다이렉트 안 따름**(토큰이 설정에 없는 호스트로 가지 않게), `HTTP(S)_PROXY` 환경 변수 무시(`no_proxy`, 트래픽 경로는 설정이 정한다), 응답 1 MiB 상한, 루트 인증서는 webpki-roots(빌드 시 번들 — 시스템 저장소 대신 재현성 우선; 사설 CA가 필요해지면 `ca_file` 옵션 추가). `reqwest` 기본 기능은 끄고 rustls·http2만 — 새 크레이트 12개, rustls는 기존 0.23.46 재사용.
+  - 백엔드 인증: `secret_env`의 값을 `Authorization: Bearer`로 보낸다(값은 기동 시 읽고 헤더는 sensitive 표시). mTLS·HMAC 서명은 수요가 확인되면.
+  - 아직 없는 것: JWKS URL(이제 HTTP 클라이언트가 있으므로 다음 후보), RPC 재시도(멱등성을 게이트웨이가 알 수 없어 의도적으로 없음), 실패 로그 샘플링(지금은 호출마다 `warn` — 백엔드 장애 때 로그가 많아질 수 있음; 메트릭 정비(P0-e) 때 함께).
 - 내장 서비스(`chat`, `room`, echo)는 그대로 두고, 같은 `svc`가 RPC 대상이면 RPC가 우선하지 않는다 — 내장 서비스 이름은 RPC `allow`에 쓸 수 없게 설정 검증에서 막는다.
 
 ### 7. 클라이언트 SDK (JavaScript, 최소판)
@@ -108,7 +116,7 @@ pub struct Identity {
 | M2-3 ✅ | 서버 API 리스너 + API 키 + `publish`·`disconnect`·`presence` | `ring`·`base64`(오프라인) |
 | M2-4 ✅ | 1회용 티켓 발급 + `ticket` 인증기 | 없음 |
 | M2-5 ✅ | JWT 인증기 (정적 키; JWKS는 M2-6 HTTP 클라이언트 이후) | `jsonwebtoken` 9.3.1 (사용자 승인 2026-10-16) |
-| M2-6 | connect·RPC 프록시 | `reqwest` |
+| M2-6 ✅ | connect·RPC 프록시 | `reqwest` 0.12 (rustls, 사용자 승인 2026-10-16) |
 | M2-7 | JS SDK + 통합 테스트 | 없음 |
 | M2-8 | 예제 앱(Node 백엔드 + SDK 채팅·상태 동기화) — **M2 완료 기준** | 없음 |
 | M2-9 | engine/server 크레이트 분리, 공개 API 최소화 | 없음 |

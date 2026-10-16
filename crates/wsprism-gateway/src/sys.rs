@@ -23,7 +23,14 @@ pub(crate) fn authed(tenant: &str, user: &str, sid: &str, trace_id: &str) -> Val
 /// `sys.error` with a catalogued code (see `ClientCode` and PROTOCOL.md).
 /// `trace_id` may be empty when the error isn't tied to a session span.
 pub(crate) fn error(code: ClientCode, msg: &str, trace_id: &str) -> Value {
-    let mut v = json!({ "v": 1, "svc": "sys", "type": "error", "data": { "code": code.as_str(), "msg": msg } });
+    error_code(code.as_str(), msg, trace_id)
+}
+
+/// `sys.error` with a code outside the catalogue (an RPC backend's own
+/// application error code; validated by the caller).
+pub(crate) fn error_code(code: &str, msg: &str, trace_id: &str) -> Value {
+    let mut v =
+        json!({ "v": 1, "svc": "sys", "type": "error", "data": { "code": code, "msg": msg } });
     if !trace_id.is_empty() {
         v["trace_id"] = json!(trace_id);
     }
@@ -33,6 +40,11 @@ pub(crate) fn error(code: ClientCode, msg: &str, trace_id: &str) -> Value {
 /// `sys.error` for an error value: catalogued code + client-safe message.
 pub(crate) fn error_from(e: &WsPrismError, trace_id: &str) -> Value {
     error(e.client_code(), e.client_message(), trace_id)
+}
+
+/// `sys.reply`: a backend's answer to a request (RPC proxy).
+pub(crate) fn reply(data: Value, trace_id: &str) -> Value {
+    json!({ "v": 1, "svc": "sys", "type": "reply", "data": data, "trace_id": trace_id })
 }
 
 pub(crate) fn kicked(reason: &str, trace_id: &str) -> Value {

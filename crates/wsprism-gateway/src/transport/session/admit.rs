@@ -213,6 +213,7 @@ impl Session {
             conn_limiter: policy.new_connection_limiter(),
             policy,
             dispatcher: app.dispatcher(),
+            rpc: app.rpc(&t_cfg.id),
             metrics,
             out_tx,
             writer_timeout: Duration::from_millis(gw.writer_send_timeout_ms),
