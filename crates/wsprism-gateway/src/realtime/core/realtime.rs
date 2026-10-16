@@ -6,7 +6,9 @@
 //! contention to preserve throughput.
 
 use crate::config::schema::TenantLimits;
-use crate::realtime::core::{now_ms, CloseRequest, Connection, Member, Presence, SessionRegistry};
+use crate::realtime::core::{
+    now_ms, CloseRequest, Connection, Joined, Member, Presence, SessionRegistry,
+};
 use crate::realtime::types::{close_code, CloseSpec, OutFrame, Outgoing, Payload, QoS};
 use crate::sys;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -14,6 +16,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc::error::TrySendError;
 use wsprism_core::error::ClientCode;
 use wsprism_core::error::{Result, WsPrismError};
+use wsprism_core::protocol::hot::HotFrame;
+use wsprism_core::protocol::ProtocolVersion;
 
 static DROP_COUNT: AtomicU64 = AtomicU64::new(0);
 static SLOW_CONSUMER_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -187,6 +191,10 @@ pub struct RealtimeCtx {
     limits: Arc<TenantLimits>,
     /// This session's own delivery handles (room membership, replies).
     conn: Connection,
+    /// Wire protocol of this session (reply shapes, Hot routing).
+    protocol: ProtocolVersion,
+    /// Rooms this session has joined, with their ids (small; linear scan).
+    joined: Vec<(Arc<str>, Joined)>,
     core: Arc<RealtimeCore>,
 }
 
@@ -199,6 +207,7 @@ pub struct CtxIdentity {
     /// Gateway-internal, per-connection unique key (see S4 in docs/HARDENING.md).
     pub session_key: Arc<str>,
     pub trace_id: Arc<str>,
+    pub protocol: ProtocolVersion,
 }
 
 impl RealtimeCtx {
@@ -221,6 +230,8 @@ impl RealtimeCtx {
             request_seq: None,
             limits,
             conn,
+            protocol: id.protocol,
+            joined: Vec::new(),
             core,
         }
     }
@@ -276,16 +287,44 @@ impl RealtimeCtx {
         })
     }
 
-    /// Join `room`, enforcing the tenant's room limits.
-    pub fn join_room(&self, room: &str) -> Result<()> {
+    pub fn protocol(&self) -> ProtocolVersion {
+        self.protocol
+    }
+
+    /// Join `room`, enforcing the tenant's room limits. Returns the room id
+    /// and this membership's id (protocol v2 `chan` / `sender`).
+    pub fn join_room(&mut self, room: &str) -> Result<Joined> {
         let rk = self.room_key(room);
         let member = Member {
             key: Arc::clone(&self.session_key),
             conn: self.conn.clone(),
+            member_id: 0,
         };
-        self.core
-            .presence
-            .try_join(self.tenant(), &rk, self.user_key(), member, &self.limits)
+        let joined = self.core.presence.try_join(
+            self.tenant(),
+            &rk,
+            self.user_key(),
+            member,
+            &self.limits,
+        )?;
+        if !self.joined.iter().any(|(r, _)| &**r == room) {
+            self.joined.push((Arc::from(room), joined));
+        }
+        Ok(joined)
+    }
+
+    /// The room a Hot frame targets and this session's membership in it:
+    /// v2 names the room id (`chan`) and must be a room this session joined
+    /// (ADR 0006 R5, R7); v1 targets the active room.
+    pub fn hot_target(&self, frame: &HotFrame) -> Option<(&str, Joined)> {
+        let found = match frame.chan {
+            Some(chan) => self.joined.iter().find(|(_, j)| j.room_id == chan),
+            None => {
+                let active = self.active_room()?;
+                self.joined.iter().find(|(r, _)| &**r == active)
+            }
+        };
+        found.map(|(r, j)| (&**r, *j))
     }
 
     /// True if this session has joined `room`.
@@ -294,7 +333,8 @@ impl RealtimeCtx {
         self.core.presence.is_member(&rk, self.session_key())
     }
 
-    pub fn leave_room(&self, room: &str) {
+    pub fn leave_room(&mut self, room: &str) {
+        self.joined.retain(|(r, _)| &**r != room);
         let rk = self.room_key(room);
         self.core
             .presence

@@ -4,6 +4,7 @@ use async_trait::async_trait;
 
 use wsprism_core::error::{Result, WsPrismError};
 use wsprism_core::protocol::text::Envelope;
+use wsprism_core::protocol::ProtocolVersion;
 
 use crate::dispatch::TextService;
 use crate::realtime::RealtimeCtx;
@@ -21,9 +22,15 @@ impl RoomService {
 
     fn join(ctx: &mut RealtimeCtx, room: Option<String>) -> Result<()> {
         let room = room.unwrap_or_else(|| "default".to_string());
-        ctx.join_room(&room)?;
+        let joined = ctx.join_room(&room)?;
         ctx.set_active_room(Some(&room));
-        ctx.reply(sys::joined(&room, &ctx.trace_id))
+        let msg = match ctx.protocol() {
+            ProtocolVersion::V1 => sys::joined(&room, &ctx.trace_id),
+            ProtocolVersion::V2 => {
+                sys::joined_v2(&room, joined.room_id, joined.member_id, &ctx.trace_id)
+            }
+        };
+        ctx.reply(msg)
     }
 
     /// C4: leave the named room; without one, the active room.

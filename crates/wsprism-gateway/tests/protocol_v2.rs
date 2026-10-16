@@ -115,3 +115,117 @@ async fn v2_envelope_ignores_unknown_fields_and_needs_no_version() {
         .expect("send");
     assert_eq!(close_of(&mut v1).await.0, 1002, "v1 stays strict");
 }
+
+const HOT_YAML: &str = r#"
+version: 1
+tenants:
+  - id: t
+    limits:
+      max_frame_bytes: 1024
+    policy:
+      ext_allowlist: ["room:*"]
+      hot_allowlist: ["1:*"]
+"#;
+
+/// Join `room`; returns the `sys.joined` message.
+async fn join_v(ws: &mut Ws, room: &str, v1: bool) -> serde_json::Value {
+    let mut msg = serde_json::json!({"svc":"room","type":"join","room":room});
+    if v1 {
+        msg["v"] = 1.into();
+    }
+    ws.send(Message::Text(msg.to_string())).await.expect("send");
+    match next_event(ws).await {
+        Event::Json(v) if v["type"] == "joined" => v,
+        other => panic!("expected sys.joined, got {other:?}"),
+    }
+}
+
+/// Client v2 Hot frame: [kind=1][flags][chan u32][svc][op][key?][seq?][payload].
+fn hot_v2(flags: u8, chan: u32, key: Option<u32>, seq: Option<u32>, payload: &[u8]) -> Vec<u8> {
+    let mut b = vec![0x01, flags];
+    b.extend_from_slice(&chan.to_le_bytes());
+    b.extend_from_slice(&[1, 1]);
+    for v in [key, seq].into_iter().flatten() {
+        b.extend_from_slice(&v.to_le_bytes());
+    }
+    b.extend_from_slice(payload);
+    b
+}
+
+/// Next binary message within `ms`, skipping JSON.
+async fn next_binary(ws: &mut Ws, ms: u64) -> Option<Vec<u8>> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(ms);
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match next_event_within(ws, left).await {
+            Event::Binary(b) => return Some(b),
+            Event::Json(_) => continue,
+            _ => return None,
+        }
+    }
+}
+
+fn u32_at(b: &[u8], i: usize) -> u32 {
+    u32::from_le_bytes(b[i..i + 4].try_into().unwrap())
+}
+
+#[tokio::test]
+async fn v2_hot_frames_route_by_room_id_and_carry_the_sender() {
+    let gw = spawn(HOT_YAML).await;
+    let (mut a, _) = connect_as(&gw, "a", V2).await;
+    let (mut b, _) = connect_as(&gw, "b", V2).await;
+    let (mut c, _) = connect_as(&gw, "c", ("sec-websocket-protocol", "wsprism.v1")).await;
+    let ja = join_v(&mut a, "r", false).await;
+    let jb = join_v(&mut b, "r", false).await;
+    join_v(&mut c, "r", true).await;
+
+    // One room id for every member; a distinct member id per connection.
+    let chan = ja["chan"].as_u64().expect("v2 joined carries chan") as u32;
+    assert_eq!(jb["chan"].as_u64(), Some(chan as u64));
+    let (ma, mb) = (
+        ja["member_id"].as_u64().unwrap(),
+        jb["member_id"].as_u64().unwrap(),
+    );
+    assert_ne!(ma, mb);
+
+    a.send(Message::Binary(hot_v2(0x03, chan, Some(5), Some(1), b"hi")))
+        .await
+        .expect("send");
+
+    // v2 recipient: [kind][flags=KEY|SEQ|SENDER][chan][svc][op][key][seq][sender][payload]
+    let f = next_binary(&mut b, 2000)
+        .await
+        .expect("v2 member receives the frame");
+    assert_eq!((f[0], f[1]), (0x01, 0x07), "{f:?}");
+    assert_eq!(u32_at(&f, 2), chan);
+    assert_eq!(&f[6..8], &[1, 1]);
+    assert_eq!((u32_at(&f, 8), u32_at(&f, 12)), (5, 1), "key, seq");
+    assert_eq!(u32_at(&f, 16) as u64, ma, "sender = publisher's member id");
+    assert_eq!(&f[20..], b"hi");
+
+    // v1 recipient in the same room: payload only, as v1 echo always was.
+    assert_eq!(next_binary(&mut c, 2000).await.as_deref(), Some(&b"hi"[..]));
+}
+
+#[tokio::test]
+async fn v2_hot_frame_to_a_room_not_joined_is_dropped() {
+    let gw = spawn(HOT_YAML).await;
+    let (mut a, _) = connect_as(&gw, "a", V2).await;
+    let (mut b, _) = connect_as(&gw, "b", V2).await;
+    let chan = join_v(&mut b, "r", false).await["chan"].as_u64().unwrap() as u32;
+    // `a` never joined `r`: it must not be able to publish into it.
+    a.send(Message::Binary(hot_v2(0, chan, None, None, b"x")))
+        .await
+        .expect("send");
+    assert_eq!(next_binary(&mut b, 400).await, None);
+}
+
+#[tokio::test]
+async fn v2_client_setting_sender_is_a_decode_error() {
+    let gw = spawn(HOT_YAML).await;
+    let (mut a, _) = connect_as(&gw, "a", V2).await;
+    let mut frame = hot_v2(0x04, 1, None, None, b"");
+    frame.splice(8..8, 0u32.to_le_bytes());
+    a.send(Message::Binary(frame)).await.expect("send");
+    assert_eq!(close_of(&mut a).await.0, 4010);
+}

@@ -18,7 +18,11 @@ use crate::transport::subprotocol::ProtocolVersion;
 /// How long to keep the socket open after sending close 1009 (see S2).
 const CLOSE_LINGER: Duration = Duration::from_millis(500);
 
-pub(crate) struct WsTx(SplitSink<WebSocket, Message>);
+pub(crate) struct WsTx {
+    sink: SplitSink<WebSocket, Message>,
+    /// Picks the per-version bytes of Hot frames.
+    protocol: ProtocolVersion,
+}
 pub(crate) struct WsRx {
     stream: SplitStream<WebSocket>,
     /// Decides which envelope rules apply to text messages.
@@ -28,7 +32,7 @@ pub(crate) struct WsRx {
 /// Split an upgraded socket into the session's two halves.
 pub(crate) fn split(socket: WebSocket, protocol: ProtocolVersion) -> (WsTx, WsRx) {
     let (tx, stream) = socket.split();
-    (WsTx(tx), WsRx { stream, protocol })
+    (WsTx { sink: tx, protocol }, WsRx { stream, protocol })
 }
 
 /// Convert a queued frame to the wire message.
@@ -37,12 +41,16 @@ pub(crate) fn split(socket: WebSocket, protocol: ProtocolVersion) -> (WsTx, WsRx
 /// recipient's copy of a shared payload is made (in that recipient's task,
 /// not the publisher's). With a `Bytes`-based message type (axum 0.8) this
 /// becomes a reference-count bump.
-fn to_message(frame: OutFrame) -> Message {
+fn to_message(frame: OutFrame, protocol: ProtocolVersion) -> Message {
     match frame {
         // Valid UTF-8 by construction, so the lossy conversion never alters it.
         OutFrame::Text(t) => Message::Text(String::from_utf8_lossy(t.as_bytes()).into_owned()),
         OutFrame::Binary(b) => Message::Binary(b.to_vec()),
         OutFrame::Ping => Message::Ping(Vec::new()),
+        OutFrame::Hot(h) => Message::Binary(match protocol {
+            ProtocolVersion::V1 => h.v1.to_vec(),
+            ProtocolVersion::V2 => h.v2.to_vec(),
+        }),
     }
 }
 
@@ -59,15 +67,21 @@ fn is_message_too_long(e: axum::Error) -> bool {
 
 impl SessionTx for WsTx {
     async fn send(&mut self, frame: OutFrame) -> Result<(), ()> {
-        self.0.send(to_message(frame)).await.map_err(|_| ())
+        self.sink
+            .send(to_message(frame, self.protocol))
+            .await
+            .map_err(|_| ())
     }
 
     async fn feed(&mut self, frame: OutFrame) -> Result<(), ()> {
-        self.0.feed(to_message(frame)).await.map_err(|_| ())
+        self.sink
+            .feed(to_message(frame, self.protocol))
+            .await
+            .map_err(|_| ())
     }
 
     async fn flush(&mut self) -> Result<(), ()> {
-        self.0.flush().await.map_err(|_| ())
+        self.sink.flush().await.map_err(|_| ())
     }
 
     async fn send_close(&mut self, code: u16, reason: String) -> Result<(), ()> {
@@ -75,12 +89,12 @@ impl SessionTx for WsTx {
             code,
             reason: reason.into(),
         }));
-        self.0.send(close).await.map_err(|_| ())
+        self.sink.send(close).await.map_err(|_| ())
     }
 
     async fn finish_peer_close(&mut self) {
         // Flush tungstenite's queued close reply.
-        let _ = self.0.close().await;
+        let _ = self.sink.close().await;
     }
 
     fn too_big_linger(&self) -> Duration {

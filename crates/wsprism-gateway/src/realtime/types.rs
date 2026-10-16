@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use serde_json::Value;
 
@@ -25,6 +27,18 @@ pub enum Payload {
     Utf8Bytes(Bytes),
     /// Raw binary bytes.
     Binary(Bytes),
+    /// A Hot frame, pre-encoded for both protocol versions.
+    Hot(Arc<HotOut>),
+}
+
+/// A Hot frame on its way out, encoded once per protocol version so every
+/// recipient of a version shares the same bytes (ADR 0006 R3, R7).
+#[derive(Debug, PartialEq, Eq)]
+pub struct HotOut {
+    /// v1 recipients: the payload only (what the v1 echo always sent).
+    pub v1: Bytes,
+    /// v2 recipients: the full v2 frame with `chan` and `sender`.
+    pub v2: Bytes,
 }
 
 /// Application-level outgoing message.
@@ -70,6 +84,8 @@ pub enum OutFrame {
     Binary(Bytes),
     /// Keep-alive ping (empty payload).
     Ping,
+    /// Hot frame; the transport picks the bytes for the session's version.
+    Hot(Arc<HotOut>),
 }
 
 impl OutFrame {
@@ -83,6 +99,7 @@ impl OutFrame {
             }
             Payload::Utf8Bytes(b) => Ok(OutFrame::Text(Utf8Text::try_from_bytes(b.clone())?)),
             Payload::Binary(b) => Ok(OutFrame::Binary(b.clone())),
+            Payload::Hot(h) => Ok(OutFrame::Hot(Arc::clone(h))),
         }
     }
 

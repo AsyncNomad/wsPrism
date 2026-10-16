@@ -80,6 +80,7 @@ fn room(members: usize) -> (Arc<RealtimeCore>, Vec<mpsc::Receiver<OutFrame>>) {
         let member = Member {
             key: session_key.as_str().into(),
             conn,
+            member_id: 0,
         };
         core.presence
             .try_join("t", "t::r", &user_key, member, &limits)

@@ -26,7 +26,7 @@ for run in 1 2 3; do for rate in ${AB_RATES:-20 60 120}; do for v in old new; do
   bin=$OLD; [[ $v == new ]] && bin=$NEW
   $ROOT/bench/netlab.sh --srv-egress none --cli-egress none \
     --server "taskset -c 0-7 env RUST_LOG=warn $bin --config $W/wsprism.yaml" \
-    --client "taskset -c 8-23 $LG gateway --target wsprism --lane ext --url ws://10.77.0.1:18080 $(scen $rate) --seed $run --json --server-pid \$SERVER_PID --label '$label'" \
+    --client "taskset -c 8-23 $LG gateway --target wsprism --lane ${AB_LANE:-ext} --url ws://10.77.0.1:18080 $(scen $rate) --seed $run --json --server-pid \$SERVER_PID --label '$label'" \
     2>/dev/null >> $OUT || echo "FAILED $label"
 done; done; done
 echo done

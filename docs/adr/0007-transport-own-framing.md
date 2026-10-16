@@ -1,6 +1,6 @@
 # ADR 0007: P2 전송 — axum 0.8을 건너뛰고 서버 측 WebSocket 프레이밍을 직접 구현
 
-- 상태: **제안 (2026-10-16) — 사용자 승인 전, 구현하지 않음**
+- 상태: **채택 (2026-10-16, 사용자 승인 "진행")** — 단계 1(송신 프로토타입)의 측정 기준을 통과해야 단계 2로 간다
 - 관련: [성능 아키텍처](../design/performance-architecture.md) §3.5·§4, [ADR 0005](0005-session-transport-seam.md)(전송 경계), [BENCHMARKS](../BENCHMARKS.md) 「P1-a」 프로파일
 
 ## 배경

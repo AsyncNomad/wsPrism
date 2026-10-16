@@ -2,7 +2,7 @@ use crate::config::schema::TenantLimits;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::session_registry::Connection;
@@ -56,6 +56,23 @@ fn add_to_set(map: &SetIndex, key: &str, item: &str) {
 pub struct Member {
     pub key: Arc<str>,
     pub conn: Connection,
+    /// Assigned by `Presence::try_join` (callers pass 0).
+    pub member_id: u32,
+}
+
+/// What a join hands back to the session (protocol v2 `sys.joined`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Joined {
+    /// The room's id, the same for every member (v2 Hot `chan`, ADR 0006 R7).
+    pub room_id: u32,
+    /// This membership's id, unique per join (v2 Hot `sender`).
+    pub member_id: u32,
+}
+
+/// A live room: its id (valid while the room exists) and its members.
+struct Room {
+    id: u32,
+    members: Vec<Member>,
 }
 
 /// Room presence: `room_key -> members`, `session_key -> rooms`.
@@ -67,7 +84,7 @@ pub struct Presence {
     // Routing indices. Members are a plain `Vec`: publishing iterates it
     // under the shard read lock (contiguous, no allocation); joins push, and
     // a join is idempotent per session, so no duplicate check is needed.
-    room_to_sessions: DashMap<String, Vec<Member>>,
+    room_to_sessions: DashMap<String, Room>,
     session_to_rooms: SetIndex,
 
     // Governance indices
@@ -79,6 +96,12 @@ pub struct Presence {
 
     // O(1) Counters
     tenant_room_counts: DashMap<String, AtomicU64>,
+
+    // Id sources. Room ids live as long as the room (no table of past names
+    // to grow); member ids are per join. u32 wrap-around after ~4 billion
+    // rooms/joins is accepted (collisions need both to still be live).
+    next_room_id: AtomicU32,
+    next_member_id: AtomicU32,
 }
 
 impl Presence {
@@ -90,6 +113,8 @@ impl Presence {
             user_to_rooms: DashMap::new(),
             user_room_refs: DashMap::new(),
             tenant_room_counts: DashMap::new(),
+            next_room_id: AtomicU32::new(1),
+            next_member_id: AtomicU32::new(1),
         }
     }
 
@@ -114,9 +139,12 @@ impl Presence {
         user_key: &str,
         member: Member,
         limits: &TenantLimits,
-    ) -> Result<()> {
+    ) -> Result<Joined> {
+        // O(1) check first; the member scan only runs for a repeated join.
         if self.is_member(room_key, &member.key) {
-            return Ok(());
+            if let Some(joined) = self.membership(room_key, &member.key) {
+                return Ok(joined);
+            }
         }
         // --- 1. Check Room Capacity (Max Users per Room) ---
         if limits.max_users_per_room > 0 {
@@ -144,13 +172,26 @@ impl Presence {
         // --- 3. Routing. Creating the room set reserves a tenant room slot
         //        atomically, under the room's shard lock.
         let session_key = Arc::clone(&member.key);
-        match self.room_to_sessions.entry(room_key.to_string()) {
-            Entry::Occupied(mut room) => room.get_mut().push(member),
+        let member_id = self.next_member_id.fetch_add(1, Ordering::Relaxed);
+        let member = Member {
+            member_id,
+            ..member
+        };
+        let room_id = match self.room_to_sessions.entry(room_key.to_string()) {
+            Entry::Occupied(mut room) => {
+                room.get_mut().members.push(member);
+                room.get().id
+            }
             Entry::Vacant(slot) => {
                 self.reserve_room_slot(tenant_id, limits.max_rooms_total)?;
-                slot.insert(vec![member]);
+                let id = self.next_room_id.fetch_add(1, Ordering::Relaxed);
+                slot.insert(Room {
+                    id,
+                    members: vec![member],
+                });
+                id
             }
-        }
+        };
         add_to_set(&self.session_to_rooms, &session_key, room_key);
 
         // --- 4. Governance (ref-counted per user+room for multi-session).
@@ -164,7 +205,7 @@ impl Presence {
             add_to_set(&self.user_to_rooms, user_key, room_key);
         }
 
-        Ok(())
+        Ok(Joined { room_id, member_id })
     }
 
     /// Count a new room against the tenant, failing if `max_total` (0 =
@@ -211,11 +252,11 @@ impl Presence {
         //    its tenant slot) is one step under the shard lock (C5).
         let room_dropped = self
             .room_to_sessions
-            .remove_if_mut(room_key, |_, members| {
-                if let Some(i) = members.iter().position(|m| &*m.key == session_key) {
-                    members.swap_remove(i);
+            .remove_if_mut(room_key, |_, room| {
+                if let Some(i) = room.members.iter().position(|m| &*m.key == session_key) {
+                    room.members.swap_remove(i);
                 }
-                members.is_empty()
+                room.members.is_empty()
             })
             .is_some();
         if room_dropped {
@@ -250,9 +291,19 @@ impl Presence {
     /// `try_send` / `request_close` is fine). Concurrent publishes share the
     /// lock; a join/leave in the same shard waits for them.
     pub fn for_each_member(&self, room_key: &str, mut f: impl FnMut(&Member)) {
-        if let Some(members) = self.room_to_sessions.get(room_key) {
-            members.iter().for_each(&mut f);
+        if let Some(room) = self.room_to_sessions.get(room_key) {
+            room.members.iter().for_each(&mut f);
         }
+    }
+
+    /// The session's membership in `room_key`, if it has joined.
+    pub fn membership(&self, room_key: &str, session_key: &str) -> Option<Joined> {
+        let room = self.room_to_sessions.get(room_key)?;
+        let m = room.members.iter().find(|m| &*m.key == session_key)?;
+        Some(Joined {
+            room_id: room.id,
+            member_id: m.member_id,
+        })
     }
 
     #[cfg(test)]
@@ -292,6 +343,7 @@ mod tests {
                 tx,
                 signals: super::super::SessionSignals::new(),
             },
+            member_id: 0,
         }
     }
 
@@ -411,5 +463,25 @@ mod tests {
             .user_to_rooms
             .get("t::u")
             .is_some_and(|r| r.contains("t::r")));
+    }
+
+    /// Every member of a room sees the same room id; member ids differ, and
+    /// re-joining returns the existing membership.
+    #[test]
+    fn room_id_is_shared_and_member_ids_are_unique() {
+        let p = Presence::new();
+        let a = p
+            .try_join("t", "t::r", "t::u1", member("t::u1::a"), &limits())
+            .unwrap();
+        let b = p
+            .try_join("t", "t::r", "t::u2", member("t::u2::b"), &limits())
+            .unwrap();
+        assert_eq!(a.room_id, b.room_id);
+        assert_ne!(a.member_id, b.member_id);
+        let again = p
+            .try_join("t", "t::r", "t::u1", member("t::u1::a"), &limits())
+            .unwrap();
+        assert_eq!(again, a);
+        assert_eq!(p.membership("t::r", "t::u2::b"), Some(b));
     }
 }

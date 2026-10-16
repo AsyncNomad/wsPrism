@@ -17,20 +17,14 @@ pub const V2_JSON: &str = "wsprism.v2.json";
 /// Versions this gateway speaks, most preferred first.
 const SUPPORTED: &[&str] = &[V2_JSON, V1];
 
-/// The wire protocol a session speaks, fixed at the handshake.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProtocolVersion {
-    V1,
-    V2,
-}
+pub use wsprism_core::protocol::ProtocolVersion;
 
-impl ProtocolVersion {
-    /// From the negotiated subprotocol (`None` = no header = v1).
-    pub fn from_selected(selected: Option<&str>) -> Self {
-        match selected {
-            Some(V2_JSON) => ProtocolVersion::V2,
-            _ => ProtocolVersion::V1,
-        }
+/// The session's protocol from the negotiated subprotocol (`None` = no
+/// header = v1).
+pub fn version_of(selected: Option<&str>) -> ProtocolVersion {
+    match selected {
+        Some(V2_JSON) => ProtocolVersion::V2,
+        _ => ProtocolVersion::V1,
     }
 }
 /// Prefix of the subprotocol entry carrying a ticket.

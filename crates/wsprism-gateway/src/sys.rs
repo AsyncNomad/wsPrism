@@ -43,6 +43,12 @@ pub(crate) fn joined(room: &str, trace_id: &str) -> Value {
     json!({ "v": 1, "svc": "sys", "type": "joined", "room": room, "trace_id": trace_id })
 }
 
+/// Protocol v2 `sys.joined`: adds the room id (Hot `chan`) and this
+/// membership's id (Hot `sender`), ADR 0006 §3.
+pub(crate) fn joined_v2(room: &str, room_id: u32, member_id: u32, trace_id: &str) -> Value {
+    json!({ "v": 1, "svc": "sys", "type": "joined", "room": room, "chan": room_id, "member_id": member_id, "trace_id": trace_id })
+}
+
 pub(crate) fn left(room: &str, trace_id: &str) -> Value {
     json!({ "v": 1, "svc": "sys", "type": "left", "room": room, "trace_id": trace_id })
 }

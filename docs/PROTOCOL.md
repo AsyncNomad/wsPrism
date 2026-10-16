@@ -110,6 +110,26 @@ transport — see `docs/design/hot-lane-over-webtransport.md`.
 
 ---
 
+### Protocol v2 Hot frames (ADR 0006 §3, R7)
+
+Sessions that negotiated `wsprism.v2.json` send and receive Hot frames that
+name their target room explicitly; there is no implicit active room.
+
+```
+client -> server: [kind=0x01][flags][chan u32 LE][svc u8][op u8][key u32 LE?][seq u32 LE?][payload]
+server -> client: [kind=0x01][flags][chan u32 LE][svc u8][op u8][key u32 LE?][seq u32 LE?][sender u32 LE][payload]
+flags: 0x01 KEY · 0x02 SEQ · 0x04 SENDER (server only; a client setting it, or any unknown bit, is a decode error)
+```
+
+- `chan` is the **room id** from the v2 `sys.joined` reply (`"chan"`), the
+  same for every member of the room. A frame naming a room this session has
+  not joined is dropped (`policy_decisions{reason="unknown_channel"}`; with
+  `hot_error_mode: sys_error` the client also gets `sys.error NOT_ALLOWED`).
+- `sender` is the publisher's `member_id` (also in `sys.joined`), new for
+  every join. Receivers drop frames whose `seq` is older than the last one
+  seen for the same `(sender, key)` (datagrams can be reordered).
+- v1 sessions in the same room keep receiving the payload only.
+
 ## 4) Ping/Pong & Idle timeout
 Gateway periodically pings; client must pong. Idle connections are closed.
 

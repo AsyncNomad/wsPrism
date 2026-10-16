@@ -10,3 +10,11 @@
 
 pub mod hot;
 pub mod text;
+
+/// The wire protocol a session speaks, negotiated once at the handshake
+/// (`Sec-WebSocket-Protocol`, ADR 0006).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolVersion {
+    V1,
+    V2,
+}

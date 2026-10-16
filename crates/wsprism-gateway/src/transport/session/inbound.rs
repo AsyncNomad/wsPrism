@@ -158,7 +158,17 @@ impl Session {
         if !self.enforce("hot", decision, notify)? {
             return Flow::Continue(());
         }
-        if self.policy.hot_requires_active_room() && self.ctx.active_room().is_none() {
+        if frame.chan.is_some() {
+            // v2: the frame names a room id, which must be one this session
+            // joined (ADR 0006 R5, R7).
+            if self.ctx.hot_target(&frame).is_none() {
+                self.decision("hot", "drop", "unknown_channel");
+                if notify {
+                    return self.reply_code(ClientCode::NotAllowed, "not a member of that room");
+                }
+                return Flow::Continue(());
+            }
+        } else if self.policy.hot_requires_active_room() && self.ctx.active_room().is_none() {
             if notify {
                 return self.reply_code(ClientCode::BadRequest, "no active room");
             }

@@ -44,7 +44,10 @@ pub fn decode(msg: Message, protocol: ProtocolVersion) -> Result<Inbound> {
         }
         Message::Binary(b) => {
             let bytes_len = b.len();
-            let frame = hot::decode_hot_frame(bytes::Bytes::from(b))?;
+            let frame = match protocol {
+                ProtocolVersion::V1 => hot::decode_hot_frame(bytes::Bytes::from(b))?,
+                ProtocolVersion::V2 => hot::decode_hot_frame_v2(bytes::Bytes::from(b))?,
+            };
             Ok(Inbound::Hot { frame, bytes_len })
         }
         Message::Ping(v) => Ok(Inbound::Ping(v)),
