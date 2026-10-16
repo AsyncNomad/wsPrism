@@ -35,6 +35,12 @@ pub struct Args {
     pub tenant: String,
     #[arg(long, default_value = "dev")]
     pub ticket: String,
+    /// wsPrism: log every connection in as its own user (`<ticket>:u<conn>`,
+    /// i.e. `dev:u17` with the dev ticket) instead of all as one user. Real
+    /// deployments have one user per connection; per-user state shows up in
+    /// memory only this way.
+    #[arg(long)]
+    pub distinct_users: bool,
     /// Total connections (all of them join a room and receive).
     #[arg(long, default_value_t = 1000)]
     pub conns: usize,

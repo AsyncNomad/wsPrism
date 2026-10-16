@@ -41,3 +41,17 @@ tenants:
     let err = config::load_from_str(bad).expect_err("must fail");
     assert!(err.to_string().contains("reserved"), "{err}");
 }
+
+/// Tenant ids become parts of internal keys and metric labels, so they are
+/// restricted to `[A-Za-z0-9_-]{1,64}`: an id like `a::b` could otherwise
+/// alias another tenant's keys (`a` + room `b::r` vs `a::b` + room `r`).
+#[test]
+fn reject_tenant_id_outside_charset() {
+    for id in ["a::b", "has space", "dots.are.out", &"x".repeat(65)] {
+        let yaml = format!("version: 1\ntenants:\n  - id: \"{id}\"\n");
+        let err = config::load_from_str(&yaml).expect_err(&format!("must reject {id:?}"));
+        assert_eq!(err.client_code().as_str(), "BAD_REQUEST", "{id:?}");
+    }
+    let ok = "version: 1\ntenants:\n  - id: \"Acme-1_b\"\n";
+    config::load_from_str(ok).expect("charset-conforming id must parse");
+}

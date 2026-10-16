@@ -38,6 +38,7 @@ pub async fn run(args: Args) {
                 url,
                 tenant: args.tenant.clone(),
                 ticket: args.ticket.clone(),
+                distinct_users: args.distinct_users,
                 lane: args.lane,
             };
             run_with(Arc::new(p), args).await

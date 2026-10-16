@@ -37,6 +37,14 @@ impl GatewayConfig {
                         "tenant.id must not be empty".into(),
                     ));
                 }
+                if !crate::ident::is_safe_id(&t.id) {
+                    // Ids become parts of internal keys and metric labels.
+                    return Err(WsPrismError::BadRequest(format!(
+                        "tenant.id must be 1-{} characters of [A-Za-z0-9_-]: {:?}",
+                        crate::ident::MAX_ID_LEN,
+                        t.id
+                    )));
+                }
                 if t.id.starts_with('_') {
                     // Reserved for internal labels such as `_unknown` (metrics).
                     return Err(WsPrismError::BadRequest(format!(

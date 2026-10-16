@@ -162,9 +162,16 @@ impl AppState {
     }
 
     pub fn resolve_ticket(&self, ticket: &str) -> Result<String> {
-        match ticket {
-            "dev" => Ok("user:dev".to_string()),
-            _ => Err(WsPrismError::AuthFailed),
+        // Development stub until the `Authenticator` trait (ROADMAP M2):
+        // `dev` -> `user:dev`, `dev:<id>` -> `user:<id>` (one user per
+        // connection in benchmarks).
+        match ticket.strip_prefix("dev") {
+            Some("") => Ok("user:dev".to_string()),
+            Some(rest) => match rest.strip_prefix(':') {
+                Some(id) if crate::ident::is_safe_id(id) => Ok(format!("user:{id}")),
+                _ => Err(WsPrismError::AuthFailed),
+            },
+            None => Err(WsPrismError::AuthFailed),
         }
     }
 

@@ -14,6 +14,8 @@ pub struct Wsprism {
     pub url: String,
     pub tenant: String,
     pub ticket: String,
+    /// Ticket `<ticket>:u<conn>`: one user per connection.
+    pub distinct_users: bool,
     pub lane: Lane,
 }
 
@@ -30,7 +32,12 @@ impl Protocol for Wsprism {
             self.tenant
         );
         let mut req = url.into_client_request().map_err(|e| e.to_string())?;
-        let auth = format!("Bearer {}", self.ticket)
+        let ticket = if self.distinct_users {
+            format!("{}:u{conn}", self.ticket)
+        } else {
+            self.ticket.clone()
+        };
+        let auth = format!("Bearer {ticket}")
             .parse()
             .map_err(|_| "ticket is not a valid header value".to_string())?;
         req.headers_mut().insert(AUTHORIZATION, auth);
@@ -113,6 +120,7 @@ mod tests {
             url: String::new(),
             tenant: "t".into(),
             ticket: "x".into(),
+            distinct_users: false,
             lane,
         }
     }

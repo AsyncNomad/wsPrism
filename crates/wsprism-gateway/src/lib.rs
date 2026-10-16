@@ -26,6 +26,7 @@ pub mod app_state;
 pub mod config;
 pub mod context;
 pub mod dispatch;
+pub mod ident;
 pub mod obs;
 pub mod ops;
 pub mod policy;
