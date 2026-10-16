@@ -4,7 +4,7 @@
 상세 결과는 [BENCHMARKS.md](../BENCHMARKS.md) 「검증 V」, 설계는 [hot-lane-over-webtransport.md](hot-lane-over-webtransport.md) §7.
 
 - 브랜치: `v/validation` (push 안 함 — 로컬 커밋만)
-- 마지막 갱신: 2026-10-14
+- 마지막 갱신: 2026-10-16
 
 ## 환경 준비 (새 셸·새 세션)
 
@@ -23,14 +23,14 @@ cargo build --release -p wsprism-loadgen
 
 | 관문 | 상태 | 근거 (결과 파일) |
 |---|---|---|
-| G1 체감 성능 | ❌ 사전 등록 기준 실패(단절 조건) / 균등 손실은 크게 통과 — 판정 방식 사용자 결정 대기 | `v2-judgment.jsonl`, BENCHMARKS 「G1 재측정 (v2)」 |
+| G1 체감 성능 | ⏳ **확인 측정 중** — 개정 3 기준은 단절 칸에서 실패(시드 1~3). 사용자 결정(2026-10-16): 단절 칸 기준을 "복구 지연"으로 **사전 등록**(ADR 0004 개정 4)하고 새 시드 4~6으로 확인 측정 | `v2-judgment.jsonl`(탐색), `v2-confirm.jsonl`(판정) |
 | G2 호환성 | ⏳ 미측정 — 사용자 필요 | — |
 | G3 안정성 | ✅ 통과 | `v-soak*.{jsonl,log}` |
 | G4 폴백 | ✅ 통과 | `v-fallback.jsonl` |
-| G5 비용 | ❌ 실패 (메모리 2.6~2.9×, CPU는 틱 묶음 시 1.76×) — 오프로드 켠 조건 재측정 대기 | `v-mem-*`, `v-lean`, `v-cpu-scale` |
+| G5 비용 | ❌ 실패 — 오프로드 켬 조건: 한계 메모리 2.8~2.9×, CPU 1.65~1.89×(기준 안) | `v2-cost-{10,30}`, `v-mem-*`, `v-cpu-scale` |
 | V6 MoQ | ✅ 완료 — MoQ 위 구축 기각 (ADR 0004 개정 3) | `moq-*.jsonl`, `moq-reconnect-*.log` |
 
-분기 미정: G1 판정 방식(단절 바닥값 인정 여부)을 사용자가 정해야 한다. 실패로 보면 "G1·G5 모두 실패", 인정하면 "G5만 실패 → 하이브리드".
+분기: 확인 측정이 통과하면 "G5만 실패 → 하이브리드", 실패하면 "G1·G5 모두 실패". 기준은 결과를 본 뒤 바꾸지 않는다.
 
 ## 실험 재개 방법
 
@@ -66,7 +66,11 @@ bench/run-moq.sh moq-judgment 3
 ## 4차 리뷰 후 순서 (사용자 승인 2026-10-14)
 
 1. **측정 수정 → G1·G5 재판정** (아래 R 체크리스트)
-2. 경쟁 게이트웨이(Centrifugo, Sockudo)와 WebSocket 경로 직접 비교 (netlab 안) — 도구 완료, 스모크 완료(`compete-smoke.jsonl`). 본 측정(60회, 재개 가능):
+2. 경쟁 게이트웨이(Centrifugo, Sockudo)와 WebSocket 경로 직접 비교 (netlab 안) — ✅ 본 측정 60회 완료(BENCHMARKS 「경쟁 게이트웨이와의 WebSocket 비교」). 포화점 추가 측정(rooms:160·240, wsPrism Ext·Centrifugo, 각 3회)은 같은 파일에 재개 가능:
+   ```bash
+   bench/run-compete.sh compete-v1 3 "rooms:160 rooms:240" "wsprism-ext centrifugo"
+   ```
+   본 측정 명령:
    ```bash
    bench/competitors/fetch.sh   # Centrifugo 6.9.7, Sockudo 5.1.0 (체크섬 검증)
    bench/run-compete.sh compete-v1 3 "rooms:20 rooms:60 rooms:120 broadcast:10 broadcast:50"
@@ -90,7 +94,14 @@ bench/run-moq.sh moq-judgment 3
   python3 bench/analyze-v.py bench/results/v2-judgment.jsonl
   ```
 - [x] R-7 비용 재측정(오프로드 켬, `v2-cost-{10,30}.jsonl`): 한계 메모리 WSS 30.7 / WT 85.5~90.1 KB/conn(**2.8~2.9×**, 실패 유지), CPU WT÷WSS 1.65~1.89×(기준 안, 오프로드 끈 측정 1.76×보다 약간 커짐)
-- [ ] R-8 G1·G5 재판정 → BENCHMARKS·ADR 0004·이 문서 갱신
+- [x] R-8a 단절 칸 기준 사전 등록(ADR 0004 개정 4) + 판정 코드 `bench/analyze-g1-confirm.py`(탐색 데이터로 손계산 재현 확인) — 측정 전 커밋
+- [ ] R-8b 확인 측정(시드 4~6, 36회, 약 25분, 재개 가능):
+  ```bash
+  FIRST_RUN=4 bench/run-v.sh v2-confirm 3 "none:20 outage:1000:50:20 outage:5000:250:20" "0 60" "wss wt" \
+    "--rooms 10 --room-size 10 --rate 60 --sample-hz 60 --warmup 3 --duration 20"
+  python3 bench/analyze-g1-confirm.py bench/results/v2-confirm.jsonl
+  ```
+- [ ] R-8c G1·G5 최종 판정 → BENCHMARKS·ADR 0004(분기 확정)·ROADMAP·이 문서
 
 ## 열린 항목
 

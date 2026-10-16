@@ -12,6 +12,8 @@
 #     see bench/netlab.sh; first outage no earlier than OUTAGE_START_S, default 3)
 # Run number r seeds both the client phases (--seed r) and the outage
 # schedule (NETLAB_SEED=r), so every transport in run r sees the same ones.
+# FIRST_RUN=n numbers the RUNS runs n, n+1, ... — fresh seeds for a
+# confirmatory measurement (default 1).
 #
 # Defaults = the G1/G5 judgment cell: 20 ms one-way, 60 Hz, 10 rooms x 10.
 # Order interleaves transports within each (run, loss, tick) so all three are
@@ -55,7 +57,7 @@ netlab_impairment() { # LOSSES entry -> bench/netlab.sh arguments
 }
 
 total=0
-for run in $(seq "$RUNS"); do for loss in $LOSSES; do for tick in $TICKS; do for t in $TRANSPORTS; do
+for run in $(seq "${FIRST_RUN:-1}" $(( ${FIRST_RUN:-1} + RUNS - 1 ))); do for loss in $LOSSES; do for tick in $TICKS; do for t in $TRANSPORTS; do
   total=$((total + 1))
   label="loss=$loss tick=$tick run=$run"
   if [[ -f "$OUT" ]] && grep -qF "\"label\":\"$label\"" "$OUT" \
