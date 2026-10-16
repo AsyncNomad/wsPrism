@@ -16,6 +16,7 @@ mod inbound;
 mod io;
 mod ws_io;
 
+use std::future::Future;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
@@ -30,7 +31,7 @@ use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::ConnRateLimiter;
 use crate::policy::TenantPolicyRuntime;
 use crate::realtime::core::{CloseRequest, SessionSignals};
-use crate::realtime::{close_code, CloseSpec, OutFrame, RealtimeCtx};
+use crate::realtime::{close_code, CloseSpec, HotOut, OutFrame, RealtimeCtx};
 use crate::sys;
 use crate::transport::subprotocol::ProtocolVersion;
 
@@ -117,6 +118,8 @@ struct Session {
     /// Close requests from other tasks and liveness for the sweeper (which
     /// also sends keep-alive pings and enforces the idle timeout).
     signals: Arc<SessionSignals>,
+    /// Reused buffer for draining the Hot slot (empty until first used).
+    hot_buf: Vec<Arc<HotOut>>,
     conn_limiter: Option<ConnRateLimiter>,
     /// Hot Lane latency sampling counter (1/1024).
     hot_op_counter: u64,
@@ -139,6 +142,7 @@ impl Session {
                 // C8: kick / replace / drain / slow consumer / idle requests.
                 req = signals.closed() => Flow::Break(Exit::Close(self.close_spec(req))),
                 out = out_rx.recv() => self.write(tx, out_rx, out).await,
+                _ = signals.hot.ready() => self.write_hot(tx, &signals).await,
                 incoming = rx.recv() => self.on_incoming(incoming).await,
             };
             if let ControlFlow::Break(exit) = flow {
@@ -167,6 +171,34 @@ impl Session {
             }
             tx.flush().await
         };
+        self.finish_burst(burst).await
+    }
+
+    /// Send everything waiting in the Hot slot (latest value per key, T0-3)
+    /// with a single flush.
+    async fn write_hot<Tx: SessionTx>(&mut self, tx: &mut Tx, signals: &SessionSignals) -> Flow {
+        let mut frames = std::mem::take(&mut self.hot_buf);
+        signals.hot.drain_into(&mut frames);
+        if frames.is_empty() {
+            self.hot_buf = frames;
+            return Flow::Continue(());
+        }
+        let burst = async {
+            for f in frames.drain(..) {
+                tx.feed(OutFrame::Hot(f)).await?;
+            }
+            tx.flush().await
+        };
+        let flow = self.finish_burst(burst).await;
+        // Keep the buffer for the next drain, but not an outsized one.
+        frames.clear();
+        frames.shrink_to(MAX_WRITE_BATCH);
+        self.hot_buf = frames;
+        flow
+    }
+
+    /// Drive a write burst under the slow-consumer deadline.
+    async fn finish_burst(&self, burst: impl Future<Output = std::result::Result<(), ()>>) -> Flow {
         // Poll once without a timer: with room in the socket buffer the burst
         // completes immediately, and registering a timeout per write was a
         // measurable cost (performance-architecture §3.6). Arm the

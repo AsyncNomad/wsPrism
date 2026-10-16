@@ -57,6 +57,7 @@ impl BinaryService for EchoBinaryService {
             payload: Payload::Hot(Arc::new(HotOut {
                 v1: frame.payload,
                 v2,
+                slot_key: frame.key.map(|k| (joined.member_id, frame.svc_id, k)),
             })),
         };
         ctx.publish_room_lossy(room, out)

@@ -12,6 +12,7 @@ use std::time::Instant;
 
 use tokio::sync::Notify;
 
+use super::hot_slot::{HotSlot, DEFAULT_SLOT_CAP};
 use crate::realtime::types::CloseSpec;
 
 /// Milliseconds since process start (monotonic).
@@ -36,6 +37,8 @@ pub struct SessionSignals {
     notify: Notify,
     last_activity_ms: AtomicU64,
     last_ping_ms: AtomicU64,
+    /// Latest keyed Hot frame per `(sender, svc, key)` (T0-3).
+    pub hot: HotSlot,
 }
 
 impl SessionSignals {
@@ -46,6 +49,7 @@ impl SessionSignals {
             notify: Notify::new(),
             last_activity_ms: AtomicU64::new(now),
             last_ping_ms: AtomicU64::new(now),
+            hot: HotSlot::new(DEFAULT_SLOT_CAP),
         })
     }
 

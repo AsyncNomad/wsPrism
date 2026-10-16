@@ -7,7 +7,7 @@
 
 use crate::config::schema::TenantLimits;
 use crate::realtime::core::{
-    now_ms, CloseRequest, Connection, Joined, Member, Presence, SessionRegistry,
+    now_ms, CloseRequest, Connection, Joined, Member, Presence, Put, SessionRegistry,
 };
 use crate::realtime::types::{close_code, CloseSpec, OutFrame, Outgoing, Payload, QoS};
 use crate::sys;
@@ -20,6 +20,18 @@ use wsprism_core::protocol::hot::HotFrame;
 use wsprism_core::protocol::ProtocolVersion;
 
 static DROP_COUNT: AtomicU64 = AtomicU64::new(0);
+static SLOT_OVERWRITE_COUNT: AtomicU64 = AtomicU64::new(0);
+static SLOT_FULL_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Keyed Hot frames replaced in a recipient's slot before being sent
+/// (normal: latest state wins; high values mean readers lag the update rate).
+pub fn hot_slot_overwrite_count() -> u64 {
+    SLOT_OVERWRITE_COUNT.load(Ordering::Relaxed)
+}
+/// Keyed Hot frames dropped because a recipient's slot was at capacity.
+pub fn hot_slot_full_count() -> u64 {
+    SLOT_FULL_COUNT.load(Ordering::Relaxed)
+}
 static SLOW_CONSUMER_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// Lossy messages dropped because the recipient's queue was full.
@@ -84,6 +96,22 @@ impl RealtimeCore {
     /// - `Reliable`: if the queue is full, close the recipient as a slow
     ///   consumer so it resyncs on reconnect, instead of silently missing it.
     fn deliver(&self, session_key: &str, conn: &Connection, frame: OutFrame, qos: &QoS) {
+        // Keyed state (latest value wins) goes through the recipient's Hot
+        // slot, so a lagging reader never receives a backlog of stale values.
+        if let (OutFrame::Hot(h), QoS::Lossy) = (&frame, qos) {
+            if let Some(key) = h.slot_key {
+                match conn.signals.hot.put(key, Arc::clone(h)) {
+                    Put::Inserted => {}
+                    Put::Overwritten => {
+                        SLOT_OVERWRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Put::Full => {
+                        SLOT_FULL_COUNT.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                return;
+            }
+        }
         match conn.tx.try_send(frame) {
             Ok(()) | Err(TrySendError::Closed(_)) => {} // closed = session ending
             Err(TrySendError::Full(_)) => match qos {

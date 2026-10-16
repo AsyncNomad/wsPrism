@@ -215,6 +215,14 @@ impl AppState {
                 "wsprism_egress_slow_consumer_closes_total",
                 crate::realtime::core::egress_slow_consumer_count(),
             ),
+            (
+                "wsprism_hot_slot_overwritten_total",
+                crate::realtime::core::hot_slot_overwrite_count(),
+            ),
+            (
+                "wsprism_hot_slot_full_drops_total",
+                crate::realtime::core::hot_slot_full_count(),
+            ),
         ]
     }
 }

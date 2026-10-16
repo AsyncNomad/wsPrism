@@ -129,6 +129,10 @@ flags: 0x01 KEY · 0x02 SEQ · 0x04 SENDER (server only; a client setting it, or
   every join. Receivers drop frames whose `seq` is older than the last one
   seen for the same `(sender, key)` (datagrams can be reordered).
 - v1 sessions in the same room keep receiving the payload only.
+- **Keyed frames are conflated per recipient**: a frame with `key` is state,
+  and a recipient that falls behind gets the newest value per
+  `(sender, svc, key)` rather than every stale one. Frames without `key`
+  are delivered individually (and dropped if the recipient's queue is full).
 
 ## 4) Ping/Pong & Idle timeout
 Gateway periodically pings; client must pong. Idle connections are closed.

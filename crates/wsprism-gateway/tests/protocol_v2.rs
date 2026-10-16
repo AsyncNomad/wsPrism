@@ -229,3 +229,61 @@ async fn v2_client_setting_sender_is_a_decode_error() {
     a.send(Message::Binary(frame)).await.expect("send");
     assert_eq!(close_of(&mut a).await.0, 4010);
 }
+
+/// T0-3: keyed Hot frames are conflated per recipient. A reader that falls
+/// behind receives fewer frames than were sent, and the newest value last.
+#[tokio::test]
+async fn lagging_reader_gets_the_latest_keyed_state_not_a_backlog() {
+    let gw = spawn(
+        r#"
+version: 1
+gateway: { writer_send_timeout_ms: 10000 }
+tenants:
+  - id: t
+    limits:
+      max_frame_bytes: 65536
+    policy:
+      rate_limit_rps: 100000
+      rate_limit_burst: 100000
+      ext_allowlist: ["room:*"]
+      hot_allowlist: ["1:*"]
+"#,
+    )
+    .await;
+    let (mut a, _) = connect_as(&gw, "a", V2).await;
+    let (mut b, _) = connect_as(&gw, "b", V2).await;
+    let chan = join_v(&mut a, "r", false).await["chan"].as_u64().unwrap() as u32;
+    join_v(&mut b, "r", false).await;
+
+    // `a` drains its own echoes so only `b` lags.
+    let (mut a_tx, mut a_rx) = futures_util::StreamExt::split(a);
+    let drain =
+        tokio::spawn(
+            async move { while futures_util::StreamExt::next(&mut a_rx).await.is_some() {} },
+        );
+
+    const SENT: u32 = 300;
+    let payload = vec![0u8; 60 * 1024];
+    for seq in 1..=SENT {
+        a_tx.send(Message::Binary(hot_v2(
+            0x03,
+            chan,
+            Some(0),
+            Some(seq),
+            &payload,
+        )))
+        .await
+        .expect("send");
+    }
+    // Let the gateway route everything while `b` is not reading.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    let (mut got, mut last_seq) = (0u32, 0u32);
+    while let Some(f) = next_binary(&mut b, 1500).await {
+        got += 1;
+        last_seq = u32_at(&f, 12);
+    }
+    assert_eq!(last_seq, SENT, "the newest state is delivered last");
+    assert!(got < SENT, "conflated: got {got} of {SENT}");
+    drain.abort();
+}

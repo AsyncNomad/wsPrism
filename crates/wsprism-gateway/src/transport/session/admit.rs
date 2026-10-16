@@ -211,6 +211,7 @@ impl Session {
             out_tx,
             writer_timeout: Duration::from_millis(gw.writer_send_timeout_ms),
             signals,
+            hot_buf: Vec::new(),
             hot_op_counter: 0,
             _cleanup: cleanup,
         })))
