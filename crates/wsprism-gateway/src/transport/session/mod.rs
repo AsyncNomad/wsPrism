@@ -151,7 +151,16 @@ impl Session {
             }
             tx.flush().await
         };
-        match timeout(self.writer_timeout, burst).await {
+        // Poll once without a timer: with room in the socket buffer the burst
+        // completes immediately, and registering a timeout per write was a
+        // measurable cost (performance-architecture §3.6). Arm the
+        // slow-consumer deadline only if the write actually blocks.
+        let mut burst = std::pin::pin!(burst);
+        let result = match futures_util::poll!(burst.as_mut()) {
+            std::task::Poll::Ready(r) => Ok(r),
+            std::task::Poll::Pending => timeout(self.writer_timeout, burst).await,
+        };
+        match result {
             Ok(Ok(())) => Flow::Continue(()),
             Ok(Err(())) => Flow::Break(Exit::Abort),
             Err(_) => {
