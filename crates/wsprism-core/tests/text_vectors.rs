@@ -61,3 +61,21 @@ fn v2_envelope_is_lenient_and_versionless() {
     // Still a structured envelope: svc and type are required.
     assert!(decode_envelope_v2(r#"{"svc":"a"}"#).is_err());
 }
+
+/// serde derives also accept a JSON array as a struct (fields by position).
+/// That undocumented form must be rejected by both decoders (found by fuzzing:
+/// `[1,"",""]` decoded as v1 but meant something else to v2).
+#[test]
+fn positional_array_envelopes_are_rejected() {
+    use wsprism_core::protocol::text::decode_envelope_v2;
+    for text in [
+        r#"[1,"chat","send"]"#,
+        r#" [1,"",""]"#,
+        r#"["chat","send"]"#,
+        "7",
+        r#""s""#,
+    ] {
+        assert!(decode_envelope(text).is_err(), "v1 accepted {text}");
+        assert!(decode_envelope_v2(text).is_err(), "v2 accepted {text}");
+    }
+}

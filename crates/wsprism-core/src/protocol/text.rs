@@ -40,11 +40,24 @@ pub struct Envelope {
     pub data: Option<Box<RawValue>>,
 }
 
+/// An envelope must be a JSON object. serde's derived `Deserialize` would
+/// also accept an array (struct fields by position) — an undocumented wire
+/// form whose meaning depends on field order (found by fuzzing).
+fn require_object(s: &str) -> Result<()> {
+    match s.trim_start().as_bytes().first() {
+        Some(b'{') => Ok(()),
+        _ => Err(WsPrismError::BadRequest(
+            "invalid envelope json: expected an object".into(),
+        )),
+    }
+}
+
 /// Parse and validate an Ext Lane envelope from a text frame.
 ///
 /// Rejects malformed JSON / unknown fields (`BadRequest`) and any protocol
 /// version other than [`EXT_PROTOCOL_VERSION`] (`UnsupportedVersion`).
 pub fn decode_envelope(s: &str) -> Result<Envelope> {
+    require_object(s)?;
     let env: Envelope = serde_json::from_str(s)
         .map_err(|e| WsPrismError::BadRequest(format!("invalid envelope json: {e}")))?;
     if env.v != EXT_PROTOCOL_VERSION {
@@ -72,6 +85,7 @@ struct EnvelopeV2 {
 /// (`v` = [`EXT_PROTOCOL_VERSION`], `flags` = 0). Malformed JSON or a
 /// missing `svc` / `type` is a `BadRequest`.
 pub fn decode_envelope_v2(s: &str) -> Result<Envelope> {
+    require_object(s)?;
     let e: EnvelopeV2 = serde_json::from_str(s)
         .map_err(|e| WsPrismError::BadRequest(format!("invalid envelope json: {e}")))?;
     Ok(Envelope {
