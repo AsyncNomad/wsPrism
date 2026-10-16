@@ -37,6 +37,8 @@ pub struct SessionSignals {
     notify: Notify,
     last_activity_ms: AtomicU64,
     last_ping_ms: AtomicU64,
+    /// When the credential expires (`now_ms` scale; `u64::MAX` = never).
+    expires_at_ms: AtomicU64,
     /// Latest keyed Hot frame per `(sender, svc, key)` (T0-3).
     pub hot: HotSlot,
 }
@@ -49,6 +51,7 @@ impl SessionSignals {
             notify: Notify::new(),
             last_activity_ms: AtomicU64::new(now),
             last_ping_ms: AtomicU64::new(now),
+            expires_at_ms: AtomicU64::new(u64::MAX),
             hot: HotSlot::new(DEFAULT_SLOT_CAP),
         })
     }
@@ -92,6 +95,16 @@ impl SessionSignals {
     /// Milliseconds since the last inbound activity, as of `now`.
     pub fn idle_ms(&self, now: u64) -> u64 {
         now.saturating_sub(self.last_activity_ms.load(Ordering::Relaxed))
+    }
+
+    /// Close the session at `deadline_ms` (credential expiry, ADR 0008 §1).
+    pub fn set_expiry(&self, deadline_ms: u64) {
+        self.expires_at_ms.store(deadline_ms, Ordering::Relaxed);
+    }
+
+    /// True once the credential has expired, as of `now`.
+    pub fn expired(&self, now: u64) -> bool {
+        now >= self.expires_at_ms.load(Ordering::Relaxed)
     }
 
     /// True (and the ping clock restarted) if a keep-alive ping is due.

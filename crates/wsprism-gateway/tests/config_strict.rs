@@ -69,3 +69,82 @@ fn auth_chain_config_is_strict() {
         "unknown authenticator kind"
     );
 }
+
+#[test]
+fn jwt_config_is_strict() {
+    let cases = [
+        ("no key", "{ kind: jwt, algorithm: HS256 }"),
+        (
+            "two secrets",
+            "{ kind: jwt, algorithm: HS256, secret_file: a, secret_env: B }",
+        ),
+        (
+            "public key for hmac",
+            "{ kind: jwt, algorithm: HS256, secret_env: B, public_key_file: k }",
+        ),
+        (
+            "secret for rsa",
+            "{ kind: jwt, algorithm: RS256, secret_env: B }",
+        ),
+        (
+            "unknown algorithm",
+            "{ kind: jwt, algorithm: none, secret_env: B }",
+        ),
+        (
+            "leeway too large",
+            "{ kind: jwt, algorithm: HS256, secret_env: B, leeway_s: 301 }",
+        ),
+        (
+            "unknown field",
+            "{ kind: jwt, algorithm: HS256, secret_env: B, algorithms: [HS256] }",
+        ),
+    ];
+    for (name, link) in cases {
+        let yaml = format!("version: 1\ntenants:\n  - id: a\n    auth: [{link}]\n");
+        assert!(
+            config::load_from_str(&yaml).is_err(),
+            "{name} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn jwt_keys_are_loaded_and_checked_at_startup() {
+    let dir = std::env::temp_dir().join(format!("wsprism-jwtcfg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let short = dir.join("short");
+    std::fs::write(&short, "too-short\n").unwrap();
+    let not_pem = dir.join("not.pem");
+    std::fs::write(&not_pem, "hello").unwrap();
+    let build = |link: String| {
+        let yaml = format!("version: 1\ntenants:\n  - id: a\n    auth: [{link}]\n");
+        wsprism_gateway::app_state::AppState::new(config::load_from_str(&yaml).unwrap())
+    };
+    let cases = [
+        (
+            "missing file",
+            "{ kind: jwt, algorithm: HS256, secret_file: /nonexistent/wsprism }".to_string(),
+        ),
+        (
+            "short secret",
+            format!(
+                "{{ kind: jwt, algorithm: HS256, secret_file: \"{}\" }}",
+                short.display()
+            ),
+        ),
+        (
+            "unset env",
+            "{ kind: jwt, algorithm: HS256, secret_env: WSPRISM_TEST_UNSET_SECRET }".to_string(),
+        ),
+        (
+            "bad pem",
+            format!(
+                "{{ kind: jwt, algorithm: ES256, public_key_file: \"{}\" }}",
+                not_pem.display()
+            ),
+        ),
+    ];
+    for (name, link) in cases {
+        assert!(build(link).is_err(), "{name} must fail at startup");
+    }
+}

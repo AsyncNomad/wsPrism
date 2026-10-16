@@ -57,8 +57,43 @@ tenants:
 ```
 
 Omitting `auth` means `[dev]` and logs a startup warning: anyone presenting
-`dev` is admitted. JWT and the backend connect proxy arrive in the next M2
-steps.
+`dev` is admitted. The backend connect proxy arrives in the next M2 step.
+
+**JWT** (`kind: jwt`): `sub` is the user id (`[A-Za-z0-9_-]{1,64}`), `exp`
+is required, `nbf` is honoured. The algorithm is fixed per link — a token
+whose header names another algorithm (or another `kid`, if `kid` is set)
+is passed to the next link, never verified with a different algorithm.
+
+```yaml
+    auth:
+      - kind: jwt
+        algorithm: HS256          # HS256/384/512, RS256/384/512, PS256/384/512, ES256/384, EdDSA
+        secret_file: /run/secrets/jwt   # HS*: or `secret_env: VAR`; never inline
+        # public_key_file: /etc/wsprism/jwt.pem   # RS*/PS*/ES*/EdDSA: PEM public key
+        issuer: "https://auth.example.com"   # optional; if set, `iss` is required
+        audience: "wsprism"                  # optional; if set, `aud` is required
+        leeway_s: 30                         # clock skew on exp/nbf (default 30, max 300)
+        require_tenant: false                # true: tokens must carry wsprism.tenant
+        # kid: "2026-10"                     # only tokens with this `kid` (key rotation)
+```
+
+wsPrism-specific claims sit under one object, so they never collide with an
+issuer's own claims:
+
+```json
+{"sub": "alice", "exp": 1760000000,
+ "wsprism": {"tenant": "acme", "subscribe": ["match:*"], "publish": ["match:42"]}}
+```
+
+A `wsprism.tenant` naming another tenant is always rejected. HMAC secrets
+must be at least as long as the hash (32 / 48 / 64 bytes); a trailing
+newline in `secret_file` is ignored. Keys are loaded at startup, so
+`--check-config` reports a missing or malformed key. **The session is
+closed when the token expires** (`exp` + `leeway_s`; v2 close 4001
+`auth_expired`, v1 1008), checked once a second. There is no in-band token
+refresh yet: the client reconnects with a new token. To rotate keys, list
+two `jwt` links with different `kid`s. JWKS URLs are not supported yet
+(they need the HTTP client of the proxy step).
 
 **One-time tickets** (`kind: ticket`): the backend calls
 `POST /api/v1/tickets` (server API, below) and hands the ticket to the

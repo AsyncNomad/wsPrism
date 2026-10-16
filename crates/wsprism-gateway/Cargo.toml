@@ -30,6 +30,7 @@ tungstenite = "0.24"
 mimalloc = { version = "0.1.52", optional = true }
 ring = "0.17"
 base64 = "0.22"
+jsonwebtoken = { version = "9.3", default-features = false, features = ["use_pem"] }
 
 [dev-dependencies]
 criterion = { workspace = true }

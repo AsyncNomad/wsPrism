@@ -83,6 +83,7 @@ pub async fn ws_upgrade(
             let trace_id = gen_trace();
             let user_id = admitted.identity.user_id;
             let permissions = admitted.identity.permissions;
+            let expires_at = admitted.identity.expires_at;
             let ip = admitted.client_ip;
             // C6: instrument the whole session future instead of entering the
             // span across awaits (clippy.toml bans holding span guards there).
@@ -93,6 +94,7 @@ pub async fn ws_upgrade(
                 tenant: q.tenant,
                 user_id,
                 permissions,
+                expires_at,
                 sid,
                 trace_id,
             };

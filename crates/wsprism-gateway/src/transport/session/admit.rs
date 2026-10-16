@@ -11,7 +11,7 @@ use super::{Session, SessionIdentity};
 use crate::app_state::AppState;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::OnExceed;
-use crate::realtime::core::{CloseRequest, Connection, CtxIdentity, SessionSignals};
+use crate::realtime::core::{now_ms, CloseRequest, Connection, CtxIdentity, SessionSignals};
 use crate::realtime::{close_code, CloseSpec, OutFrame, RealtimeCore, RealtimeCtx};
 use crate::sys;
 
@@ -155,6 +155,9 @@ impl Session {
         }
 
         let signals = SessionSignals::new();
+        if let Some(exp) = id.expires_at {
+            signals.set_expiry(crate::auth::expiry_deadline_ms(exp, now_ms()));
+        }
         let conn = Connection {
             tx: out_tx.clone(),
             signals: signals.clone(),

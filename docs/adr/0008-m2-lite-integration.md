@@ -1,6 +1,6 @@
 # ADR 0008: M2-lite — 인증·권한·서버 API·백엔드 프록시·SDK
 
-- 상태: **채택 (2026-10-16)**, M2-1~M2-4 완료 — 사용자 결정: "상용 프로그램 수준으로 기능 확장을 먼저, 성능은 나중에". 단계별 구현(§9), 새 의존성은 해당 단계 착수 전에 확인(§8)
+- 상태: **채택 (2026-10-16)**, M2-1~M2-5 완료 — 사용자 결정: "상용 프로그램 수준으로 기능 확장을 먼저, 성능은 나중에". 단계별 구현(§9), 새 의존성은 해당 단계 착수 전에 확인(§8)
 - 관련: [ROADMAP](../ROADMAP.md) M2, [ADR 0003](0003-ticket-sources-and-subprotocol.md)(티켓 전달 경로), [ADR 0006](0006-protocol-v2.md)(프로토콜 v2), [ADR 0005](0005-session-transport-seam.md)
 
 ## 배경
@@ -68,6 +68,14 @@ pub struct Identity {
 - `auth: [{kind: jwt, ...}]`: `HS256`(공유 비밀) 또는 `RS256`/`ES256`(정적 공개키 PEM 또는 JWKS URL, 주기적 갱신). 필수 검증: 서명, `exp`, `alg` 고정(설정한 것만 — alg 혼동 공격 방지). 선택: `iss`, `aud`. `sub` → 사용자.
 - 테넌트 결합: 클레임 `wsprism.tenant`가 있으면 접속 테넌트와 같아야 한다(다른 테넌트용 토큰 재사용 방지).
 - 권한 클레임: `wsprism.subscribe`, `wsprism.publish`(문자열 배열).
+- 구현 결정(M2-5):
+  - `wsprism.*`는 **중첩 객체** `"wsprism": {tenant, subscribe, publish}`로 해석한다. 점이 들어간 평면 키(`"wsprism.tenant"`)는 기각 — 발급자 쪽 라이브러리마다 점 키를 다루는 방식이 달라 실수가 잦다.
+  - 헤더의 `alg`가 이 링크의 알고리즘과 다르거나 `kid`(설정 시)가 다르면 `NotMine`(다음 링크로). 알고리즘은 링크마다 고정이므로 alg 혼동 공격 여지는 그대로 없고, 대신 키 교체(같은 알고리즘, `kid` 두 개)와 여러 발급자 체인이 가능해진다. 기각: 즉시 거절 — 링크를 둘 이상 둘 수 없다.
+  - **jsonwebtoken 9는 `iss`/`aud` 클레임이 *없으면* 비교를 건너뛴다.** 그래서 설정한 경우 필수 클레임에 넣는다(돌연변이 검사로 확인: 빼면 `iss` 없는 토큰이 통과). `audience`를 설정하지 않으면 `aud` 검사를 끈다(아니면 `aud`가 있는 토큰이 모두 거절된다).
+  - HMAC 비밀은 설정 파일에 직접 쓰지 못한다(`secret_file`/`secret_env`만). 길이는 해시 출력 이상(RFC 7518 §3.2). 키는 기동 시 읽어 `--check-config`가 잡는다.
+  - 세션 만료 = `exp + leeway_s`. 연결마다 타이머 task를 두지 않고 기존 1초 스위퍼가 `SessionSignals`의 만료 시각(AtomicU64, 8바이트/연결)을 확인해 `auth_expired`(v2 4001, v1 1008)로 닫는다. 오차 최대 ~1초. 기각: 연결별 `sleep_until` — 세션 future 크기·타이머 휠 부담(P0-d에서 없앤 것과 같은 비용).
+  - 토큰 갱신(재접속 없이 새 토큰 제시)은 아직 없다. 클라이언트는 4001을 받으면 새 토큰으로 재접속한다. Centrifugo의 `refresh`에 해당하는 것은 SDK(M2-7)와 함께 다시 판단.
+  - 크레이트 버전: 최신은 11.x지만 9.3.1을 쓴다. 9.x는 lock에 이미 있는 `ring`을 쓰고 새 크레이트가 2개뿐이다. 10.x 이상은 백엔드로 `aws-lc-rs`(C 빌드) 또는 RustCrypto(`rsa` 크레이트 — RUSTSEC-2023-0071 Marvin 권고 대상)를 골라야 한다. 9.x 지원이 끊기면 다시 판단. `cargo-audit`가 설치되어 있지 않아 이번 단계에서는 권고 검사를 못 돌렸다.
 
 ### 6. 백엔드 프록시 (언어 무관 연동의 핵심)
 
@@ -99,7 +107,7 @@ pub struct Identity {
 | M2-2 ✅ | 권한 모델(구독/발행) + 검사 지점(`RealtimeCtx`의 입장·발행 — 모든 서비스가 거침). 통합 테스트는 1회용 티켓과 함께(`tests/tickets.rs`) | 없음 |
 | M2-3 ✅ | 서버 API 리스너 + API 키 + `publish`·`disconnect`·`presence` | `ring`·`base64`(오프라인) |
 | M2-4 ✅ | 1회용 티켓 발급 + `ticket` 인증기 | 없음 |
-| M2-5 | JWT 인증기 | `jsonwebtoken` |
+| M2-5 ✅ | JWT 인증기 (정적 키; JWKS는 M2-6 HTTP 클라이언트 이후) | `jsonwebtoken` 9.3.1 (사용자 승인 2026-10-16) |
 | M2-6 | connect·RPC 프록시 | `reqwest` |
 | M2-7 | JS SDK + 통합 테스트 | 없음 |
 | M2-8 | 예제 앱(Node 백엔드 + SDK 채팅·상태 동기화) — **M2 완료 기준** | 없음 |

@@ -84,7 +84,14 @@ impl RealtimeCore {
     pub fn sweep(&self, idle_timeout_ms: u64, ping_interval_ms: u64) {
         let now = now_ms();
         self.sessions.for_each_session(|conn| {
-            if conn.signals.idle_ms(now) >= idle_timeout_ms {
+            if conn.signals.expired(now) {
+                conn.signals
+                    .request_close(CloseRequest::Spec(CloseSpec::new(
+                        close_code::POLICY,
+                        "auth_expired",
+                        Some(sys::kicked("auth_expired", "").to_string()),
+                    )));
+            } else if conn.signals.idle_ms(now) >= idle_timeout_ms {
                 conn.signals.request_close(CloseRequest::Idle);
             } else if conn.signals.take_ping_due(now, ping_interval_ms) {
                 let _ = conn.tx.try_send(OutFrame::Ping);

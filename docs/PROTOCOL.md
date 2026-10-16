@@ -212,7 +212,7 @@ but 4000-range codes whose **range tells the client how to reconnect**:
 
 | Range | Client should | Codes |
 |---|---|---|
-| 4000-4099 | **not reconnect unchanged** (new ticket / config needed) | 4003 `policy`, 4004 `too_many_sessions`, 4005 `replaced`, 4006 `max_sessions_exceeded`, 4007 `disconnected`, 4009 `message too big`, 4010 `decode_error` |
+| 4000-4099 | **not reconnect unchanged** (new ticket / config needed) | 4001 `auth_expired` (the credential's `exp` passed: get a fresh token, then reconnect), 4003 `policy`, 4004 `too_many_sessions`, 4005 `replaced`, 4006 `max_sessions_exceeded`, 4007 `disconnected`, 4009 `message too big`, 4010 `decode_error` |
 | 4100-4199 | reconnect **after backoff** (≥ 1 s, exponential + jitter) | 4100 `capacity`, 4101 `slow_consumer`, 4103 `draining` |
 | 4200-4299 | reconnect **immediately** | 4200 `idle_timeout` |
 

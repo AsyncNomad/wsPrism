@@ -20,6 +20,7 @@ pub(super) fn wire_close_code(protocol: ProtocolVersion, code: u16, reason: &str
         return code;
     }
     match reason {
+        "auth_expired" => 4001,
         "policy" => 4003,
         "too_many_sessions" => 4004,
         "replaced" => 4005,

@@ -317,6 +317,92 @@ pub enum AuthConfig {
     Dev,
     /// One-time tickets issued through the server API (`wpt_...`).
     Ticket,
+    /// Signed JWTs (`sub` = user), verified with one pinned algorithm.
+    Jwt(JwtConfig),
+}
+
+/// `kind: jwt` (ADR 0008 §5). Exactly one key source: `secret_file` /
+/// `secret_env` for HS*, `public_key_file` (PEM) for the others.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct JwtConfig {
+    pub algorithm: JwtAlgorithm,
+    #[serde(default)]
+    pub secret_file: Option<String>,
+    /// Name of an environment variable holding the secret.
+    #[serde(default)]
+    pub secret_env: Option<String>,
+    #[serde(default)]
+    pub public_key_file: Option<String>,
+    /// If set, only tokens whose header `kid` equals it are this link's
+    /// (others pass to the next link) — chain two links to rotate keys.
+    #[serde(default)]
+    pub kid: Option<String>,
+    #[serde(default)]
+    pub issuer: Option<String>,
+    #[serde(default)]
+    pub audience: Option<String>,
+    /// Clock skew tolerated on `exp` / `nbf`, seconds (<= 300).
+    #[serde(default = "default_jwt_leeway_s")]
+    pub leeway_s: u64,
+    /// Reject tokens without a `wsprism.tenant` claim (a claim naming
+    /// another tenant is always rejected).
+    #[serde(default)]
+    pub require_tenant: bool,
+}
+
+fn default_jwt_leeway_s() -> u64 {
+    30
+}
+
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+pub enum JwtAlgorithm {
+    HS256,
+    HS384,
+    HS512,
+    RS256,
+    RS384,
+    RS512,
+    PS256,
+    PS384,
+    PS512,
+    ES256,
+    ES384,
+    EdDSA,
+}
+
+impl JwtAlgorithm {
+    pub fn is_hmac(self) -> bool {
+        matches!(self, Self::HS256 | Self::HS384 | Self::HS512)
+    }
+}
+
+impl JwtConfig {
+    pub fn validate(&self) -> Result<()> {
+        let secret = self.secret_file.is_some() as u8 + self.secret_env.is_some() as u8;
+        let ok = if self.algorithm.is_hmac() {
+            secret == 1 && self.public_key_file.is_none()
+        } else {
+            secret == 0 && self.public_key_file.is_some()
+        };
+        if !ok {
+            return Err(WsPrismError::BadRequest(format!(
+                "jwt {:?}: set exactly one of {}",
+                self.algorithm,
+                if self.algorithm.is_hmac() {
+                    "secret_file / secret_env"
+                } else {
+                    "public_key_file"
+                }
+            )));
+        }
+        if self.leeway_s > 300 {
+            return Err(WsPrismError::BadRequest(
+                "jwt leeway_s must be <= 300".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl TenantConfig {
@@ -327,6 +413,13 @@ impl TenantConfig {
                     "tenant {}: api_keys[{}].sha256 must be 64 hex characters (SHA-256 of the key)",
                     self.id, k.name
                 )));
+            }
+        }
+        for a in &self.auth {
+            if let AuthConfig::Jwt(j) = a {
+                j.validate().map_err(|e| {
+                    WsPrismError::BadRequest(format!("tenant {}: {}", self.id, e.client_message()))
+                })?;
             }
         }
         if self.limits.max_frame_bytes == 0 {

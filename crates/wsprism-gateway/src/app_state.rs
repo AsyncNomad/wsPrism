@@ -107,7 +107,9 @@ impl AppState {
         let tickets = Arc::new(TicketStore::default());
         let mut tenant_auth = HashMap::new();
         for t in &cfg.tenants {
-            let chain = AuthChain::from_config(&t.auth, &tickets);
+            let chain = AuthChain::from_config(&t.auth, &tickets).map_err(|e| {
+                WsPrismError::BadRequest(format!("tenant {}: {}", t.id, e.client_message()))
+            })?;
             if chain.is_dev_only() {
                 tracing::warn!(
                     tenant = %t.id,

@@ -8,6 +8,7 @@
 //! new implementations; admission and sessions don't change.
 
 mod dev;
+mod jwt;
 mod permissions;
 mod ticket;
 
@@ -19,7 +20,10 @@ use async_trait::async_trait;
 
 use crate::config::schema::AuthConfig;
 
+type BuildResult<T> = wsprism_core::error::Result<T>;
+
 pub use dev::DevAuthenticator;
+pub use jwt::{expiry_deadline_ms, JwtAuthenticator};
 pub use permissions::{Permissions, RoomPattern};
 pub use ticket::{
     IssueError, TicketAuthenticator, TicketStore, DEFAULT_TICKET_TTL, MAX_TICKET_TTL, TICKET_PREFIX,
@@ -83,20 +87,21 @@ impl AuthChain {
 
     /// Build a tenant's chain from config. An empty `auth` list means the
     /// development stub (see [`AuthChain::is_dev_only`]).
-    pub fn from_config(auth: &[AuthConfig], tickets: &Arc<TicketStore>) -> Self {
+    pub fn from_config(auth: &[AuthConfig], tickets: &Arc<TicketStore>) -> BuildResult<Self> {
         if auth.is_empty() {
-            return Self::new(vec![Arc::new(DevAuthenticator)]);
+            return Ok(Self::new(vec![Arc::new(DevAuthenticator)]));
         }
         let links = auth
             .iter()
-            .map(|a| -> Arc<dyn Authenticator> {
-                match a {
+            .map(|a| -> BuildResult<Arc<dyn Authenticator>> {
+                Ok(match a {
                     AuthConfig::Dev => Arc::new(DevAuthenticator),
                     AuthConfig::Ticket => Arc::new(TicketAuthenticator::new(Arc::clone(tickets))),
-                }
+                    AuthConfig::Jwt(j) => Arc::new(JwtAuthenticator::from_config(j)?),
+                })
             })
-            .collect();
-        Self::new(links)
+            .collect::<BuildResult<_>>()?;
+        Ok(Self::new(links))
     }
 
     /// True if some link has this kind (e.g. "ticket").
@@ -178,6 +183,8 @@ mod tests {
 
     #[test]
     fn empty_config_is_the_dev_stub_and_says_so() {
-        assert!(AuthChain::from_config(&[], &Arc::default()).is_dev_only());
+        assert!(AuthChain::from_config(&[], &Arc::default())
+            .unwrap()
+            .is_dev_only());
     }
 }

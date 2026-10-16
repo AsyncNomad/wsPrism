@@ -58,6 +58,8 @@ pub(crate) struct SessionIdentity {
     pub user_id: String,
     /// Room permissions from the authenticator (ADR 0008 §2).
     pub permissions: Permissions,
+    /// Credential expiry: the session is closed then (`auth_expired`).
+    pub expires_at: Option<std::time::SystemTime>,
     /// Client-facing session id (client-provided or generated; not unique).
     pub sid: String,
     pub trace_id: String,
