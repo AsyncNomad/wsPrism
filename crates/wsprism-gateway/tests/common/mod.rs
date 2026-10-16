@@ -71,6 +71,89 @@ pub async fn spawn(yaml: &str) -> Gateway {
     Gateway { addr, state }
 }
 
+/// A gateway with the server API (ADR 0008 §3) on its own ephemeral port.
+pub struct ApiGateway {
+    pub addr: SocketAddr,
+    pub api: SocketAddr,
+    pub state: AppState,
+}
+
+/// Boot a gateway from YAML with the server API listener enabled.
+pub async fn spawn_with_api(yaml: &str) -> ApiGateway {
+    let cfg = config::load_from_str(yaml).expect("test config must parse");
+    let state = AppState::new(cfg).expect("app state");
+    let served = state.clone();
+    let ws = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ws");
+    let api = std::net::TcpListener::bind("127.0.0.1:0").expect("bind api");
+    ws.set_nonblocking(true).expect("nonblocking");
+    api.set_nonblocking(true).expect("nonblocking");
+    let (addr, api_addr) = (
+        ws.local_addr().expect("ws addr"),
+        api.local_addr().expect("api addr"),
+    );
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("server runtime");
+        rt.block_on(async move {
+            let ws = tokio::net::TcpListener::from_std(ws).expect("ws listener");
+            let api = tokio::net::TcpListener::from_std(api).expect("api listener");
+            server::serve_with_api(ws, Some(api), served, std::future::pending())
+                .await
+                .expect("serve");
+        });
+    });
+    ApiGateway {
+        addr,
+        api: api_addr,
+        state,
+    }
+}
+
+/// Minimal HTTP/1.1 request (no client crate offline): returns the status
+/// code and the body parsed as JSON (Null if empty or not JSON).
+pub async fn http(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    bearer: Option<&str>,
+    body: Option<Value>,
+) -> (u16, Value) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut tcp = TcpStream::connect(addr).await.expect("api connect");
+    let body = body.map(|b| b.to_string()).unwrap_or_default();
+    let auth = bearer
+        .map(|k| format!("Authorization: Bearer {k}\r\n"))
+        .unwrap_or_default();
+    let req = format!(
+        "{method} {path} HTTP/1.1\r\nHost: test\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    tcp.write_all(req.as_bytes()).await.expect("api write");
+    let mut raw = Vec::new();
+    tokio::time::timeout(WAIT, tcp.read_to_end(&mut raw))
+        .await
+        .expect("api response in time")
+        .expect("api read");
+    let text = String::from_utf8_lossy(&raw);
+    let status = text
+        .split(' ')
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .expect("status code");
+    let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
+    // Bodies are small; chunked encoding is not used for them by axum here,
+    // but tolerate it by finding the JSON object.
+    let json = body
+        .find('{')
+        .and_then(|i| body[i..].rfind('}').map(|j| &body[i..i + j + 1]))
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or(Value::Null);
+    (status, json)
+}
+
 pub fn ws_url(addr: SocketAddr, tenant: &str, sid: Option<&str>) -> String {
     let mut url = format!("ws://{addr}/v1/ws?tenant={tenant}");
     if let Some(sid) = sid {

@@ -296,6 +296,23 @@ impl Presence {
         }
     }
 
+    /// The room's id, if the room exists (has members).
+    pub fn room_id(&self, room_key: &str) -> Option<u32> {
+        self.room_to_sessions.get(room_key).map(|r| r.id)
+    }
+
+    /// User keys (`tenant::user`) with at least one session in the room.
+    pub fn user_keys_in(&self, room_key: &str) -> Vec<String> {
+        self.room_to_users
+            .get(room_key)
+            .map(|users| {
+                let mut v: Vec<String> = users.iter().cloned().collect();
+                v.sort();
+                v
+            })
+            .unwrap_or_default()
+    }
+
     /// The session's membership in `room_key`, if it has joined.
     pub fn membership(&self, room_key: &str, session_key: &str) -> Option<Joined> {
         let room = self.room_to_sessions.get(room_key)?;

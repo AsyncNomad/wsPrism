@@ -65,7 +65,20 @@ async fn main() -> ExitCode {
     };
     tracing::info!(%listen, config = %cli.config.display(), "wsprism-gateway starting");
 
-    if let Err(e) = server::serve(listener, state, shutdown_signal()).await {
+    let api = match state.cfg().gateway.api.as_ref() {
+        None => None,
+        Some(api) => match tokio::net::TcpListener::bind(&api.listen).await {
+            Ok(l) => {
+                tracing::info!(listen = %api.listen, "server api listening");
+                Some(l)
+            }
+            Err(e) => {
+                eprintln!("failed to bind gateway.api.listen {}: {e}", api.listen);
+                return ExitCode::FAILURE;
+            }
+        },
+    };
+    if let Err(e) = server::serve_with_api(listener, api, state, shutdown_signal()).await {
         eprintln!("server failed: {e}");
         return ExitCode::FAILURE;
     }

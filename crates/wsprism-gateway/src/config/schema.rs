@@ -74,6 +74,11 @@ pub struct GatewaySection {
     #[serde(default = "default_listen")]
     pub listen: String,
 
+    /// Server API for backends (ADR 0008 §3). Absent = disabled. Bind it to
+    /// loopback or an internal network, never the public interface.
+    #[serde(default)]
+    pub api: Option<ApiConfig>,
+
     /// WebSocket ping interval in milliseconds.
     #[serde(default = "default_ping_interval_ms")]
     pub ping_interval_ms: u64,
@@ -202,6 +207,7 @@ impl Default for GatewaySection {
             drain_grace_ms: default_drain_grace_ms(),
             session_queue_capacity: default_session_queue_capacity(),
             socket: SocketConfig::default(),
+            api: None,
             trusted_proxies: Vec::new(),
             handshake_limit: HandshakeConfig::default(),
         }
@@ -280,6 +286,27 @@ pub struct TenantConfig {
     /// stub (`dev` / `dev:<id>`), with a startup warning.
     #[serde(default)]
     pub auth: Vec<AuthConfig>,
+
+    /// Keys a backend presents to the server API; the key selects this tenant.
+    #[serde(default)]
+    pub api_keys: Vec<ApiKeyConfig>,
+}
+
+/// The server API listener.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ApiConfig {
+    /// host:port, e.g. `127.0.0.1:8081`.
+    pub listen: String,
+}
+
+/// A tenant API key, stored as the SHA-256 of the key (lowercase hex).
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ApiKeyConfig {
+    /// For logs only.
+    pub name: String,
+    pub sha256: String,
 }
 
 /// One link of a tenant's authentication chain.
@@ -292,6 +319,14 @@ pub enum AuthConfig {
 
 impl TenantConfig {
     pub fn validate(&self) -> Result<()> {
+        for k in &self.api_keys {
+            if k.sha256.len() != 64 || !k.sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(WsPrismError::BadRequest(format!(
+                    "tenant {}: api_keys[{}].sha256 must be 64 hex characters (SHA-256 of the key)",
+                    self.id, k.name
+                )));
+            }
+        }
         if self.limits.max_frame_bytes == 0 {
             return Err(WsPrismError::BadRequest(
                 "limits.max_frame_bytes must be > 0".into(),

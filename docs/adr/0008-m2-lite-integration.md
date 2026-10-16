@@ -91,7 +91,7 @@ pub struct Identity {
 |---|---|---|
 | M2-1 ✅ | `Authenticator` 트레이트·체인, admission 비동기화, `dev` 구현 이전(동작 변화 없음), 기동 경고 | 없음 |
 | M2-2 ✅ | 권한 모델(구독/발행) + 검사 지점(`RealtimeCtx`의 입장·발행 — 모든 서비스가 거침). 통합 테스트는 권한을 실을 수 있는 1회용 티켓(M2-4)과 함께 | 없음 |
-| M2-3 | 서버 API 리스너 + API 키 + `publish`·`disconnect`·`presence` | `ring`(오프라인) |
+| M2-3 ✅ | 서버 API 리스너 + API 키 + `publish`·`disconnect`·`presence` | `ring`·`base64`(오프라인) |
 | M2-4 | 1회용 티켓 발급 + `ticket` 인증기 | 없음 |
 | M2-5 | JWT 인증기 | `jsonwebtoken` |
 | M2-6 | connect·RPC 프록시 | `reqwest` |

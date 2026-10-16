@@ -41,6 +41,8 @@ struct AppStateInner {
     cfg: GatewayConfig,
     /// Per-tenant authentication chains (ADR 0008 §1).
     tenant_auth: HashMap<String, Arc<AuthChain>>,
+    /// SHA-256 of each tenant API key -> tenant id (server API, ADR 0008 §3).
+    api_keys: HashMap<[u8; 32], String>,
     tenant_policy: HashMap<String, Arc<policy::TenantPolicyRuntime>>,
     /// tenant id -> index into `cfg.tenants` (O(1) lookup per upgrade).
     tenant_index: HashMap<String, usize>,
@@ -75,6 +77,28 @@ impl AppState {
                 );
             }
             tenant_policy.insert(t.id.clone(), Arc::new(runtime));
+        }
+
+        // Server API keys (validated as 64 hex chars by the config).
+        let mut api_keys = HashMap::new();
+        for t in &cfg.tenants {
+            for k in &t.api_keys {
+                let mut digest = [0u8; 32];
+                for (i, b) in digest.iter_mut().enumerate() {
+                    *b = u8::from_str_radix(&k.sha256[2 * i..2 * i + 2], 16).map_err(|_| {
+                        WsPrismError::BadRequest(format!(
+                            "tenant {}: api key {} is not hex",
+                            t.id, k.name
+                        ))
+                    })?;
+                }
+                if api_keys.insert(digest, t.id.clone()).is_some() {
+                    return Err(WsPrismError::BadRequest(format!(
+                        "api key {} (tenant {}) is configured more than once",
+                        k.name, t.id
+                    )));
+                }
+            }
         }
 
         // Authentication chains.
@@ -147,6 +171,7 @@ impl AppState {
         Ok(Self {
             inner: Arc::new(AppStateInner {
                 tenant_auth,
+                api_keys,
                 tenant_index: cfg
                     .tenants
                     .iter()
@@ -176,6 +201,11 @@ impl AppState {
 
     pub fn tenant_policy(&self, tenant_id: &str) -> Option<Arc<policy::TenantPolicyRuntime>> {
         self.inner.tenant_policy.get(tenant_id).cloned()
+    }
+
+    /// The tenant whose API key has this SHA-256, if any.
+    pub fn api_key_tenant(&self, digest: &[u8; 32]) -> Option<String> {
+        self.inner.api_keys.get(digest).cloned()
     }
 
     /// The tenant's authentication chain.

@@ -194,6 +194,14 @@ impl SessionRegistry {
             .map(|(k, _)| k)
     }
 
+    /// Live connections of a user, optionally only the one(s) using `sid`.
+    pub fn user_connections(&self, user_key: &str, sid: Option<&str>) -> Vec<Connection> {
+        self.user_sessions_where(user_key, |e| sid.is_none_or(|s| e.sid == s))
+            .into_iter()
+            .filter_map(|(k, _)| self.get_session(&k))
+            .collect()
+    }
+
     /// Session key of this user's live session using client-facing `sid`.
     pub fn find_session_by_sid(&self, user_key: &str, sid: &str) -> Option<String> {
         self.user_sessions_where(user_key, |e| e.sid == sid)

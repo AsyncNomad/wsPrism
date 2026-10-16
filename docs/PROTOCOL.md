@@ -134,6 +134,12 @@ flags: 0x01 KEY · 0x02 SEQ · 0x04 SENDER (server only; a client setting it, or
   `(sender, svc, key)` rather than every stale one. Frames without `key`
   are delivered individually (and dropped if the recipient's queue is full).
 
+### Server publishes
+
+Messages a backend publishes through the server API arrive as
+`{"v":1,"svc":"server","type":"publish","room":"<room>","data":{...}}` (Ext)
+or as a Hot frame from sender `0` (v1: payload only).
+
 ## 4) Ping/Pong & Idle timeout
 Gateway periodically pings; client must pong. Idle connections are closed.
 
@@ -196,6 +202,7 @@ there is one) and then a close frame:
 | 1008 | `replaced` | `sys.kicked` | Another connection reused this `sid` |
 | 1008 | `slow_consumer` | `sys.error SLOW_CONSUMER` (best effort) | Outbound queue full when replying to the client's request, or when a reliable message (e.g. `chat`) didn't fit. Reconnect and resync. |
 | 1009 | `message too big` | — | Message exceeded the tenant `max_frame_bytes` |
+| 1008 | `disconnected` | `sys.kicked{reason}` | The tenant's backend disconnected the user (server API) |
 | 1013 | `capacity` | `sys.error RESOURCE_EXHAUSTED` | Tenant capacity reached during admission |
 
 ### Protocol v2 close codes (ADR 0006 §6)
@@ -205,7 +212,7 @@ but 4000-range codes whose **range tells the client how to reconnect**:
 
 | Range | Client should | Codes |
 |---|---|---|
-| 4000-4099 | **not reconnect unchanged** (new ticket / config needed) | 4003 `policy`, 4004 `too_many_sessions`, 4005 `replaced`, 4006 `max_sessions_exceeded`, 4009 `message too big`, 4010 `decode_error` |
+| 4000-4099 | **not reconnect unchanged** (new ticket / config needed) | 4003 `policy`, 4004 `too_many_sessions`, 4005 `replaced`, 4006 `max_sessions_exceeded`, 4007 `disconnected`, 4009 `message too big`, 4010 `decode_error` |
 | 4100-4199 | reconnect **after backoff** (≥ 1 s, exponential + jitter) | 4100 `capacity`, 4101 `slow_consumer`, 4103 `draining` |
 | 4200-4299 | reconnect **immediately** | 4200 `idle_timeout` |
 

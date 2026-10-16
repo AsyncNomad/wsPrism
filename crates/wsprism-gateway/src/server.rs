@@ -18,6 +18,25 @@ pub async fn serve(
     state: AppState,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
+    serve_with_api(listener, None, state, shutdown).await
+}
+
+/// Like [`serve`], plus the server API (ADR 0008 §3) on `api` if given.
+/// The API listener stops with the process; it is not drained.
+pub async fn serve_with_api(
+    listener: TcpListener,
+    api: Option<TcpListener>,
+    state: AppState,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> std::io::Result<()> {
+    let _api = api.map(|l| {
+        let app = crate::api::router(state.clone());
+        AbortOnDrop(tokio::spawn(async move {
+            if let Err(e) = axum::serve(l, app).await {
+                tracing::error!("server api stopped: {e}");
+            }
+        }))
+    });
     let app = router::build_router(state.clone());
     let _sweeper = AbortOnDrop(tokio::spawn(sweeper(state.clone())));
     let socket = &state.cfg().gateway.socket;

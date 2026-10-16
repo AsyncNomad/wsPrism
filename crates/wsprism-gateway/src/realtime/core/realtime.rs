@@ -167,19 +167,28 @@ impl RealtimeCore {
         Ok(())
     }
 
-    /// Publish to every session in a room (honours `out.qos`). Members carry
+    /// The internal key of `room` in `tenant` (shared by sessions and the
+    /// server API so both address the same room).
+    pub fn room_key(tenant: &str, room: &str) -> String {
+        format!("{tenant}::{room}")
+    }
+
+    /// Publish to every session in a room (honours `out.qos`); returns how
+    /// many sessions it was delivered to. Members carry
     /// their delivery handles, so this is one shard read lock per publish and
     /// a `try_send` per recipient — no lookup, key copy or handle clone.
-    pub fn publish_room(&self, room_key: &str, out: Outgoing) -> Result<()> {
+    pub fn publish_room(&self, room_key: &str, out: Outgoing) -> Result<usize> {
         let frame = OutFrame::from_payload(&out.payload)?;
+        let mut n = 0;
         self.presence.for_each_member(room_key, |m| {
             self.deliver(&m.key, &m.conn, frame.clone(), &out.qos);
+            n += 1;
         });
-        Ok(())
+        Ok(n)
     }
 
     /// Publish to a room with `QoS::Lossy`, whatever `out.qos` says.
-    pub fn publish_room_lossy(&self, room_key: &str, out: Outgoing) -> Result<()> {
+    pub fn publish_room_lossy(&self, room_key: &str, out: Outgoing) -> Result<usize> {
         self.publish_room(
             room_key,
             Outgoing {
@@ -190,7 +199,7 @@ impl RealtimeCore {
     }
 
     /// Publish to a room with `QoS::Reliable`, whatever `out.qos` says.
-    pub fn publish_room_reliable(&self, room_key: &str, out: Outgoing) -> Result<()> {
+    pub fn publish_room_reliable(&self, room_key: &str, out: Outgoing) -> Result<usize> {
         self.publish_room(
             room_key,
             Outgoing {
@@ -294,7 +303,7 @@ impl RealtimeCtx {
     }
 
     fn room_key(&self, room: &str) -> String {
-        format!("{}::{}", self.tenant(), room)
+        RealtimeCore::room_key(self.tenant(), room)
     }
 
     /// `seq` of the request currently being handled, if the client sent one.
@@ -405,11 +414,11 @@ impl RealtimeCtx {
     pub fn publish_room_lossy(&self, room: &str, out: Outgoing) -> Result<()> {
         self.check_publish(room)?;
         let rk = self.room_key(room);
-        self.core.publish_room_lossy(&rk, out)
+        self.core.publish_room_lossy(&rk, out).map(|_| ())
     }
     pub fn publish_room_reliable(&self, room: &str, out: Outgoing) -> Result<()> {
         self.check_publish(room)?;
         let rk = self.room_key(room);
-        self.core.publish_room_reliable(&rk, out)
+        self.core.publish_room_reliable(&rk, out).map(|_| ())
     }
 }

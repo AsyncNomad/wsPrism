@@ -22,6 +22,7 @@
 #![deny(clippy::expect_used)]
 #![deny(clippy::panic)]
 
+pub mod api;
 pub mod app_state;
 pub mod auth;
 pub mod config;

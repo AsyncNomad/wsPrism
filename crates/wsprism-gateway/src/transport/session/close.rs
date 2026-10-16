@@ -24,6 +24,7 @@ pub(super) fn wire_close_code(protocol: ProtocolVersion, code: u16, reason: &str
         "too_many_sessions" => 4004,
         "replaced" => 4005,
         "max_sessions_exceeded" => 4006,
+        "disconnected" => 4007,
         TOO_BIG_REASON => 4009,
         "decode_error" => 4010,
         "capacity" => 4100,

@@ -28,9 +28,12 @@ clap = { workspace = true, features = ["env"] }
 # integration tests fail if the versions drift apart.
 tungstenite = "0.24"
 mimalloc = { version = "0.1.52", optional = true }
+ring = "0.17"
+base64 = "0.22"
 
 [dev-dependencies]
 criterion = { workspace = true }
+ring = "0.17"
 tokio-tungstenite = "0.24"
 
 [[bench]]

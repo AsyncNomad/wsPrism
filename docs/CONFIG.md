@@ -58,3 +58,31 @@ tenants:
 Omitting `auth` means `[dev]` and logs a startup warning: anyone presenting
 `dev` is admitted. Production authenticators (one-time tickets, JWT, backend
 connect proxy) arrive in the next M2 steps.
+
+---
+
+## Server API (`gateway.api`, `tenants[].api_keys`, ADR 0008 §3)
+
+Backends publish to rooms, disconnect users and read presence over HTTP on a
+**separate listener** (off unless configured). Bind it to loopback or an
+internal network.
+
+```yaml
+gateway:
+  api:
+    listen: "127.0.0.1:8081"
+tenants:
+  - id: acme
+    api_keys:
+      # sha256 of the key, lowercase hex: `printf %s "$KEY" | sha256sum`
+      - name: backend
+        sha256: "<64 hex chars>"
+```
+
+Requests send `Authorization: Bearer <key>`; the key selects the tenant.
+
+| Endpoint | Body | Result |
+|---|---|---|
+| `POST /api/v1/publish` | `{"room": "r", "data": {...}}` (Ext, reliable by default) or `{"room": "r", "hot": {"svc": 1, "op": 2, "key": 0, "data_b64": "..."}}` (Hot, lossy by default); optional `"qos": "reliable"\|"lossy"` | `{"recipients": n}` |
+| `POST /api/v1/disconnect` | `{"user": "u", "sid": "optional", "reason": "optional"}` | `{"closed": n}` |
+| `GET /api/v1/rooms/{room}/presence` | — | `{"room": "r", "users": [...]}` |
