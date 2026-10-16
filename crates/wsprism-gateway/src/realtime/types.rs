@@ -67,6 +67,11 @@ impl Utf8Text {
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+
+    /// The shared buffer (a reference-count bump, no copy).
+    pub fn into_bytes(self) -> Bytes {
+        self.0
+    }
 }
 
 impl From<String> for Utf8Text {

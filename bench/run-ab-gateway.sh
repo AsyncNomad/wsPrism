@@ -10,12 +10,15 @@ OLD=${AB_OLD:-/tmp/claude-1000/wsp-old-target/release/wsprism-gateway}
 NEW=$ROOT/target/release/wsprism-gateway
 LG=$ROOT/target/release/wsprism-loadgen
 W=$(mktemp -d); trap 'rm -rf $W' EXIT
-# Per-variant config: AB_TICK_OLD / AB_TICK_NEW set policy.hot_tick_hz (same
+# Per-variant config: AB_TICK_OLD / AB_TICK_NEW set policy.hot_tick_hz and
+# AB_TRANSPORT_OLD / AB_TRANSPORT_NEW set gateway.transport (same
 # binary can be compared under two configs with AB_OLD=target/release/...).
 for v in old new; do
   tick_var="AB_TICK_${v^^}"; tick="${!tick_var:-0}"
+  transport_var="AB_TRANSPORT_${v^^}"  # tungstenite (default) | raw
   sed 's|listen: "127.0.0.1:18080"|listen: "10.77.0.1:18080"|' $ROOT/bench/gateway.yaml \
-    | sed "s|      hot_requires_active_room: true|      hot_requires_active_room: true\n      hot_tick_hz: $tick|" > $W/wsprism-$v.yaml
+    | sed "s|      hot_requires_active_room: true|      hot_requires_active_room: true\n      hot_tick_hz: $tick|" \
+    | sed "s|^gateway:|gateway:\n  transport: ${!transport_var:-tungstenite}|" > $W/wsprism-$v.yaml
   grep -q "hot_tick_hz: $tick" $W/wsprism-$v.yaml
 done
 # AB_RATES entries: <rate> (rooms: 100 rooms of 10, all publish) or
