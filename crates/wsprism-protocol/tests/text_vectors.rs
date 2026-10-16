@@ -6,7 +6,7 @@
 
 use std::fs;
 
-use wsprism_core::protocol::text::{decode_envelope, Envelope};
+use wsprism_protocol::protocol::text::{decode_envelope, Envelope};
 
 fn load(name: &str) -> String {
     fs::read_to_string(format!("tests/vectors/{name}")).unwrap()
@@ -48,7 +48,7 @@ fn decode_envelope_accepts_v1() {
 
 #[test]
 fn v2_envelope_is_lenient_and_versionless() {
-    use wsprism_core::protocol::text::decode_envelope_v2;
+    use wsprism_protocol::protocol::text::decode_envelope_v2;
     let env =
         decode_envelope_v2(r#"{"svc":"chat","type":"send","room":"r","seq":7,"x":{"y":[1]}}"#)
             .unwrap();
@@ -67,7 +67,7 @@ fn v2_envelope_is_lenient_and_versionless() {
 /// `[1,"",""]` decoded as v1 but meant something else to v2).
 #[test]
 fn positional_array_envelopes_are_rejected() {
-    use wsprism_core::protocol::text::decode_envelope_v2;
+    use wsprism_protocol::protocol::text::decode_envelope_v2;
     for text in [
         r#"[1,"chat","send"]"#,
         r#" [1,"",""]"#,

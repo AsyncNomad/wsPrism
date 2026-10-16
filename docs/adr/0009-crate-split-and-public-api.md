@@ -1,6 +1,6 @@
 # ADR 0009: 크레이트 분리와 공개 API 정책 (M2-9)
 
-- 상태: **제안 (2026-10-16) — 사용자 검토 대기**. 승인 전에는 코드를 바꾸지 않는다
+- 상태: **채택 (2026-10-16)** — 사용자 검토: 결정 1~4 승인("진행"), 5 배포 의향 있음. 단계별 구현(§7): S1 ✅
 - 관련: [ADR 0008](0008-m2-lite-integration.md) §9 M2-9, [ADR 0005](0005-session-transport-seam.md)(세션↔전송 경계), [ADR 0004](0004-product-direction.md)(쉬운 커스텀), [ROADMAP](../ROADMAP.md)
 
 ## 배경 (조사한 사실)
@@ -130,7 +130,7 @@ gateway의 나머지 전부: `app_state`, `transport::*`, `policy::*`, `obs`, `a
 
 | 단계 | 내용 |
 |---|---|
-| S1 | `wsprism-core` → `wsprism-protocol` 이름 변경, 종료 코드 매핑을 protocol로 이동 |
+| S1 ✅ | `wsprism-core` → `wsprism-protocol` 이름 변경, 종료 코드 매핑을 protocol로 이동 (지난 기록 문서·SVG 프로파일의 옛 이름은 역사 기록이라 그대로 둔다) |
 | S2 | `wsprism-engine` 생성: realtime·dispatch·services·permissions·sys 이동, `RoomLimits` 분리, 이름 변경(`HotService`, `HotRelayService`). 분리 전후 벤치 비교 |
 | S3 | 공개 범위 정리: `unreachable_pub`, `non_exhaustive`, `spi`, `internals` feature, fuzz·벤치 경로 정리 |
 | S4 | `GatewayBuilder` + `kind: plugin` + 예약 이름 검사. `main.rs`와 테스트 헬퍼를 빌더로 전환 |
@@ -156,3 +156,4 @@ gateway의 나머지 전부: `app_state`, `transport::*`, `policy::*`, `obs`, `a
 3. **`kind: plugin` 방식의 사용자 인증기 설정.**
 4. **세션 루프 이동 보류**(WebTransport 때).
 5. **crates.io 배포 의향.** 배포할 계획이면 이름(`wsprism`, `wsprism-*`)을 쓸 수 있는지 확인해야 한다(네트워크 필요). 배포하지 않으면 §5-6은 빠진다.
+   - **결정: 배포 의향 있음.** 2026-10-16 crates.io API 조회 결과 `wsprism`, `wsprism-protocol`, `wsprism-engine`, `wsprism-gateway`, `wsprism-loadgen` 모두 미등록(404). 선점 규칙이 없으므로 배포 직전에 다시 확인한다. §5-6(`cargo-semver-checks`)은 첫 배포 뒤 도입한다. 배포 전 할 일(별도 단계): 각 크레이트 `description`·`readme`·`keywords`·`categories`, `publish = false`(loadgen·fuzz·spikes), 파사드 문서.

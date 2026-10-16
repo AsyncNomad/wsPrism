@@ -15,7 +15,7 @@ use tokio::sync::Semaphore;
 use super::{AuthError, AuthRequest, Authenticator, Identity, Permissions};
 use crate::backend::{Backend, Endpoint};
 use crate::config::schema::ProxyAuthConfig;
-use wsprism_core::error::Result;
+use wsprism_protocol::error::Result;
 
 pub struct ProxyAuthenticator {
     backend: Backend,

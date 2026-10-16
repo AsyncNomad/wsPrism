@@ -4,7 +4,7 @@ use std::hint::black_box;
 
 use bytes::{BufMut, Bytes, BytesMut};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use wsprism_core::protocol::{hot::decode_hot_frame, text::decode_envelope};
+use wsprism_protocol::protocol::{hot::decode_hot_frame, text::decode_envelope};
 
 fn hot_frame(payload_len: usize, with_seq: bool) -> Bytes {
     let mut b = BytesMut::new();

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_protocol::error::{Result, WsPrismError};
 
 use crate::{app_state::AppState, policy};
 

@@ -8,6 +8,7 @@
 //! instead of panicking or indexing raw buffers, keeping the gateway resilient
 //! to hostile traffic.
 
+pub mod close;
 pub mod hot;
 pub mod text;
 

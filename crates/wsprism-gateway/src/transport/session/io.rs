@@ -16,7 +16,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use wsprism_core::error::WsPrismError;
+use wsprism_protocol::error::WsPrismError;
 
 use crate::realtime::OutFrame;
 use crate::transport::codec::Inbound;

@@ -2,8 +2,8 @@ use async_trait::async_trait;
 
 use std::sync::Arc;
 
-use wsprism_core::error::{Result, WsPrismError};
-use wsprism_core::protocol::hot::{encode_hot_frame_v2, HotFrame, HotOutV2};
+use wsprism_protocol::error::{Result, WsPrismError};
+use wsprism_protocol::protocol::hot::{encode_hot_frame_v2, HotFrame, HotOutV2};
 
 use crate::dispatch::BinaryService;
 use crate::realtime::{HotOut, Outgoing, Payload, QoS, RealtimeCtx};

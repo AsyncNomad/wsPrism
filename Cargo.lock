@@ -2626,22 +2626,8 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 name = "wsprism"
 version = "0.1.0"
 dependencies = [
- "wsprism-core",
  "wsprism-gateway",
-]
-
-[[package]]
-name = "wsprism-core"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "criterion",
- "hex",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tracing",
+ "wsprism-protocol",
 ]
 
 [[package]]
@@ -2670,7 +2656,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tungstenite",
- "wsprism-core",
+ "wsprism-protocol",
 ]
 
 [[package]]
@@ -2688,6 +2674,20 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite",
  "wtransport",
+]
+
+[[package]]
+name = "wsprism-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "criterion",
+ "hex",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tracing",
 ]
 
 [[package]]

@@ -12,7 +12,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 bytes = "1"
 axum = "0.7"
-wsprism-core = { path = "../crates/wsprism-core" }
+wsprism-protocol = { path = "../crates/wsprism-protocol" }
 wsprism-gateway = { path = "../crates/wsprism-gateway" }
 
 # Fuzzing needs nightly; keep it out of the main (stable) workspace.

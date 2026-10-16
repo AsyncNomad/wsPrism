@@ -3,7 +3,7 @@
 //! Supports simple wildcard matching for Ext lane (`svc:*`) and Hot lane
 //! (`svc_id:*`) entries.
 
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_protocol::error::{Result, WsPrismError};
 
 /// Compiled allowlist rule for Ext Lane.
 #[derive(Debug, Clone)]

@@ -3,9 +3,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dashmap::DashMap;
 
-use wsprism_core::error::{Result, WsPrismError};
-use wsprism_core::protocol::hot::HotFrame;
-use wsprism_core::protocol::text::Envelope;
+use wsprism_protocol::error::{Result, WsPrismError};
+use wsprism_protocol::protocol::hot::HotFrame;
+use wsprism_protocol::protocol::text::Envelope;
 
 use crate::realtime::RealtimeCtx;
 

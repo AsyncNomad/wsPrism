@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use wsprism_core::error::ClientCode;
+use wsprism_protocol::error::ClientCode;
 
 pub use crate::config::schema::{HotErrorMode, OnExceed, SessionMode};
 use crate::config::schema::{RateLimitScope, SessionPolicy, TenantPolicy, TicketSource};
@@ -57,7 +57,7 @@ impl TenantPolicyRuntime {
         tenant_id: String,
         max_frame_bytes: usize,
         policy: &TenantPolicy,
-    ) -> wsprism_core::Result<Self> {
+    ) -> wsprism_protocol::Result<Self> {
         let ext_rules = compile_ext_rules(&policy.ext_allowlist)?;
         let hot_rules = compile_hot_rules(&policy.hot_allowlist)?;
 

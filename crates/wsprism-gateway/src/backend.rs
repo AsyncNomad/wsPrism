@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use bytes::{Bytes, BytesMut};
 use reqwest::header::{HeaderValue, AUTHORIZATION, CONTENT_TYPE};
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_protocol::error::{Result, WsPrismError};
 
 /// Largest backend response read; anything bigger is a failed call.
 pub const MAX_RESPONSE_BYTES: usize = 1 << 20;

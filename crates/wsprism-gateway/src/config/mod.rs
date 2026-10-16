@@ -7,7 +7,7 @@ pub mod schema;
 
 use std::fs;
 
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_protocol::error::{Result, WsPrismError};
 
 pub use schema::{GatewayConfig, TenantConfig, TenantLimits, TenantPolicy};
 

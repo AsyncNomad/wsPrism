@@ -2,9 +2,9 @@
 
 use async_trait::async_trait;
 
-use wsprism_core::error::{Result, WsPrismError};
-use wsprism_core::protocol::text::Envelope;
-use wsprism_core::protocol::ProtocolVersion;
+use wsprism_protocol::error::{Result, WsPrismError};
+use wsprism_protocol::protocol::text::Envelope;
+use wsprism_protocol::protocol::ProtocolVersion;
 
 use crate::dispatch::TextService;
 use crate::realtime::RealtimeCtx;

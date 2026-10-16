@@ -23,7 +23,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio::time::{timeout, Duration};
-use wsprism_core::error::{ClientCode, Result, WsPrismError};
+use wsprism_protocol::error::{ClientCode, Result, WsPrismError};
 
 use crate::app_state::AppState;
 use crate::auth::Permissions;

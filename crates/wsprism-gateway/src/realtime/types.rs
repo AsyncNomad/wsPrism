@@ -3,7 +3,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use serde_json::Value;
 
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_protocol::error::{Result, WsPrismError};
 
 /// Quality-of-Service strategy for outgoing delivery. Neither variant ever
 /// blocks the publisher; they differ in what happens when a recipient's

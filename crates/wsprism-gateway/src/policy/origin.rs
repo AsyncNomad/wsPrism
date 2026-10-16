@@ -11,7 +11,7 @@
 //! wildcard `https://*.example.com[:port]` (not the bare domain), or `*`.
 //! Default (no patterns): every browser origin is denied.
 
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_protocol::error::{Result, WsPrismError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Pattern {

@@ -16,7 +16,7 @@ use axum::{Json, Router};
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use wsprism_core::protocol::hot::{encode_hot_frame_v2, HotOutV2};
+use wsprism_protocol::protocol::hot::{encode_hot_frame_v2, HotOutV2};
 
 use crate::app_state::AppState;
 use crate::auth::{Identity, IssueError, Permissions, DEFAULT_TICKET_TTL, MAX_TICKET_TTL};

@@ -86,7 +86,7 @@ async fn main() -> ExitCode {
 }
 
 /// Parse + validate the config and build the runtime (compiles policies).
-fn load(cli: &Cli) -> wsprism_core::Result<app_state::AppState> {
+fn load(cli: &Cli) -> wsprism_protocol::Result<app_state::AppState> {
     let path = cli.config.to_string_lossy();
     let cfg = config::load_from_file(&path)?;
     app_state::AppState::new(cfg)

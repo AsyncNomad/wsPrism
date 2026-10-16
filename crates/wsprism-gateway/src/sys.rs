@@ -5,7 +5,7 @@
 //! in one place, [`reply_to`], before serialization.
 
 use serde_json::{json, Value};
-use wsprism_core::error::{ClientCode, WsPrismError};
+use wsprism_protocol::error::{ClientCode, WsPrismError};
 
 /// Mark `msg` as the answer to the request with sequence number `seq`
 /// (the client's `seq` on Ext envelopes / Hot frames). No-op for `None`.

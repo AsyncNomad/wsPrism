@@ -3,9 +3,9 @@
 use std::ops::ControlFlow;
 
 use tokio::time::Instant;
-use wsprism_core::error::ClientCode;
-use wsprism_core::protocol::hot::HotFrame;
-use wsprism_core::protocol::text::Envelope;
+use wsprism_protocol::error::ClientCode;
+use wsprism_protocol::protocol::hot::HotFrame;
+use wsprism_protocol::protocol::text::Envelope;
 
 use super::close::Exit;
 use super::io::RecvError;

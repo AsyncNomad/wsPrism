@@ -17,7 +17,7 @@ pub const V2_JSON: &str = "wsprism.v2.json";
 /// Versions this gateway speaks, most preferred first.
 const SUPPORTED: &[&str] = &[V2_JSON, V1];
 
-pub use wsprism_core::protocol::ProtocolVersion;
+pub use wsprism_protocol::protocol::ProtocolVersion;
 
 /// The session's protocol from the negotiated subprotocol (`None` = no
 /// header = v1).

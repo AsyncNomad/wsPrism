@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_protocol::error::{Result, WsPrismError};
 
 use super::signals::SessionSignals;
 use crate::realtime::types::OutFrame;

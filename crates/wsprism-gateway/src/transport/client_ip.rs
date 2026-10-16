@@ -13,7 +13,7 @@ use std::str::FromStr;
 
 use axum::http::HeaderMap;
 use ipnet::IpNet;
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_protocol::error::{Result, WsPrismError};
 
 const X_FORWARDED_FOR: &str = "x-forwarded-for";
 

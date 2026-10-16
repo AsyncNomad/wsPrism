@@ -7,34 +7,10 @@ use tokio::time::{timeout, Duration, Instant};
 use super::io::{SessionRx, SessionTx};
 use crate::realtime::{close_code, CloseSpec, OutFrame};
 use crate::transport::subprotocol::ProtocolVersion;
+use wsprism_protocol::protocol::close::wire_close_code;
 
-/// Reason of the oversized-message close (S2).
+/// Reason of the oversized-message close (S2; v2 maps it to 4009).
 const TOO_BIG_REASON: &str = "message too big";
-
-/// The close code put on the wire for `spec`. v1 sends the standard codes it
-/// always did. v2 uses 4000-range codes whose range tells the client how to
-/// reconnect (ADR 0006 §6): 40xx = not unchanged, 41xx = after backoff,
-/// 42xx = immediately. Reasons without a v2 code keep theirs.
-pub(super) fn wire_close_code(protocol: ProtocolVersion, code: u16, reason: &str) -> u16 {
-    if protocol == ProtocolVersion::V1 {
-        return code;
-    }
-    match reason {
-        "auth_expired" => 4001,
-        "policy" => 4003,
-        "too_many_sessions" => 4004,
-        "replaced" => 4005,
-        "max_sessions_exceeded" => 4006,
-        "disconnected" => 4007,
-        TOO_BIG_REASON => 4009,
-        "decode_error" => 4010,
-        "capacity" => 4100,
-        "slow_consumer" => 4101,
-        "draining" => 4103,
-        "idle_timeout" => 4200,
-        _ => code,
-    }
-}
 
 /// How long to wait for the peer's close after sending ours (C3).
 const CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(1);

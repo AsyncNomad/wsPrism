@@ -6,7 +6,7 @@
 
 use crate::transport::subprotocol::ProtocolVersion;
 use axum::extract::ws::Message;
-use wsprism_core::{
+use wsprism_protocol::{
     error::Result,
     protocol::{hot, text},
 };

@@ -55,7 +55,7 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 ## 제품 구조
 
 ```
-wsprism-core      프로토콜 (전송·런타임 무관)
+wsprism-protocol      프로토콜 (전송·런타임 무관)
 wsprism-engine    트레이트로 확장 가능한 엔진 (현재 gateway를 재구성)
 wsprism-server    engine + 기본 플러그인(JWT, HTTP 프록시, 이후 Redis)을 조립한 바이너리
 wsprism-sdk-*     클라이언트 SDK (TS → Unity C# → Dart). WebTransport 우선, WebSocket 폴백

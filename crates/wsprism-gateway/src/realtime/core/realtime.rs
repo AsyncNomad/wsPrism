@@ -14,10 +14,10 @@ use crate::sys;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::error::TrySendError;
-use wsprism_core::error::ClientCode;
-use wsprism_core::error::{Result, WsPrismError};
-use wsprism_core::protocol::hot::HotFrame;
-use wsprism_core::protocol::ProtocolVersion;
+use wsprism_protocol::error::ClientCode;
+use wsprism_protocol::error::{Result, WsPrismError};
+use wsprism_protocol::protocol::hot::HotFrame;
+use wsprism_protocol::protocol::ProtocolVersion;
 
 use crate::auth::Permissions;
 

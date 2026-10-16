@@ -3,7 +3,7 @@
 
 use bytes::Bytes;
 use libfuzzer_sys::fuzz_target;
-use wsprism_core::protocol::hot::{
+use wsprism_protocol::protocol::hot::{
     decode_hot_frame, decode_hot_frame_v2, encode_hot_frame_v2, HotOutV2, HOT_FLAG_SEQ_PRESENT,
     HOT_V2_FLAG_SENDER,
 };

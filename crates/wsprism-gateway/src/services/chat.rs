@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::json;
 
-use wsprism_core::error::{Result, WsPrismError};
-use wsprism_core::protocol::text::Envelope;
+use wsprism_protocol::error::{Result, WsPrismError};
+use wsprism_protocol::protocol::text::Envelope;
 
 use crate::dispatch::TextService;
 use crate::realtime::{Outgoing, Payload, QoS, RealtimeCtx};

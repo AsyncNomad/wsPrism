@@ -3,7 +3,7 @@
 //! Unknown fields are rejected to avoid silently ignoring operator intent.
 
 use serde::Deserialize;
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_protocol::error::{Result, WsPrismError};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]

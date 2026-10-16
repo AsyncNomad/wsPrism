@@ -8,7 +8,7 @@ use std::fs;
 
 use bytes::Bytes;
 
-use wsprism_core::protocol::hot::decode_hot_frame;
+use wsprism_protocol::protocol::hot::decode_hot_frame;
 
 mod vector_loader;
 use vector_loader::TestVector;

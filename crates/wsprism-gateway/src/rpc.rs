@@ -15,8 +15,8 @@
 use std::sync::Arc;
 
 use serde_json::{json, Value};
-use wsprism_core::error::{ClientCode, Result, WsPrismError};
-use wsprism_core::protocol::text::Envelope;
+use wsprism_protocol::error::{ClientCode, Result, WsPrismError};
+use wsprism_protocol::protocol::text::Envelope;
 
 use crate::backend::{Backend, Endpoint};
 use crate::config::schema::RpcConfig;

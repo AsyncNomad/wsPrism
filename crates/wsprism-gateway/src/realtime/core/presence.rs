@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::session_registry::Connection;
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_protocol::error::{Result, WsPrismError};
 
 /// Atomically replace the value with `f(value)` (CAS loop); `None` from `f`
 /// aborts without writing. Returns the previous value on success.

@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use bytes::Bytes;
-use wsprism_core::protocol::hot::{
+use wsprism_protocol::protocol::hot::{
     decode_hot_frame_v2, encode_hot_frame_v2, HotOutV2, HOT_V2_FLAG_KEY, HOT_V2_FLAG_SENDER,
     HOT_V2_FLAG_SEQ, KIND_BATCH, KIND_HOT,
 };

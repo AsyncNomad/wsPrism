@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use wsprism_core::protocol::text::{decode_envelope, decode_envelope_v2, EXT_PROTOCOL_VERSION};
+use wsprism_protocol::protocol::text::{decode_envelope, decode_envelope_v2, EXT_PROTOCOL_VERSION};
 
 fuzz_target!(|data: &[u8]| {
     if let Ok(text) = std::str::from_utf8(data) {

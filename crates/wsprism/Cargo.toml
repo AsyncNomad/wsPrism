@@ -6,5 +6,5 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-wsprism-core = { workspace = true }
+wsprism-protocol = { workspace = true }
 wsprism-gateway = { workspace = true }

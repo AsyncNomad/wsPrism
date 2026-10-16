@@ -21,7 +21,7 @@ use async_trait::async_trait;
 
 use crate::config::schema::AuthConfig;
 
-type BuildResult<T> = wsprism_core::error::Result<T>;
+type BuildResult<T> = wsprism_protocol::error::Result<T>;
 
 pub use dev::DevAuthenticator;
 pub use jwt::{expiry_deadline_ms, JwtAuthenticator};

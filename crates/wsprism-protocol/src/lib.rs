@@ -1,4 +1,5 @@
-//! wsPrism core: transport-agnostic protocol primitives, error types, and flags.
+//! wsPrism protocol: the wire contract (envelopes, Hot frames, close codes,
+//! client error codes), independent of transport and runtime.
 //!
 //! This crate defines the wire-level contracts and error surface shared by the
 //! gateway, services, and SDK tooling. It intentionally carries no transport or

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use tokio::sync::mpsc;
 use tokio::time::Duration;
-use wsprism_core::error::{ClientCode, Result, WsPrismError};
+use wsprism_protocol::error::{ClientCode, Result, WsPrismError};
 
 use super::{Session, SessionIdentity};
 use crate::app_state::AppState;

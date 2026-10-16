@@ -164,7 +164,7 @@ Gateway periodically pings; client must pong. Idle connections are closed.
 ## 6) Error codes
 
 `sys.error` carries `data.code` from this fixed set (`ClientCode` in
-`wsprism-core`) and a human-readable `data.msg`. Clients should branch on
+`wsprism-protocol`) and a human-readable `data.msg`. Clients should branch on
 `code`, never on `msg`. Internal errors never expose their cause.
 
 | Code | Meaning |

@@ -20,7 +20,7 @@ use serde::Deserialize;
 
 use super::{AuthError, AuthRequest, Authenticator, Identity, Permissions, TICKET_PREFIX};
 use crate::config::schema::{JwtAlgorithm, JwtConfig};
-use wsprism_core::error::{Result, WsPrismError};
+use wsprism_protocol::error::{Result, WsPrismError};
 
 pub struct JwtAuthenticator {
     alg: Algorithm,
