@@ -55,21 +55,3 @@ pub fn decode(msg: Message, protocol: ProtocolVersion) -> Result<Inbound> {
         Message::Close(_) => Ok(Inbound::Close),
     }
 }
-
-/// Same as [`decode`] for a tungstenite message (the experimental raw
-/// transport reads with tungstenite directly, ADR 0007 stage 1).
-pub fn decode_tungstenite(
-    msg: tokio_tungstenite::tungstenite::Message,
-    protocol: ProtocolVersion,
-) -> Result<Inbound> {
-    use tokio_tungstenite::tungstenite::Message as T;
-    match msg {
-        T::Text(s) => decode(Message::Text(s), protocol),
-        T::Binary(b) => decode(Message::Binary(b), protocol),
-        T::Ping(v) => Ok(Inbound::Ping(v)),
-        T::Pong(v) => Ok(Inbound::Pong(v)),
-        T::Close(_) => Ok(Inbound::Close),
-        // Raw frames only appear when writing; never yielded by reads.
-        T::Frame(_) => Ok(Inbound::Pong(Vec::new())),
-    }
-}

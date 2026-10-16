@@ -11,6 +11,6 @@
 | [0004](0004-product-direction.md) | 제품 방향: 실시간 상태 동기화 (개정 2) | 조건부 채택 (검증 V 후 확정) |
 | [0005](0005-session-transport-seam.md) | 세션 전송 경계 — `SessionTx` / `SessionRx` | 채택 (T0-1) |
 | [0006](0006-protocol-v2.md) | 프로토콜 v2 — 인코딩·전달 의미 분리, 명시적 채널, 재접속 의미를 가진 종료 코드 | 채택 (리뷰 반영, 단계별 구현) |
-| [0007](0007-transport-own-framing.md) | P2 전송: axum 0.8을 건너뛰고 서버 측 WebSocket 프레이밍 직접 구현 | 채택 (단계별, 프로토타입 측정 후 진행) |
+| [0007](0007-transport-own-framing.md) | P2 전송: axum 0.8을 건너뛰고 서버 측 WebSocket 프레이밍 직접 구현 | 보류 (단계 1 기준 미달, 성능 단계 재개 시 재판단) |
 
 새 ADR은 다음 번호로 만들고, 결정이 바뀌면 기존 ADR을 고치지 말고 새 ADR에서 "대체함"을 밝힌다.

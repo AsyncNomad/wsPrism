@@ -1,6 +1,6 @@
 # ADR 0007: P2 전송 — axum 0.8을 건너뛰고 서버 측 WebSocket 프레이밍을 직접 구현
 
-- 상태: **채택 → 단계 1 기준 미달 (2026-10-16)**. 단계 2 진행 여부는 사용자 결정 대기. 기본 전송은 tungstenite 유지, `gateway.transport: raw`는 실험 옵션
+- 상태: **보류 (2026-10-16)** — 단계 1 기준 미달 후 사용자 결정: "상용 수준 기능 확장을 먼저, 성능은 나중에 본격적으로". 실험 코드(`gateway.transport: raw`)는 제거했고 `2ad07d5`에서 복원할 수 있다. 성능 단계를 재개할 때 아래 선택지 B(HTTP/1 accept 루프로 맨 `TcpStream` 확보 후 재시험) 또는 C(자체 읽기)부터 다시 판단한다
 - 관련: [성능 아키텍처](../design/performance-architecture.md) §3.5·§4, [ADR 0005](0005-session-transport-seam.md)(전송 경계), [BENCHMARKS](../BENCHMARKS.md) 「P1-a」 프로파일
 
 ## 배경

@@ -106,13 +106,6 @@ pub struct GatewaySection {
     #[serde(default)]
     pub socket: SocketConfig,
 
-    /// WebSocket implementation. `tungstenite` (default) or `raw`: the
-    /// experimental gateway-written send path of ADR 0007 stage 1 (reading
-    /// still via tungstenite; automatic pong replies are not sent). For A/B
-    /// measurement, not production.
-    #[serde(default)]
-    pub transport: TransportKind,
-
     /// Reverse proxies / load balancers (IPs or CIDRs) whose
     /// `X-Forwarded-For` is trusted to name the client. Empty = trust none
     /// (the TCP peer is the client).
@@ -142,15 +135,6 @@ impl Default for SocketConfig {
 
 fn default_true() -> bool {
     true
-}
-
-/// Which WebSocket implementation serves upgraded connections.
-#[derive(Debug, Deserialize, Clone, Copy, Default, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TransportKind {
-    #[default]
-    Tungstenite,
-    Raw,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -218,7 +202,6 @@ impl Default for GatewaySection {
             drain_grace_ms: default_drain_grace_ms(),
             session_queue_capacity: default_session_queue_capacity(),
             socket: SocketConfig::default(),
-            transport: TransportKind::default(),
             trusted_proxies: Vec::new(),
             handshake_limit: HandshakeConfig::default(),
         }

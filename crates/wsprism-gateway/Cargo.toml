@@ -28,10 +28,6 @@ clap = { workspace = true, features = ["env"] }
 # integration tests fail if the versions drift apart.
 tungstenite = "0.24"
 mimalloc = { version = "0.1.52", optional = true }
-hyper = "1.12"
-# Experimental raw transport (ADR 0007 stage 1): take the upgraded TcpStream.
-hyper-util = { version = "0.1.21", features = ["tokio"] }
-tokio-tungstenite = "0.24"
 
 [dev-dependencies]
 criterion = { workspace = true }

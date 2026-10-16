@@ -1,0 +1,1 @@
+netlab: srv-egress=[delay 20ms loss 1%] cli-egress=[delay 20ms loss 1%]

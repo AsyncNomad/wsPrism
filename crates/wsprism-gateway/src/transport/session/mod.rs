@@ -14,7 +14,6 @@ mod admit;
 mod close;
 mod inbound;
 mod io;
-mod raw_io;
 mod ws_io;
 
 use std::future::Future;
@@ -39,7 +38,6 @@ use crate::transport::subprotocol::ProtocolVersion;
 use admit::{Admission, SessionCleanup};
 use close::Exit;
 use io::{SessionRx, SessionTx};
-pub(crate) use raw_io::from_halves as raw_from_halves;
 pub(crate) use ws_io::split as split_websocket;
 
 /// Outcome of handling one event: keep going, or end the session.
