@@ -4,7 +4,7 @@
 상세 결과는 [BENCHMARKS.md](../BENCHMARKS.md) 「검증 V」, 설계는 [hot-lane-over-webtransport.md](hot-lane-over-webtransport.md) §7.
 
 - 브랜치: `v/validation` (push 안 함 — 로컬 커밋만)
-- 마지막 갱신: 2026-10-16
+- 마지막 갱신: 2026-10-16 (P1-a까지)
 
 ## 환경 준비 (새 셸·새 세션)
 
@@ -119,7 +119,7 @@ bench/run-moq.sh moq-judgment 3
 
 - [x] T0-1 `SessionIo` 추출 → 읽기·쓰기 두 절반 `SessionTx`/`SessionRx`([ADR 0005](../adr/0005-session-transport-seam.md)): 세션 루프·종료 처리가 axum `WebSocket`(Split 타입) 대신 트레이트를 쓴다. WebSocket 구현 `WsIo`는 `wire`·`close`·`codec`을 감싼다. 동작 변화 없음
 - [x] T0 쓰기 합치기(버퍼 없는 `feed`×N + `flush` 1회, 최대 64) — 216만/s 포화 해소, 저부하 회귀 없음(BENCHMARKS 「T0: 쓰기 합치기」)
-- [ ] 성능 P0 (설계 [performance-architecture.md](performance-architecture.md) §11): ✅ P0-a 쓰기 합치기, ✅ P0-b ID 규칙·사용자 분리 벤치, ✅ P0-c 중첩 DashSet 제거, ✅ P0-g 쓰기 타임아웃, ✅ P0-d 종료 신호·스위퍼 (유휴 24.2 → 16.2 KB/연결). 남은 것: P0-f 전역 할당자 A/B(`--features mimalloc`), P0-e 메트릭·GCRA(우선순위 낮음). 프로파일: `bench/profile-gateway.sh <이름>` (perf 6.8 설치됨; 재부팅 시 `perf_event_paranoid=1`, `kptr_restrict=0` 재설정 필요)
+- [ ] 성능 P0 (설계 [performance-architecture.md](performance-architecture.md) §11): ✅ P0-a 쓰기 합치기, ✅ P0-b ID 규칙·사용자 분리 벤치, ✅ P0-c 중첩 DashSet 제거, ✅ P0-g 쓰기 타임아웃, ✅ P0-d 종료 신호·스위퍼 (유휴 24.2 → 16.2 KB/연결). ✅ P0-f mimalloc 기각. ✅ P1-a 룸 멤버 핸들(팬아웃 수신자당 200 → 35 ns). 남은 것: P0-e 메트릭·GCRA(낮음), P1-b ID 인터닝(낮음). **다음 큰 레버: P2 전송 재작성(커널 송신 46%·프레이밍 14%) — ADR 필요, 1단계 axum 0.8은 의존성 업그레이드(네트워크) 확인 후.** 프로토콜 v2는 [ADR 0006](../adr/0006-protocol-v2.md) 제안 — 사용자 승인 대기 프로파일: `bench/profile-gateway.sh <이름>` (perf 6.8 설치됨; 재부팅 시 `perf_event_paranoid=1`, `kptr_restrict=0` 재설정 필요)
 - [ ] T0-2 전달 등급: `OutFrame::Hot { key, bytes }`, `RealtimeCore::deliver`의 Lossy 바이너리 → Hot 경로
 - [ ] T0-3 Hot 슬롯 `(sender, svc, key)` 최신값 + 짧은 FIFO + 상한, 틱 묶음 전송(WebSocket) — 큐 적체·드롭 지표, 포화점 시나리오(`rooms:160·240`) 재측정
 - [ ] T0-4 Hot 헤더 확장(KEY/SENDER), 연결별 `member_id`, `HotRelayService`, 크기 상한(PROTOCOL.md)
