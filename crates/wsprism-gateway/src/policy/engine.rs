@@ -148,14 +148,14 @@ impl TenantPolicyRuntime {
 
         if self.ext_rules.is_empty() {
             return PolicyDecision::Reject {
-                code: ClientCode::BadRequest,
+                code: ClientCode::NotAllowed,
                 msg: "ext_allowlist empty (strict deny)",
             };
         }
 
         if !is_ext_allowed(&self.ext_rules, svc, msg_type) {
             return PolicyDecision::Reject {
-                code: ClientCode::BadRequest,
+                code: ClientCode::NotAllowed,
                 msg: "svc/type not allowed",
             };
         }

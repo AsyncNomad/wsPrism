@@ -105,7 +105,7 @@ pub struct Identity {
   - 재접속 백오프: `min(30s, 1s·2^(n-1))`의 [½, 1) 구간 지터. "즉시"도 연속 실패 2회째부터는 백오프(인증 서버 장애 시 폭주 방지).
   - 타입은 손으로 쓴 `.d.ts`(빌드 단계·의존성 없음). 오프라인이라 `tsc` 검증은 못 했다 — 패키지 배포(npm) 단계에서 `tsc --noEmit` 검사를 붙일 것.
   - 개발 환경 메모: 이 WSL의 기본 `node`는 v18(전역 WebSocket 없음). `run-tests.sh`는 22 미만이면 nvm의 v22+를 찾는다.
-  - 발견한 게이트웨이 쪽 어긋남: allowlist에 없는 `svc:type`은 `BAD_REQUEST`("svc/type not allowed")로 답하는데, PROTOCOL.md 정의상 `NOT_ALLOWED`(정책상 금지)가 맞다. 클라이언트 호환에 영향이 있으므로 v2에서만 바꿀지 따로 판단(미결).
+  - 발견한 게이트웨이 쪽 어긋남: allowlist에 없는 `svc:type`(그리고 빈 allowlist)은 `BAD_REQUEST`로 답했는데, PROTOCOL.md 정의상 `NOT_ALLOWED`(정책상 금지)가 맞다. **v1·v2 모두 `NOT_ALLOWED`로 수정**(사용자 결정 2026-10-16). 0.x·배포된 클라이언트 없음 → 호환 깨짐을 감수하고, 버전별 분기를 영구히 남기지 않는다. 기각: v2에서만 변경 — 오류 코드가 프로토콜 버전마다 달라지는 분기가 남는다. 이 코드를 검사하는 테스트가 없었다(변경해도 아무것도 안 깨졌다) → `reply_correlation`에 단언 추가.
 
 ### 8. 의존성
 

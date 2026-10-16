@@ -63,6 +63,8 @@ async fn policy_and_service_errors_echo_seq() {
         (Some("error"), Some(11)),
         "{v}"
     );
+    // Valid request the tenant doesn't permit: NOT_ALLOWED, not BAD_REQUEST.
+    assert_eq!(v["data"]["code"], "NOT_ALLOWED", "{v}");
 
     // Allowed, but the service fails (not a member of the room).
     send_json(

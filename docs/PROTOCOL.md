@@ -173,7 +173,7 @@ Gateway periodically pings; client must pong. Idle connections are closed.
 | `AUTH_FAILED` | Authentication failed |
 | `RATE_LIMITED` | Rate limited |
 | `PAYLOAD_TOO_LARGE` | Payload too large |
-| `NOT_ALLOWED` | Not permitted by policy (e.g. `chat.send` to a room not joined) |
+| `NOT_ALLOWED` | Not permitted by policy: `svc:type` outside the tenant's `ext_allowlist`, a room outside the user's permissions, `chat.send` to a room not joined |
 | `RESOURCE_EXHAUSTED` | A tenant/room/user limit was reached |
 | `UNSUPPORTED_VERSION` | Unsupported protocol version |
 | `TOO_MANY_SESSIONS` | Per-user session limit reached (`on_exceed: deny`) |

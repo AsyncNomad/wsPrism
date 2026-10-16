@@ -227,8 +227,8 @@ test("requests resolve with replies and reject with gateway errors", async () =>
   assert.deepEqual(await a.rpc("game", "move", { data: { x: 1 } }), { echo: { x: 1 }, user: "carol" });
   await assert.rejects(a.rpc("game", "fail"), (e) => e instanceof WsPrismError && e.code === "NOT_FOUND");
   await assert.rejects(a.request("room", "leave", { room: "never-joined" }), (e) => e.code === "BAD_REQUEST");
-  // Not in the tenant allowlist (the gateway answers BAD_REQUEST today).
-  await assert.rejects(a.request("nope", "x"), (e) => e.code === "BAD_REQUEST");
+  // Not in the tenant allowlist.
+  await assert.rejects(a.request("nope", "x"), (e) => e.code === "NOT_ALLOWED");
   a.close();
 });
 
