@@ -28,7 +28,7 @@ impl Session {
             }
             Some(Err(RecvError::Broken)) => return Flow::Break(Exit::Abort),
             Some(Err(RecvError::Decode(e))) => {
-                self.last_activity = Instant::now();
+                self.signals.touch();
                 self.metrics.decode_errors.inc(&[("tenant", self.tenant())]);
                 return Flow::Break(Exit::Close(CloseSpec::new(
                     close_code::PROTOCOL_ERROR,
@@ -38,7 +38,7 @@ impl Session {
             }
             Some(Ok(decoded)) => decoded,
         };
-        self.last_activity = Instant::now();
+        self.signals.touch();
         match decoded {
             // tungstenite answers pings itself; replying again would double-pong.
             Inbound::Ping(_) | Inbound::Pong(_) => Flow::Continue(()),

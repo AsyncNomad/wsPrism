@@ -19,6 +19,7 @@ pub async fn serve(
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
     let app = router::build_router(state.clone());
+    let _sweeper = AbortOnDrop(tokio::spawn(sweeper(state.clone())));
     let socket = &state.cfg().gateway.socket;
     axum::serve(
         listener,
@@ -28,6 +29,32 @@ pub async fn serve(
     .tcp_nodelay(socket.tcp_nodelay)
     .with_graceful_shutdown(drain(state.clone(), shutdown))
     .await
+}
+
+/// How often the sweeper visits every session (idle check granularity and
+/// keep-alive jitter).
+const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+
+/// One task for all sessions' keep-alive pings and idle timeouts, instead of
+/// two timers per session (performance-architecture §5).
+async fn sweeper(state: AppState) {
+    let gw = &state.cfg().gateway;
+    let (idle_ms, ping_ms) = (gw.idle_timeout_ms, gw.ping_interval_ms);
+    let mut tick = tokio::time::interval(SWEEP_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        state.realtime().sweep(idle_ms, ping_ms);
+    }
+}
+
+/// Aborts the task when the server future ends.
+struct AbortOnDrop(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 /// After `shutdown`: stop admitting (readiness 503, upgrades rejected), ask

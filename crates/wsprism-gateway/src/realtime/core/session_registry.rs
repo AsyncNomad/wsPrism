@@ -1,20 +1,23 @@
 use dashmap::DashMap;
 use std::collections::HashSet;
+use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use wsprism_core::error::{Result, WsPrismError};
 
-use crate::realtime::types::{CloseSpec, OutFrame};
+use super::signals::SessionSignals;
+use crate::realtime::types::OutFrame;
 
 /// Handles to one live session.
 #[derive(Clone)]
 pub struct Connection {
     /// Outbound message queue (drained by the session's writer loop).
     pub tx: mpsc::Sender<OutFrame>,
-    /// Control channel: asks the session to close itself (kick, replace,
-    /// drain). The session ends promptly even if its peer never answers (C8).
-    pub ctl: mpsc::Sender<CloseSpec>,
+    /// Close requests and liveness timestamps: other tasks ask the session
+    /// to close itself (kick, replace, drain, idle) and the session ends
+    /// promptly even if its peer never answers (C8).
+    pub signals: Arc<SessionSignals>,
 }
 
 #[derive(Clone)]
@@ -159,6 +162,15 @@ impl SessionRegistry {
             .unwrap_or(0)
     }
 
+    /// Visit every live session without copying keys (sweeper, drain). The
+    /// map's shard read locks are held during `f`, so `f` must not touch the
+    /// registry and must not block.
+    pub fn for_each_session(&self, mut f: impl FnMut(&Connection)) {
+        for entry in self.sessions.iter() {
+            f(&entry.value().conn);
+        }
+    }
+
     /// Snapshot of all active sessions.
     ///
     /// Returns a vector of (session_key, Connection). Intended for best-effort
@@ -222,8 +234,10 @@ mod tests {
 
     fn conn() -> Connection {
         let (tx, _) = mpsc::channel(1);
-        let (ctl, _) = mpsc::channel(1);
-        Connection { tx, ctl }
+        Connection {
+            tx,
+            signals: SessionSignals::new(),
+        }
     }
 
     /// C5: removing one of a user's sessions must never drop a concurrently

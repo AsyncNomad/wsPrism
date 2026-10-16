@@ -6,7 +6,7 @@
 //! contention to preserve throughput.
 
 use crate::config::schema::TenantLimits;
-use crate::realtime::core::{Connection, Presence, SessionRegistry};
+use crate::realtime::core::{now_ms, CloseRequest, Connection, Presence, SessionRegistry};
 use crate::realtime::types::{close_code, CloseSpec, OutFrame, Outgoing, Payload, QoS};
 use crate::sys;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,18 +50,28 @@ impl RealtimeCore {
         }
     }
 
-    /// Ask every session to close with 1001 during draining (best-effort).
+    /// Ask every session to close with 1001 during draining. A session that
+    /// is already closing keeps its first reason.
     pub fn best_effort_shutdown_all(&self, reason: &str) {
-        let sessions = self.sessions.all_sessions();
-        for (session_key, conn) in sessions {
+        self.sessions.for_each_session(|conn| {
             let spec = CloseSpec::new(close_code::GOING_AWAY, reason, None);
-            if conn.ctl.try_send(spec).is_err() {
-                let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
-                if sample_every_1024(n) {
-                    tracing::warn!(%session_key, drops=%n, "close request dropped while draining");
-                }
+            conn.signals.request_close(CloseRequest::Spec(spec));
+        });
+    }
+
+    /// One sweeper pass over every session (performance-architecture §5):
+    /// sessions idle for `idle_timeout_ms` are asked to close; sessions due a
+    /// keep-alive get a Ping, skipped if their queue is full (C9). Replaces
+    /// two timers per session.
+    pub fn sweep(&self, idle_timeout_ms: u64, ping_interval_ms: u64) {
+        let now = now_ms();
+        self.sessions.for_each_session(|conn| {
+            if conn.signals.idle_ms(now) >= idle_timeout_ms {
+                conn.signals.request_close(CloseRequest::Idle);
+            } else if conn.signals.take_ping_due(now, ping_interval_ms) {
+                let _ = conn.tx.try_send(OutFrame::Ping);
             }
-        }
+        });
     }
 
     /// Queue one message for one session according to `qos`. Never awaits,
@@ -86,11 +96,12 @@ impl RealtimeCore {
                     }
                     let notice =
                         sys::error(ClientCode::SlowConsumer, "outbound queue full", "").to_string();
-                    let _ = conn.ctl.try_send(CloseSpec::new(
-                        close_code::POLICY,
-                        "slow_consumer",
-                        Some(notice),
-                    ));
+                    conn.signals
+                        .request_close(CloseRequest::Spec(CloseSpec::new(
+                            close_code::POLICY,
+                            "slow_consumer",
+                            Some(notice),
+                        )));
                 }
             },
         }

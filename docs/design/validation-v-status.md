@@ -119,7 +119,7 @@ bench/run-moq.sh moq-judgment 3
 
 - [x] T0-1 `SessionIo` 추출 → 읽기·쓰기 두 절반 `SessionTx`/`SessionRx`([ADR 0005](../adr/0005-session-transport-seam.md)): 세션 루프·종료 처리가 axum `WebSocket`(Split 타입) 대신 트레이트를 쓴다. WebSocket 구현 `WsIo`는 `wire`·`close`·`codec`을 감싼다. 동작 변화 없음
 - [x] T0 쓰기 합치기(버퍼 없는 `feed`×N + `flush` 1회, 최대 64) — 216만/s 포화 해소, 저부하 회귀 없음(BENCHMARKS 「T0: 쓰기 합치기」)
-- [ ] 성능 P0 (설계 [performance-architecture.md](performance-architecture.md) §11): P0-b 테넌트 ID 문자 제한·사용자 분리 벤치 티켓 → P0-c 안쪽 DashSet 제거 → P0-d 종료 신호·스위퍼 타이머 → P0-e 메트릭 핸들·GCRA → P0-f 전역 할당자. 프로파일러: 사용자가 perf 설치 중(sudo 필요), `cargo install inferno`
+- [ ] 성능 P0 (설계 [performance-architecture.md](performance-architecture.md) §11): ✅ P0-a 쓰기 합치기, ✅ P0-b ID 규칙·사용자 분리 벤치, ✅ P0-c 중첩 DashSet 제거, ✅ P0-g 쓰기 타임아웃, ✅ P0-d 종료 신호·스위퍼 (유휴 24.2 → 16.2 KB/연결). 남은 것: P0-f 전역 할당자 A/B(`--features mimalloc`), P0-e 메트릭·GCRA(우선순위 낮음). 프로파일: `bench/profile-gateway.sh <이름>` (perf 6.8 설치됨; 재부팅 시 `perf_event_paranoid=1`, `kptr_restrict=0` 재설정 필요)
 - [ ] T0-2 전달 등급: `OutFrame::Hot { key, bytes }`, `RealtimeCore::deliver`의 Lossy 바이너리 → Hot 경로
 - [ ] T0-3 Hot 슬롯 `(sender, svc, key)` 최신값 + 짧은 FIFO + 상한, 틱 묶음 전송(WebSocket) — 큐 적체·드롭 지표, 포화점 시나리오(`rooms:160·240`) 재측정
 - [ ] T0-4 Hot 헤더 확장(KEY/SENDER), 연결별 `member_id`, `HotRelayService`, 크기 상한(PROTOCOL.md)

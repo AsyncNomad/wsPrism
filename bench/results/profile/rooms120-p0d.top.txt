@@ -1,0 +1,59 @@
+samples (weighted): 91753753662
+
+== exclusive categories (sum = 100%) ==
+ 43.6%  kernel: TCP send (incl. veth peer receive in netlab)
+ 14.0%  tokio runtime (scheduler, io driver)
+ 13.0%  ws framing (tungstenite)
+  7.6%  publish_room / deliver
+  6.6%  presence / registry (dashmap)
+  3.1%  kernel: epoll / futex / sched
+  2.8%  outbound queue (mpsc)
+  2.1%  utf8 re-validation (to_message)
+  1.9%  allocator
+  1.7%  json (serde)
+  1.5%  kernel: TCP receive
+  1.1%  split-socket BiLock
+  0.5%  metrics
+  0.4%  waker register / wake
+
+== top self (leaf frame) ==
+ 10.1%  _raw_spin_unlock_irqrestore
+  6.2%  [libc.so.6]
+  2.1%  _RNvMNtNtNtCs1YJIfRURiNl_12futures_core4task10___internal12atomic_wakerNtB2_11AtomicWaker8register
+  2.0%  _RNvXs2_NtNtCsevLNFiNqfJP_4core3str5lossyNtB5_10Utf8ChunksNtNtNtNtB9_4iter6traits8iterator8Iterator4next
+  2.0%  _RINvXs2_Csig97ywkBR45_7dashmapINtB6_7DashMapNtNtCs1C1lLj4PWSY_5alloc6string6StringNtNtNtNtCs2qTyRV0Zkzm_15wsprism_gateway8realtime4core16session_regi
+  1.8%  fdget
+  1.6%  _RNCNCNCNvNtNtCs2qTyRV0Zkzm_15wsprism_gateway9transport2ws10ws_upgrade000Bb_.llvm.6213617679452305354
+  1.6%  __inet_lookup_established
+  1.5%  malloc
+  1.4%  _RNvXs0_NtNtCsevLNFiNqfJP_4core6future7poll_fnINtB5_6PollFnNCNCINvMNtNtCs2qTyRV0Zkzm_15wsprism_gateway9transport7sessionNtB12_7Session10event_loopNtNt
+  1.4%  _RNvMs_NtNtNtCsjBqNQtY7Jg_5tokio7runtime2io12scheduled_ioNtB4_11ScheduledIo14poll_readiness
+  1.2%  _RNvMs0_NtNtNtCsjBqNQtY7Jg_5tokio4sync4mpsc4listINtB5_2RxNtNtNtCs2qTyRV0Zkzm_15wsprism_gateway8realtime5types8OutFrameE3popBY_
+  1.2%  _RNvMs_NtNtNtCs2qTyRV0Zkzm_15wsprism_gateway8realtime4core8realtimeNtB4_12RealtimeCore12publish_room
+  1.1%  _RNvMsf_NtNtCsjBqNQtY7Jg_5tokio4sync6notifyNtB5_15NotifiedProject13poll_notified.llvm.18182058114497299980
+  1.1%  selinux_socket_sendmsg
+  1.1%  _RNvMs0_NtNtCs7qX3MWVo1f8_12futures_util4lock6bilockINtB5_6BiLockNtNtNtCsbzgEDqWHNIE_4axum7extract2ws9WebSocketE9poll_lockCs2qTyRV0Zkzm_15wsprism_gate
+  1.1%  _RNvMNtNtNtCsjBqNQtY7Jg_5tokio4sync4mpsc4listINtB2_2TxNtNtNtCs2qTyRV0Zkzm_15wsprism_gateway8realtime5types8OutFrameE4pushBV_
+  1.1%  _RNvMs_NtNtNtNtCsjBqNQtY7Jg_5tokio7runtime9scheduler12multi_thread6workerNtB4_7Context8run_task
+  1.0%  __send
+  1.0%  __alloc_skb
+  0.9%  do_syscall_64
+  0.9%  kmem_cache_alloc_node_noprof
+  0.8%  sock_def_readable
+  0.8%  __tcp_transmit_skb
+  0.8%  tcp_rcv_established
+  0.8%  tcp_sendmsg_locked
+  0.8%  __sys_sendto
+  0.8%  read_tsc
+  0.7%  cfree
+  0.7%  _raw_spin_unlock_irq
+  0.7%  tcp_v4_rcv
+  0.7%  _RINvXs2_Csig97ywkBR45_7dashmapINtB6_7DashMapNtNtCs1C1lLj4PWSY_5alloc6string6StringINtNtNtNtCsgHYyB3hU8Ec_3std11collections4hash3set7HashSetBG_EEINtNt
+  0.6%  _RNvNtCsePjABCuZkhx_5bytes5bytes11shared_drop.llvm.7289901410238644415
+  0.6%  _RINvMs3_NtNtNtCs2r4rY4lO8rK_11tungstenite8protocol5frame5frameNtB6_5Frame6formatINtNtCs1C1lLj4PWSY_5alloc3vec3VechEECsbzgEDqWHNIE_4axum
+  0.6%  _RNvMs_NtNtNtNtCsjBqNQtY7Jg_5tokio7runtime9scheduler12multi_thread6workerNtB4_7Context3run
+  0.6%  _copy_from_iter
+  0.5%  tcp_ack
+  0.5%  ip_finish_output2
+  0.5%  _RNvMsf_NtNtCsjBqNQtY7Jg_5tokio4sync6notifyNtB5_15NotifiedProject13drop_notified.llvm.18182058114497299980
+  0.5%  __rcu_read_lock

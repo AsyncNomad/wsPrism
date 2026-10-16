@@ -21,7 +21,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use tokio::sync::mpsc::{self, error::TrySendError};
-use tokio::time::{timeout, Duration, Instant};
+use tokio::time::{timeout, Duration};
 use wsprism_core::error::{ClientCode, Result, WsPrismError};
 
 use crate::app_state::AppState;
@@ -29,6 +29,7 @@ use crate::dispatch::Dispatcher;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::ConnRateLimiter;
 use crate::policy::TenantPolicyRuntime;
+use crate::realtime::core::{CloseRequest, SessionSignals};
 use crate::realtime::{close_code, CloseSpec, OutFrame, RealtimeCtx};
 use crate::sys;
 
@@ -64,9 +65,8 @@ pub(crate) async fn run<Tx: SessionTx, Rx: SessionRx>(
     let gw = &app.cfg().gateway;
     let writer_timeout = Duration::from_millis(gw.writer_send_timeout_ms);
     let (out_tx, mut out_rx) = mpsc::channel(gw.session_queue_capacity);
-    let (ctl_tx, mut ctl_rx) = mpsc::channel::<CloseSpec>(1);
 
-    let mut session = match Session::admit(&app, id, out_tx, ctl_tx)? {
+    let mut session = match Session::admit(&app, id, out_tx)? {
         Admission::Admitted(session) => session,
         Admission::Rejected(spec) => {
             close::close_session(&mut tx, &mut rx, &mut out_rx, spec, writer_timeout).await;
@@ -74,9 +74,7 @@ pub(crate) async fn run<Tx: SessionTx, Rx: SessionRx>(
         }
     };
 
-    let exit = session
-        .event_loop(&mut tx, &mut rx, &mut out_rx, &mut ctl_rx)
-        .await;
+    let exit = session.event_loop(&mut tx, &mut rx, &mut out_rx).await;
 
     // The session stays registered until the close completes: the drain
     // logic in main waits on the registry, and anything routed to us meanwhile
@@ -96,9 +94,9 @@ struct Session {
     metrics: Arc<GatewayMetrics>,
     out_tx: mpsc::Sender<OutFrame>,
     writer_timeout: Duration,
-    ping_interval: Duration,
-    idle_timeout: Duration,
-    last_activity: Instant,
+    /// Close requests from other tasks and liveness for the sweeper (which
+    /// also sends keep-alive pings and enforces the idle timeout).
+    signals: Arc<SessionSignals>,
     conn_limiter: Option<ConnRateLimiter>,
     /// Hot Lane latency sampling counter (1/1024).
     hot_op_counter: u64,
@@ -112,18 +110,16 @@ impl Session {
         tx: &mut Tx,
         rx: &mut Rx,
         out_rx: &mut mpsc::Receiver<OutFrame>,
-        ctl_rx: &mut mpsc::Receiver<CloseSpec>,
     ) -> Exit {
-        let mut ping_tick = tokio::time::interval(self.ping_interval);
-        let mut idle_tick = tokio::time::interval(Duration::from_millis(1000));
+        // Held outside `self` so the select! below can borrow `self` mutably.
+        let signals = Arc::clone(&self.signals);
         loop {
             let flow = tokio::select! {
                 // C8: kick / replace / drain requests from other tasks.
-                Some(spec) = ctl_rx.recv() => Flow::Break(Exit::Close(spec)),
+                // C8: kick / replace / drain / slow consumer / idle requests.
+                req = signals.closed() => Flow::Break(Exit::Close(self.close_spec(req))),
                 out = out_rx.recv() => self.write(tx, out_rx, out).await,
                 incoming = rx.recv() => self.on_incoming(incoming).await,
-                _ = ping_tick.tick() => self.ping(),
-                _ = idle_tick.tick() => self.check_idle(),
             };
             if let ControlFlow::Break(exit) = flow {
                 return exit;
@@ -172,21 +168,17 @@ impl Session {
         }
     }
 
-    /// Keep-alive ping is optional: skip it if the queue is full (C9).
-    fn ping(&self) -> Flow {
-        let _ = self.out_tx.try_send(OutFrame::Ping);
-        Flow::Continue(())
-    }
-
-    fn check_idle(&self) -> Flow {
-        if self.last_activity.elapsed() >= self.idle_timeout {
-            return Flow::Break(Exit::Close(CloseSpec::new(
+    /// The close spec for a request from another task. Idle closes are built
+    /// here because the notice carries this session's trace id.
+    fn close_spec(&self, req: CloseRequest) -> CloseSpec {
+        match req {
+            CloseRequest::Spec(spec) => spec,
+            CloseRequest::Idle => CloseSpec::new(
                 close_code::NORMAL,
                 "idle_timeout",
                 Some(sys::error(ClientCode::Timeout, "idle", self.trace_id()).to_string()),
-            )));
+            ),
         }
-        Flow::Continue(())
     }
 
     /// Queue a reply from the session's own loop without awaiting (C9). This

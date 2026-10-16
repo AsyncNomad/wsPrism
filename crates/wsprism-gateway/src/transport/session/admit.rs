@@ -4,14 +4,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use tokio::sync::mpsc;
-use tokio::time::{Duration, Instant};
+use tokio::time::Duration;
 use wsprism_core::error::{ClientCode, Result, WsPrismError};
 
 use super::{Session, SessionIdentity};
 use crate::app_state::AppState;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::OnExceed;
-use crate::realtime::core::Connection;
+use crate::realtime::core::{CloseRequest, Connection, SessionSignals};
 use crate::realtime::{close_code, CloseSpec, OutFrame, RealtimeCore, RealtimeCtx};
 use crate::sys;
 
@@ -73,11 +73,12 @@ fn evict_session(
     core.presence.cleanup_session(tenant, user_key, victim_key);
     metrics.ws_active_sessions.dec(&[("tenant", tenant)]);
     // C8: ask the victim's loop to stop and close itself (notice + 1008).
-    let _ = conn.ctl.try_send(CloseSpec::new(
-        close_code::POLICY,
-        reason,
-        Some(sys::kicked(reason, trace_id).to_string()),
-    ));
+    conn.signals
+        .request_close(CloseRequest::Spec(CloseSpec::new(
+            close_code::POLICY,
+            reason,
+            Some(sys::kicked(reason, trace_id).to_string()),
+        )));
 }
 
 impl Session {
@@ -87,7 +88,6 @@ impl Session {
         app: &AppState,
         id: SessionIdentity,
         out_tx: mpsc::Sender<OutFrame>,
-        ctl_tx: mpsc::Sender<CloseSpec>,
     ) -> Result<Admission> {
         let policy = app
             .tenant_policy(&id.tenant)
@@ -154,6 +154,7 @@ impl Session {
             }
         }
 
+        let signals = SessionSignals::new();
         if let Err(e) = core.sessions.try_insert(
             id.tenant.clone(),
             user_key.clone(),
@@ -161,7 +162,7 @@ impl Session {
             id.sid.clone(),
             Connection {
                 tx: out_tx.clone(),
-                ctl: ctl_tx,
+                signals: signals.clone(),
             },
             t_cfg.limits.max_sessions_total,
         ) {
@@ -204,9 +205,7 @@ impl Session {
             metrics,
             out_tx,
             writer_timeout: Duration::from_millis(gw.writer_send_timeout_ms),
-            ping_interval: Duration::from_millis(gw.ping_interval_ms),
-            idle_timeout: Duration::from_millis(gw.idle_timeout_ms),
-            last_activity: Instant::now(),
+            signals,
             hot_op_counter: 0,
             _cleanup: cleanup,
         })))
