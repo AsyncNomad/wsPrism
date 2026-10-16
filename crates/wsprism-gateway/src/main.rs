@@ -12,6 +12,12 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 use wsprism_gateway::{app_state, config, server};
 
+/// Optional global allocator (`--features mimalloc`), measured against the
+/// system allocator before it becomes a default (performance-architecture §9).
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// wsPrism realtime gateway.
 #[derive(Debug, Parser)]
 #[command(version, about)]

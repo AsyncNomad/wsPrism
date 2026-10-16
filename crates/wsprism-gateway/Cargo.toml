@@ -27,6 +27,7 @@ clap = { workspace = true, features = ["env"] }
 # axum::Error to tungstenite::Error to detect oversize frames (S2). The S2
 # integration tests fail if the versions drift apart.
 tungstenite = "0.24"
+mimalloc = { version = "0.1.52", optional = true }
 
 [dev-dependencies]
 criterion = { workspace = true }
@@ -35,3 +36,6 @@ tokio-tungstenite = "0.24"
 [[bench]]
 name = "hotpath"
 harness = false
+
+[features]
+mimalloc = ["dep:mimalloc"]
