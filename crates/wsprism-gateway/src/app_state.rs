@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use wsprism_core::error::{Result, WsPrismError};
 
+use crate::auth::AuthChain;
 use crate::dispatch::Dispatcher;
 use crate::obs::metrics::GatewayMetrics;
 use crate::realtime::RealtimeCore;
@@ -38,6 +39,8 @@ pub struct AppState {
 
 struct AppStateInner {
     cfg: GatewayConfig,
+    /// Per-tenant authentication chains (ADR 0008 §1).
+    tenant_auth: HashMap<String, Arc<AuthChain>>,
     tenant_policy: HashMap<String, Arc<policy::TenantPolicyRuntime>>,
     /// tenant id -> index into `cfg.tenants` (O(1) lookup per upgrade).
     tenant_index: HashMap<String, usize>,
@@ -72,6 +75,19 @@ impl AppState {
                 );
             }
             tenant_policy.insert(t.id.clone(), Arc::new(runtime));
+        }
+
+        // Authentication chains.
+        let mut tenant_auth = HashMap::new();
+        for t in &cfg.tenants {
+            let chain = AuthChain::from_config(&t.auth);
+            if chain.is_dev_only() {
+                tracing::warn!(
+                    tenant = %t.id,
+                    "tenant uses only the dev authenticator (anyone presenting `dev` is admitted); set tenants[].auth for production"
+                );
+            }
+            tenant_auth.insert(t.id.clone(), Arc::new(chain));
         }
 
         // 2) Create core components
@@ -130,6 +146,7 @@ impl AppState {
 
         Ok(Self {
             inner: Arc::new(AppStateInner {
+                tenant_auth,
                 tenant_index: cfg
                     .tenants
                     .iter()
@@ -161,18 +178,9 @@ impl AppState {
         self.inner.tenant_policy.get(tenant_id).cloned()
     }
 
-    pub fn resolve_ticket(&self, ticket: &str) -> Result<String> {
-        // Development stub until the `Authenticator` trait (ROADMAP M2):
-        // `dev` -> `user:dev`, `dev:<id>` -> `user:<id>` (one user per
-        // connection in benchmarks).
-        match ticket.strip_prefix("dev") {
-            Some("") => Ok("user:dev".to_string()),
-            Some(rest) => match rest.strip_prefix(':') {
-                Some(id) if crate::ident::is_safe_id(id) => Ok(format!("user:{id}")),
-                _ => Err(WsPrismError::AuthFailed),
-            },
-            None => Err(WsPrismError::AuthFailed),
-        }
+    /// The tenant's authentication chain.
+    pub fn auth(&self, tenant_id: &str) -> Option<Arc<AuthChain>> {
+        self.inner.tenant_auth.get(tenant_id).cloned()
     }
 
     pub fn realtime(&self) -> Arc<RealtimeCore> {

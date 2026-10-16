@@ -40,3 +40,21 @@ session's pending keyed state (latest value per sender/svc/key) is sent at
 most once per tick, at a per-session phase within the period. Fewer flushes
 when updates arrive faster than the tick, at the cost of up to one tick of
 extra latency. Unkeyed frames are not paced.
+
+---
+
+## Authentication (`tenants[].auth`, ADR 0008)
+
+An ordered list of authenticators. Each one either decides (admit / reject)
+or passes a token it doesn't recognise to the next one.
+
+```yaml
+tenants:
+  - id: acme
+    auth:
+      - kind: dev        # development only: `dev` / `dev:<id>`
+```
+
+Omitting `auth` means `[dev]` and logs a startup warning: anyone presenting
+`dev` is admitted. Production authenticators (one-time tickets, JWT, backend
+connect proxy) arrive in the next M2 steps.

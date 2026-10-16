@@ -55,3 +55,17 @@ fn reject_tenant_id_outside_charset() {
     let ok = "version: 1\ntenants:\n  - id: \"Acme-1_b\"\n";
     config::load_from_str(ok).expect("charset-conforming id must parse");
 }
+
+/// ADR 0008 §1: `tenants[].auth` is an ordered list of authenticators; an
+/// unknown kind is a config error, not silently ignored.
+#[test]
+fn auth_chain_config_is_strict() {
+    let ok = "version: 1\ntenants:\n  - id: t\n    auth:\n      - kind: dev\n";
+    let cfg = config::load_from_str(ok).expect("explicit dev auth parses");
+    assert_eq!(cfg.tenants[0].auth.len(), 1);
+    let bad = "version: 1\ntenants:\n  - id: t\n    auth:\n      - kind: magic\n";
+    assert!(
+        config::load_from_str(bad).is_err(),
+        "unknown authenticator kind"
+    );
+}

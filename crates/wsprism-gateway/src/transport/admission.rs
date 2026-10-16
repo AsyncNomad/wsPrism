@@ -14,6 +14,7 @@ use axum::http::{
 use axum::response::{IntoResponse, Response};
 
 use crate::app_state::AppState;
+use crate::auth::{AuthError, AuthRequest};
 use crate::config::TenantConfig;
 use crate::policy::TenantPolicyRuntime;
 use crate::transport::credentials;
@@ -83,9 +84,9 @@ impl IntoResponse for Rejection {
 }
 
 /// Run every admission check; count and return the first rejection.
-pub fn admit(app: &AppState, req: &HandshakeRequest<'_>) -> Result<Admitted, Rejection> {
+pub async fn admit(app: &AppState, req: &HandshakeRequest<'_>) -> Result<Admitted, Rejection> {
     let tenant = app.tenant(req.tenant);
-    let result = check_all(app, req, tenant);
+    let result = check_all(app, req, tenant).await;
     if let Err(rejection) = &result {
         // S5: metric labels must come from config, never from the raw query.
         let label = tenant.map_or(UNKNOWN_TENANT_LABEL, |t| t.id.as_str());
@@ -96,7 +97,7 @@ pub fn admit(app: &AppState, req: &HandshakeRequest<'_>) -> Result<Admitted, Rej
     result
 }
 
-fn check_all(
+async fn check_all(
     app: &AppState,
     req: &HandshakeRequest<'_>,
     tenant: Option<&TenantConfig>,
@@ -113,7 +114,7 @@ fn check_all(
     let offered = Offered::parse(req.headers);
     let subprotocol = negotiate_protocol(&offered)?;
     origin_allowed(&policy, req)?;
-    let user_id = authenticate(app, &policy, req, &offered)?;
+    let user_id = authenticate(app, tenant, &policy, req, &offered, client_ip).await?;
     tenant_capacity(app, tenant)?;
     Ok(Admitted {
         user_id,
@@ -178,16 +179,50 @@ fn origin_allowed(
 /// C3: authenticate before upgrading, so unauthenticated clients get a proper
 /// HTTP 401 and never consume a socket task. The ticket is read from the
 /// tenant's `ticket_sources` (see `transport::credentials`).
-fn authenticate(
+/// The tenant's authenticator chain decides who the client is (ADR 0008).
+async fn authenticate(
     app: &AppState,
+    tenant: &TenantConfig,
     policy: &TenantPolicyRuntime,
     req: &HandshakeRequest<'_>,
     offered: &Offered<'_>,
+    client_ip: IpAddr,
 ) -> Result<String, Rejection> {
-    let ticket = credentials::find(policy.ticket_sources(), req, offered)
+    let token = credentials::find(policy.ticket_sources(), req, offered)
         .ok_or_else(|| Rejection::new(StatusCode::UNAUTHORIZED, "auth_missing", "Unauthorized"))?;
-    app.resolve_ticket(ticket)
-        .map_err(|_| Rejection::new(StatusCode::UNAUTHORIZED, "auth_failed", "Unauthorized"))
+    let chain = app
+        .auth(&tenant.id)
+        .ok_or_else(|| Rejection::new(StatusCode::UNAUTHORIZED, "auth_failed", "Unauthorized"))?;
+    let auth_req = AuthRequest {
+        tenant: &tenant.id,
+        token,
+        client_ip,
+    };
+    match chain.authenticate(&auth_req).await {
+        Ok(identity) => Ok(identity.user_id),
+        Err(AuthError::Unavailable(why)) => {
+            tracing::warn!(tenant = %tenant.id, why, "authentication unavailable");
+            Err(Rejection::new(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "auth_unavailable",
+                "Authentication Unavailable",
+            )
+            .retry_after(1))
+        }
+        Err(AuthError::Rejected(why)) => {
+            tracing::debug!(tenant = %tenant.id, why, "authentication rejected");
+            Err(Rejection::new(
+                StatusCode::UNAUTHORIZED,
+                "auth_failed",
+                "Unauthorized",
+            ))
+        }
+        Err(AuthError::NotMine) => Err(Rejection::new(
+            StatusCode::UNAUTHORIZED,
+            "auth_failed",
+            "Unauthorized",
+        )),
+    }
 }
 
 /// Tenant-wide session cap (best-effort; the registry re-checks on insert).

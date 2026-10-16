@@ -62,7 +62,7 @@ pub async fn ws_upgrade(
         peer,
         headers: &headers,
     };
-    let admitted = match admission::admit(&app, &req) {
+    let admitted = match admission::admit(&app, &req).await {
         Ok(admitted) => admitted,
         Err(rejection) => return rejection.into_response(),
     };

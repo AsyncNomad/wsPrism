@@ -275,6 +275,19 @@ pub struct TenantConfig {
     /// Sprint 2+: policy controls (strict by default).
     #[serde(default)]
     pub policy: TenantPolicy,
+
+    /// Authenticators tried in order (ADR 0008 §1). Empty = the development
+    /// stub (`dev` / `dev:<id>`), with a startup warning.
+    #[serde(default)]
+    pub auth: Vec<AuthConfig>,
+}
+
+/// One link of a tenant's authentication chain.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AuthConfig {
+    /// `dev` -> `user:dev`, `dev:<id>` -> `user:<id>`. Development only.
+    Dev,
 }
 
 impl TenantConfig {
