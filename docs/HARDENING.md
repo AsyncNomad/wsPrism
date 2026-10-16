@@ -41,6 +41,7 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 | S3 | ☑ | `chat.send`가 발신자의 룸 멤버십을 검사하지 않음 | `services/chat.rs` |
 | S4 | ☑ | 클라이언트 지정 `sid` 충돌 시 기존 세션 덮어쓰기 → 테넌트 카운터 누수, 기존 연결 고아화 | `realtime/core/session_registry.rs` |
 | S5 | ☑ | 핸드셰이크 거절 메트릭 라벨에 미검증 `tenant` 사용 → 라벨 카디널리티 폭발(메모리 DoS) | `transport/ws.rs` |
+| S7 | ☑ | **JSON 배열 봉투 수용**: serde 파생 `Deserialize`가 구조체에 JSON 배열(필드 위치 순)도 받아 `[1,"chat","send"]` 같은 문서화되지 않은 와이어 형식이 통과. 필드 순서에 의미가 달려 있어 v2 디코더(필드 순서 다름)와 해석이 갈렸다 — **퍼징으로 발견**(2026-10-16). 두 디코더 모두 최상위 JSON 객체만 받도록 수정(`2a1ac43`) | `wsprism-core/protocol/text.rs` |
 
 #### S3 결정 기록
 

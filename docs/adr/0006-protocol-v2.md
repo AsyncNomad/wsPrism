@@ -67,10 +67,10 @@ flags: 0x01 KEY  0x02 SEQ  0x04 SENDER(서버→클라이언트 전용)
 ### 5. 제어·Ext 메시지
 
 ```json
-{"svc":"chat","type":"send","ch":"party:1","id":123,"data":{...}}
+{"svc":"chat","type":"send","room":"party:1","seq":123,"data":{...}}
 ```
 
-- `v`, `flags` 제거(③). `seq` → `id`(요청 id, 응답의 `reply_to`와 짝 — v1 `seq`의 실제 의미). `room` → `ch`(채널).
+- `v`, `flags`는 보내지 않아도 된다(보내면 무시)(③). **필드 이름은 v1과 같다**(R6: 초안의 `id`·`ch` 이름 변경은 철회).
 - **모르는 필드는 무시**하고 `wsprism_unknown_fields_total` 메트릭만 올린다(④). 테넌트 정책 `strict_envelope: true`면 v1처럼 거부.
 - `sys.joined` → `{"svc":"sys","type":"joined","ch":"party:1","alias":3,"member_id":17,"reply_to":…}`.
 - 구독과 발행 권한은 채널 정책에서 분리한다(`subscribe` / `publish`, M2-lite의 JWT 채널 권한과 함께). v2의 `join`은 구독, 발행 권한은 별도 검사.
@@ -99,7 +99,7 @@ flags: 0x01 KEY  0x02 SEQ  0x04 SENDER(서버→클라이언트 전용)
 | 단계 | 내용 | 비고 |
 |---|---|---|
 | v2-1 ✅ | 협상(`wsprism.v2.json`), 세션의 프로토콜 버전, v2 종료 코드 매핑 | 작음. v1 동작 불변. `sys.reconnect` 힌트는 다음 단계 |
-| v2-2 | v2 제어 봉투(`ch`/`id`, 모르는 필드 무시 + 메트릭, `strict_envelope`) | v1 봉투는 그대로 |
+| v2-2 ✅ | v2 제어 봉투: 모르는 필드 무시, `v`·`flags` 선택(무시). 필드 이름은 유지(R6) | v1 봉투는 그대로. 퍼징 중 배열 봉투 수용 버그 발견·수정(HARDENING S7) |
 | v2-3 | 채널 별칭·`member_id`(join 응답), v2 Hot 프레임 디코드·라우팅, `HotRelayService`(`sender` 부착), 버전별 인코딩 캐시 | T0-3(Hot 슬롯)과 함께 |
 | v2-4 | 묶음 프레임 + 틱 송신 | T0-3 |
 
@@ -112,6 +112,7 @@ flags: 0x01 KEY  0x02 SEQ  0x04 SENDER(서버→클라이언트 전용)
 | R3 | v1·v2 클라이언트가 섞인 룸에서 "한 번 인코딩해 공유"가 깨짐 | 송신 프레임이 구조화된 Hot 데이터를 들고, **버전별 인코딩을 처음 필요할 때 한 번만 만들어 캐시**(발행당 최대 버전 수만큼). 수신자들은 그 바이트를 공유 |
 | R4 | 1009를 표준 코드로 남김 | 종료는 우리가 보내므로 v2는 4009 |
 | R5 | 모르는 채널 별칭의 Hot 프레임 처리 미정 | 드롭 + `policy_decisions{reason="unknown_channel"}`, `hot_error_mode: sys_error`면 `sys.error` |
+| R6 | §5의 `seq`→`id`, `room`→`ch` 이름 변경은 서버가 보내는 Ext 메시지(서비스·`sys.*`가 만드는 JSON)까지 버전별로 다르게 인코딩해야 한다 — 이득(이름)에 비해 비용(모든 Ext 메시지의 이중 인코딩)이 크다 | **이름은 유지**(`room`, `seq`). v2의 실질 변화는 "모르는 필드 무시, `v`·`flags` 선택"뿐이고, 보내는 메시지는 두 버전에 똑같다. 테넌트별 엄격 모드와 모르는 필드 메트릭도 보류(지연 파싱하는 `RawValue`와 serde `flatten`이 함께 쓰이지 않아 세려면 두 번 파싱해야 함) |
 
 ## 기각한 대안
 
