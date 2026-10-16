@@ -62,7 +62,7 @@ impl From<String> for Utf8Text {
 ///
 /// Transport-agnostic: the realtime core and services never see the
 /// WebSocket library's message type (the transport converts at its edge,
-/// `transport::session::wire`). Cloning is a reference-count bump, so a
+/// `transport::session::ws_io`). Cloning is a reference-count bump, so a
 /// fan-out to N sessions does not copy the payload N times.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutFrame {

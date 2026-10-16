@@ -3,8 +3,9 @@
 //!
 //! - `admit`: sid takeover, per-user session limit, registry registration.
 //! - `inbound`: per-frame decode → rate limit → policy → room ops / dispatch.
-//! - `close`: why a session ends (`Exit`) and how its socket is torn down.
-//! - `sys`: gateway `sys.*` envelopes.
+//! - `close`: why a session ends (`Exit`) and how its connection is torn down.
+//! - `io`: the transport seam (`SessionTx` / `SessionRx`); `ws_io` is the
+//!   WebSocket implementation. Nothing else here knows the socket type.
 //!
 //! Handlers return a `Flow`. The event loop only routes events to them and
 //! never awaits the session's own outbound queue (C9).
@@ -12,14 +13,12 @@
 mod admit;
 mod close;
 mod inbound;
-mod wire;
+mod io;
+mod ws_io;
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use axum::extract::ws::{Message, WebSocket};
-use futures_util::stream::{SplitSink, SplitStream};
-use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::sync::mpsc::{self, error::TrySendError};
 use tokio::time::{timeout, Duration, Instant};
@@ -35,6 +34,8 @@ use crate::sys;
 
 use admit::{Admission, SessionCleanup};
 use close::Exit;
+use io::{SessionRx, SessionTx};
+pub(crate) use ws_io::split as split_websocket;
 
 /// Outcome of handling one event: keep going, or end the session.
 type Flow = ControlFlow<Exit>;
@@ -48,30 +49,33 @@ pub(crate) struct SessionIdentity {
     pub trace_id: String,
 }
 
-/// Run a session on an upgraded socket until it ends.
-pub(crate) async fn run(app: AppState, id: SessionIdentity, socket: WebSocket) -> Result<()> {
+/// Run a session on an established connection until it ends.
+pub(crate) async fn run<Tx: SessionTx, Rx: SessionRx>(
+    app: AppState,
+    id: SessionIdentity,
+    (mut tx, mut rx): (Tx, Rx),
+) -> Result<()> {
     let gw = &app.cfg().gateway;
     let writer_timeout = Duration::from_millis(gw.writer_send_timeout_ms);
     let (out_tx, mut out_rx) = mpsc::channel(gw.session_queue_capacity);
     let (ctl_tx, mut ctl_rx) = mpsc::channel::<CloseSpec>(1);
-    let (mut ws_tx, mut ws_rx) = socket.split();
 
     let mut session = match Session::admit(&app, id, out_tx, ctl_tx)? {
         Admission::Admitted(session) => session,
         Admission::Rejected(spec) => {
-            close::close_session(&mut ws_tx, &mut ws_rx, &mut out_rx, spec, writer_timeout).await;
+            close::close_session(&mut tx, &mut rx, &mut out_rx, spec, writer_timeout).await;
             return Ok(());
         }
     };
 
     let exit = session
-        .event_loop(&mut ws_tx, &mut ws_rx, &mut out_rx, &mut ctl_rx)
+        .event_loop(&mut tx, &mut rx, &mut out_rx, &mut ctl_rx)
         .await;
 
     // The session stays registered until the close completes: the drain
     // logic in main waits on the registry, and anything routed to us meanwhile
     // is rejected by the closed queue. Dropping `session` unregisters it.
-    close::finish(exit, &mut ws_tx, &mut ws_rx, &mut out_rx, writer_timeout).await;
+    close::finish(exit, &mut tx, &mut rx, &mut out_rx, writer_timeout).await;
     drop(session);
     Ok(())
 }
@@ -97,10 +101,10 @@ struct Session {
 }
 
 impl Session {
-    async fn event_loop(
+    async fn event_loop<Tx: SessionTx, Rx: SessionRx>(
         &mut self,
-        ws_tx: &mut SplitSink<WebSocket, Message>,
-        ws_rx: &mut SplitStream<WebSocket>,
+        tx: &mut Tx,
+        rx: &mut Rx,
         out_rx: &mut mpsc::Receiver<OutFrame>,
         ctl_rx: &mut mpsc::Receiver<CloseSpec>,
     ) -> Exit {
@@ -110,8 +114,8 @@ impl Session {
             let flow = tokio::select! {
                 // C8: kick / replace / drain requests from other tasks.
                 Some(spec) = ctl_rx.recv() => Flow::Break(Exit::Close(spec)),
-                out = out_rx.recv() => self.write(ws_tx, out).await,
-                incoming = ws_rx.next() => self.on_incoming(incoming).await,
+                out = out_rx.recv() => self.write(tx, out).await,
+                incoming = rx.recv() => self.on_incoming(incoming).await,
                 _ = ping_tick.tick() => self.ping(),
                 _ = idle_tick.tick() => self.check_idle(),
             };
@@ -121,16 +125,12 @@ impl Session {
         }
     }
 
-    /// Write one queued message to the socket (slow-consumer protection).
-    async fn write(
-        &self,
-        ws_tx: &mut SplitSink<WebSocket, Message>,
-        out: Option<OutFrame>,
-    ) -> Flow {
+    /// Write one queued message to the connection (slow-consumer protection).
+    async fn write<Tx: SessionTx>(&self, tx: &mut Tx, out: Option<OutFrame>) -> Flow {
         let Some(frame) = out else {
             return Flow::Break(Exit::Abort);
         };
-        match timeout(self.writer_timeout, ws_tx.send(wire::to_message(frame))).await {
+        match timeout(self.writer_timeout, tx.send(frame)).await {
             Ok(Ok(())) => Flow::Continue(()),
             Ok(Err(_)) => Flow::Break(Exit::Abort),
             Err(_) => {

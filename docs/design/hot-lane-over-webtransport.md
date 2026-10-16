@@ -87,6 +87,8 @@ UDP :4433  wt ──►│
 
 ### 4.1 `SessionIo` 트레이트
 
+> **구현(T0-1)**: 읽기·쓰기를 동시에 기다리는 `select!` 때문에 단일 트레이트 대신 두 절반 `SessionTx`/`SessionRx`로 나눴다. 비신뢰 송신은 T0-3에서 추가. [ADR 0005](../adr/0005-session-transport-seam.md)
+
 현재 세션 루프는 axum `WebSocket` 타입(`SplitSink/SplitStream`)에 묶여 있다. 이를 트레이트로 추상화한다.
 
 ```rust

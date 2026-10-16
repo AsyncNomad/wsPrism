@@ -92,7 +92,7 @@ pub async fn ws_upgrade(
                 trace_id,
             };
             async move {
-                if let Err(e) = session::run(app, id, socket).await {
+                if let Err(e) = session::run(app, id, session::split_websocket(socket)).await {
                     tracing::error!("session error: {}", e);
                 }
             }

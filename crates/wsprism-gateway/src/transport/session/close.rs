@@ -1,25 +1,20 @@
-//! How a session ends: the `Exit` reasons and the matching socket teardown.
+//! How a session ends: the `Exit` reasons and the matching teardown,
+//! written against the transport seam (`io`).
 
-use axum::extract::ws::{Message, WebSocket};
-use futures_util::stream::{SplitSink, SplitStream};
-use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration, Instant};
 
-use super::wire;
+use super::io::{SessionRx, SessionTx};
 use crate::realtime::{close_code, CloseSpec, OutFrame};
 
-/// How long to keep the socket open after sending close 1009 (see S2).
-const CLOSE_LINGER: Duration = Duration::from_millis(500);
-
-/// How long to wait for the peer's close frame after sending ours (C3).
+/// How long to wait for the peer's close after sending ours (C3).
 const CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// Why a session's main loop ended, i.e. how its socket must be closed.
+/// Why a session's main loop ended, i.e. how its connection must be closed.
 pub(super) enum Exit {
     /// The peer closed (or the stream ended): just flush our close reply.
     Peer,
-    /// The socket is unusable (write stalled or read failed): drop it.
+    /// The connection is unusable (write stalled or read failed): drop it.
     Abort,
     /// Server-initiated close with a reason, optionally preceded by a notice.
     Close(CloseSpec),
@@ -27,51 +22,38 @@ pub(super) enum Exit {
     TooBig,
 }
 
-/// True if the read failed because the frame/message exceeded the configured
-/// codec limit (see `max_message_size` in `ws_upgrade`).
-pub(super) fn is_message_too_long(e: axum::Error) -> bool {
-    matches!(
-        e.into_inner().downcast_ref::<tungstenite::Error>(),
-        Some(tungstenite::Error::Capacity(
-            tungstenite::error::CapacityError::MessageTooLong { .. }
-        ))
-    )
-}
-
-/// Tear the socket down according to `exit`.
-pub(super) async fn finish(
+/// Tear the connection down according to `exit`.
+pub(super) async fn finish<Tx: SessionTx, Rx: SessionRx>(
     exit: Exit,
-    ws_tx: &mut SplitSink<WebSocket, Message>,
-    ws_rx: &mut SplitStream<WebSocket>,
+    tx: &mut Tx,
+    rx: &mut Rx,
     out_rx: &mut mpsc::Receiver<OutFrame>,
     writer_timeout: Duration,
 ) {
     match exit {
         Exit::Peer => {
-            // Flush tungstenite's queued close reply.
-            let _ = timeout(writer_timeout, ws_tx.close()).await;
+            let _ = timeout(writer_timeout, tx.finish_peer_close()).await;
         }
         Exit::Abort => {}
-        Exit::Close(spec) => close_session(ws_tx, ws_rx, out_rx, spec, writer_timeout).await,
+        Exit::Close(spec) => close_session(tx, rx, out_rx, spec, writer_timeout).await,
         Exit::TooBig => {
-            let close = wire::close_message(close_code::MESSAGE_TOO_BIG, "message too big".into());
-            let _ = timeout(writer_timeout, ws_tx.send(close)).await;
-            // The oversized payload is still unread in the kernel buffer
-            // (tungstenite rejects on the header and cannot skip the body).
-            // Closing now would make the kernel send RST, and the peer may
-            // discard our close frame. Linger briefly so it can read it first.
-            tokio::time::sleep(CLOSE_LINGER).await;
+            let _ = timeout(
+                writer_timeout,
+                tx.send_close(close_code::MESSAGE_TOO_BIG, "message too big".into()),
+            )
+            .await;
+            tokio::time::sleep(tx.too_big_linger()).await;
         }
     }
 }
 
 /// Close politely (C3): flush what is already queued (so the notice is not
-/// reordered ahead of earlier messages), send the notice and the close frame,
-/// then wait briefly for the peer's close so the TCP teardown is clean.
+/// reordered ahead of earlier messages), send the notice and the close,
+/// then wait briefly for the peer's close so the teardown is clean.
 /// Writes share one `writer_timeout` budget; a stalled peer is abandoned.
-pub(super) async fn close_session(
-    ws_tx: &mut SplitSink<WebSocket, Message>,
-    ws_rx: &mut SplitStream<WebSocket>,
+pub(super) async fn close_session<Tx: SessionTx, Rx: SessionRx>(
+    tx: &mut Tx,
+    rx: &mut Rx,
     out_rx: &mut mpsc::Receiver<OutFrame>,
     spec: CloseSpec,
     writer_timeout: Duration,
@@ -79,26 +61,25 @@ pub(super) async fn close_session(
     out_rx.close(); // no new messages from here on
     let mut outgoing = Vec::new();
     while let Ok(frame) = out_rx.try_recv() {
-        outgoing.push(wire::to_message(frame));
+        outgoing.push(frame);
     }
-    outgoing.extend(wire::close_messages(spec));
+    outgoing.extend(spec.notice.map(OutFrame::text));
 
     let deadline = Instant::now() + writer_timeout;
-    for m in outgoing {
+    for frame in outgoing {
         if !matches!(
-            tokio::time::timeout_at(deadline, ws_tx.send(m)).await,
+            tokio::time::timeout_at(deadline, tx.send(frame)).await,
             Ok(Ok(()))
         ) {
             return; // stalled or broken peer: give up
         }
     }
+    if !matches!(
+        tokio::time::timeout_at(deadline, tx.send_close(spec.code, spec.reason)).await,
+        Ok(Ok(()))
+    ) {
+        return;
+    }
 
-    let _ = timeout(CLOSE_HANDSHAKE_TIMEOUT, async {
-        while let Some(Ok(m)) = ws_rx.next().await {
-            if matches!(m, Message::Close(_)) {
-                break;
-            }
-        }
-    })
-    .await;
+    let _ = timeout(CLOSE_HANDSHAKE_TIMEOUT, rx.await_peer_close()).await;
 }

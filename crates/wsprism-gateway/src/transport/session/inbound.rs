@@ -2,39 +2,33 @@
 
 use std::ops::ControlFlow;
 
-use axum::extract::ws::Message;
 use tokio::time::Instant;
 use wsprism_core::error::ClientCode;
 use wsprism_core::protocol::hot::HotFrame;
 use wsprism_core::protocol::text::Envelope;
 
-use super::close::{is_message_too_long, Exit};
+use super::close::Exit;
+use super::io::RecvError;
 use super::{Flow, Session};
 use crate::policy::engine::{HotErrorMode, PolicyDecision};
 use crate::realtime::{close_code, CloseSpec};
 use crate::sys;
-use crate::transport::codec::{decode, Inbound};
+use crate::transport::codec::Inbound;
 
 impl Session {
     pub(super) async fn on_incoming(
         &mut self,
-        incoming: Option<Result<Message, axum::Error>>,
+        incoming: Option<Result<Inbound, RecvError>>,
     ) -> Flow {
-        let msg = match incoming {
-            Some(Ok(msg)) => msg,
-            Some(Err(e)) => {
-                if is_message_too_long(e) {
-                    self.decision("transport", "close", "frame_too_large");
-                    return Flow::Break(Exit::TooBig);
-                }
-                return Flow::Break(Exit::Abort);
-            }
+        let decoded = match incoming {
             None => return Flow::Break(Exit::Peer),
-        };
-        self.last_activity = Instant::now();
-        let decoded = match decode(msg) {
-            Ok(d) => d,
-            Err(e) => {
+            Some(Err(RecvError::TooBig)) => {
+                self.decision("transport", "close", "frame_too_large");
+                return Flow::Break(Exit::TooBig);
+            }
+            Some(Err(RecvError::Broken)) => return Flow::Break(Exit::Abort),
+            Some(Err(RecvError::Decode(e))) => {
+                self.last_activity = Instant::now();
                 self.metrics.decode_errors.inc(&[("tenant", self.tenant())]);
                 return Flow::Break(Exit::Close(CloseSpec::new(
                     close_code::PROTOCOL_ERROR,
@@ -42,7 +36,9 @@ impl Session {
                     Some(sys::error_from(&e, self.trace_id()).to_string()),
                 )));
             }
+            Some(Ok(decoded)) => decoded,
         };
+        self.last_activity = Instant::now();
         match decoded {
             // tungstenite answers pings itself; replying again would double-pong.
             Inbound::Ping(_) | Inbound::Pong(_) => Flow::Continue(()),
