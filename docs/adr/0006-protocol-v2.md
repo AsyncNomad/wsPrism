@@ -98,7 +98,7 @@ flags: 0x01 KEY  0x02 SEQ  0x04 SENDER(서버→클라이언트 전용)
 
 | 단계 | 내용 | 비고 |
 |---|---|---|
-| v2-1 | 협상(`wsprism.v2`), 세션의 프로토콜 버전, v2 종료 코드 매핑 | 작음. v1 동작 불변 |
+| v2-1 ✅ | 협상(`wsprism.v2.json`), 세션의 프로토콜 버전, v2 종료 코드 매핑 | 작음. v1 동작 불변. `sys.reconnect` 힌트는 다음 단계 |
 | v2-2 | v2 제어 봉투(`ch`/`id`, 모르는 필드 무시 + 메트릭, `strict_envelope`) | v1 봉투는 그대로 |
 | v2-3 | 채널 별칭·`member_id`(join 응답), v2 Hot 프레임 디코드·라우팅, `HotRelayService`(`sender` 부착), 버전별 인코딩 캐시 | T0-3(Hot 슬롯)과 함께 |
 | v2-4 | 묶음 프레임 + 틱 송신 | T0-3 |

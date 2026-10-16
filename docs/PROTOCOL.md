@@ -29,8 +29,9 @@ The ticket is presented through one of the tenant's `policy.ticket_sources`
 Subprotocol tokens must be HTTP token characters (base64url without padding
 and JWTs qualify).
 
-**Protocol version.** If the client offers subprotocols, the server selects a
-supported version (`wsprism.v1`) and echoes only that; the `wsprism.auth.*`
+**Protocol version.** If the client offers subprotocols, the server selects
+the first supported version in its preference order (`wsprism.v2.json`, then
+`wsprism.v1`) and echoes only that; the `wsprism.auth.*`
 entry is never echoed. Offering subprotocols without a supported version is
 rejected with HTTP 400. No `Sec-WebSocket-Protocol` header implies v1.
 
@@ -151,7 +152,7 @@ Before the upgrade (plain HTTP responses):
 | HTTP | When |
 |---|---|
 | 400 | Unknown tenant |
-| 400 | Subprotocols offered but no supported version (`wsprism.v1`) |
+| 400 | Subprotocols offered but no supported version (`wsprism.v2.json`, `wsprism.v1`) |
 | 401 | Missing ticket (none of the tenant's `ticket_sources` present) or invalid ticket |
 | 403 | Browser `Origin` not in the tenant's `policy.allowed_origins` (requests without `Origin` are not checked) |
 | 429 + `Retry-After` | Handshake rate limit |
@@ -172,3 +173,17 @@ there is one) and then a close frame:
 | 1008 | `slow_consumer` | `sys.error SLOW_CONSUMER` (best effort) | Outbound queue full when replying to the client's request, or when a reliable message (e.g. `chat`) didn't fit. Reconnect and resync. |
 | 1009 | `message too big` | — | Message exceeded the tenant `max_frame_bytes` |
 | 1013 | `capacity` | `sys.error RESOURCE_EXHAUSTED` | Tenant capacity reached during admission |
+
+### Protocol v2 close codes (ADR 0006 §6)
+
+Sessions that negotiated `wsprism.v2.json` get the same reasons and notices,
+but 4000-range codes whose **range tells the client how to reconnect**:
+
+| Range | Client should | Codes |
+|---|---|---|
+| 4000-4099 | **not reconnect unchanged** (new ticket / config needed) | 4003 `policy`, 4004 `too_many_sessions`, 4005 `replaced`, 4006 `max_sessions_exceeded`, 4009 `message too big`, 4010 `decode_error` |
+| 4100-4199 | reconnect **after backoff** (≥ 1 s, exponential + jitter) | 4100 `capacity`, 4101 `slow_consumer`, 4103 `draining` |
+| 4200-4299 | reconnect **immediately** | 4200 `idle_timeout` |
+
+Clients should treat a standard 1009 like 4009. (Planned: `sys.reconnect{after_ms}`
+before 4103 to spread redeploy reconnects.)

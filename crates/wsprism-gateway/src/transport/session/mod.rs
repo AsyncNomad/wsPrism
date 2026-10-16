@@ -32,6 +32,7 @@ use crate::policy::TenantPolicyRuntime;
 use crate::realtime::core::{CloseRequest, SessionSignals};
 use crate::realtime::{close_code, CloseSpec, OutFrame, RealtimeCtx};
 use crate::sys;
+use crate::transport::subprotocol::ProtocolVersion;
 
 use admit::{Admission, SessionCleanup};
 use close::Exit;
@@ -49,6 +50,8 @@ const MAX_WRITE_BATCH: usize = 64;
 
 /// Who is connected, fixed for the connection's lifetime.
 pub(crate) struct SessionIdentity {
+    /// Wire protocol negotiated at the handshake (close codes differ, ADR 0006).
+    pub protocol: ProtocolVersion,
     pub tenant: String,
     pub user_id: String,
     /// Client-facing session id (client-provided or generated; not unique).
@@ -64,12 +67,21 @@ pub(crate) async fn run<Tx: SessionTx, Rx: SessionRx>(
 ) -> Result<()> {
     let gw = &app.cfg().gateway;
     let writer_timeout = Duration::from_millis(gw.writer_send_timeout_ms);
+    let protocol = id.protocol;
     let (out_tx, mut out_rx) = mpsc::channel(gw.session_queue_capacity);
 
     let mut session = match Session::admit(&app, id, out_tx)? {
         Admission::Admitted(session) => session,
         Admission::Rejected(spec) => {
-            close::close_session(&mut tx, &mut rx, &mut out_rx, spec, writer_timeout).await;
+            close::close_session(
+                &mut tx,
+                &mut rx,
+                &mut out_rx,
+                spec,
+                protocol,
+                writer_timeout,
+            )
+            .await;
             return Ok(());
         }
     };
@@ -79,7 +91,15 @@ pub(crate) async fn run<Tx: SessionTx, Rx: SessionRx>(
     // The session stays registered until the close completes: the drain
     // logic in main waits on the registry, and anything routed to us meanwhile
     // is rejected by the closed queue. Dropping `session` unregisters it.
-    close::finish(exit, &mut tx, &mut rx, &mut out_rx, writer_timeout).await;
+    close::finish(
+        exit,
+        &mut tx,
+        &mut rx,
+        &mut out_rx,
+        protocol,
+        writer_timeout,
+    )
+    .await;
     drop(session);
     Ok(())
 }

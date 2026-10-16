@@ -12,8 +12,27 @@ use axum::http::{header::SEC_WEBSOCKET_PROTOCOL, HeaderMap};
 
 /// Protocol version 1.
 pub const V1: &str = "wsprism.v1";
+/// Protocol v2 with JSON control messages (ADR 0006). `wsprism.v2.bin` is reserved.
+pub const V2_JSON: &str = "wsprism.v2.json";
 /// Versions this gateway speaks, most preferred first.
-const SUPPORTED: &[&str] = &[V1];
+const SUPPORTED: &[&str] = &[V2_JSON, V1];
+
+/// The wire protocol a session speaks, fixed at the handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProtocolVersion {
+    V1,
+    V2,
+}
+
+impl ProtocolVersion {
+    /// From the negotiated subprotocol (`None` = no header = v1).
+    pub fn from_selected(selected: Option<&str>) -> Self {
+        match selected {
+            Some(V2_JSON) => ProtocolVersion::V2,
+            _ => ProtocolVersion::V1,
+        }
+    }
+}
 /// Prefix of the subprotocol entry carrying a ticket.
 const AUTH_PREFIX: &str = "wsprism.auth.";
 

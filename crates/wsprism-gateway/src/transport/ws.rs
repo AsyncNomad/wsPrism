@@ -20,6 +20,7 @@ use tracing::Instrument;
 use crate::app_state::AppState;
 use crate::transport::admission::{self, HandshakeRequest};
 use crate::transport::session::{self, SessionIdentity};
+use crate::transport::subprotocol::ProtocolVersion;
 
 static NEXT_SID: AtomicU64 = AtomicU64::new(1);
 static NEXT_TRACE: AtomicU64 = AtomicU64::new(1);
@@ -86,6 +87,7 @@ pub async fn ws_upgrade(
             // span across awaits (clippy.toml bans holding span guards there).
             let span = tracing::info_span!("ws", %trace_id, t=%q.tenant, u=%user_id, s=%sid, %ip);
             let id = SessionIdentity {
+                protocol: ProtocolVersion::from_selected(admitted.subprotocol),
                 tenant: q.tenant,
                 user_id,
                 sid,

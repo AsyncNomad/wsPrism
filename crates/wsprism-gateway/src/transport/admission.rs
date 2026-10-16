@@ -154,7 +154,7 @@ fn negotiate_protocol(offered: &Offered<'_>) -> Result<Option<&'static str>, Rej
         Negotiated::Unsupported => Err(Rejection::new(
             StatusCode::BAD_REQUEST,
             "unsupported_protocol",
-            "Unsupported Sec-WebSocket-Protocol (offer wsprism.v1)",
+            "Unsupported Sec-WebSocket-Protocol (offer wsprism.v2.json or wsprism.v1)",
         )),
     }
 }

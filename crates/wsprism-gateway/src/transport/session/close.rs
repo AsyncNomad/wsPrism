@@ -6,6 +6,33 @@ use tokio::time::{timeout, Duration, Instant};
 
 use super::io::{SessionRx, SessionTx};
 use crate::realtime::{close_code, CloseSpec, OutFrame};
+use crate::transport::subprotocol::ProtocolVersion;
+
+/// Reason of the oversized-message close (S2).
+const TOO_BIG_REASON: &str = "message too big";
+
+/// The close code put on the wire for `spec`. v1 sends the standard codes it
+/// always did. v2 uses 4000-range codes whose range tells the client how to
+/// reconnect (ADR 0006 §6): 40xx = not unchanged, 41xx = after backoff,
+/// 42xx = immediately. Reasons without a v2 code keep theirs.
+pub(super) fn wire_close_code(protocol: ProtocolVersion, code: u16, reason: &str) -> u16 {
+    if protocol == ProtocolVersion::V1 {
+        return code;
+    }
+    match reason {
+        "policy" => 4003,
+        "too_many_sessions" => 4004,
+        "replaced" => 4005,
+        "max_sessions_exceeded" => 4006,
+        TOO_BIG_REASON => 4009,
+        "decode_error" => 4010,
+        "capacity" => 4100,
+        "slow_consumer" => 4101,
+        "draining" => 4103,
+        "idle_timeout" => 4200,
+        _ => code,
+    }
+}
 
 /// How long to wait for the peer's close after sending ours (C3).
 const CLOSE_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(1);
@@ -28,6 +55,7 @@ pub(super) async fn finish<Tx: SessionTx, Rx: SessionRx>(
     tx: &mut Tx,
     rx: &mut Rx,
     out_rx: &mut mpsc::Receiver<OutFrame>,
+    protocol: ProtocolVersion,
     writer_timeout: Duration,
 ) {
     match exit {
@@ -35,13 +63,10 @@ pub(super) async fn finish<Tx: SessionTx, Rx: SessionRx>(
             let _ = timeout(writer_timeout, tx.finish_peer_close()).await;
         }
         Exit::Abort => {}
-        Exit::Close(spec) => close_session(tx, rx, out_rx, spec, writer_timeout).await,
+        Exit::Close(spec) => close_session(tx, rx, out_rx, spec, protocol, writer_timeout).await,
         Exit::TooBig => {
-            let _ = timeout(
-                writer_timeout,
-                tx.send_close(close_code::MESSAGE_TOO_BIG, "message too big".into()),
-            )
-            .await;
+            let code = wire_close_code(protocol, close_code::MESSAGE_TOO_BIG, TOO_BIG_REASON);
+            let _ = timeout(writer_timeout, tx.send_close(code, TOO_BIG_REASON.into())).await;
             tokio::time::sleep(tx.too_big_linger()).await;
         }
     }
@@ -56,6 +81,7 @@ pub(super) async fn close_session<Tx: SessionTx, Rx: SessionRx>(
     rx: &mut Rx,
     out_rx: &mut mpsc::Receiver<OutFrame>,
     spec: CloseSpec,
+    protocol: ProtocolVersion,
     writer_timeout: Duration,
 ) {
     out_rx.close(); // no new messages from here on
@@ -75,7 +101,14 @@ pub(super) async fn close_session<Tx: SessionTx, Rx: SessionRx>(
         }
     }
     if !matches!(
-        tokio::time::timeout_at(deadline, tx.send_close(spec.code, spec.reason)).await,
+        tokio::time::timeout_at(
+            deadline,
+            tx.send_close(
+                wire_close_code(protocol, spec.code, &spec.reason),
+                spec.reason
+            ),
+        )
+        .await,
         Ok(Ok(()))
     ) {
         return;
