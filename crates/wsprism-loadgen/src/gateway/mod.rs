@@ -40,6 +40,7 @@ pub async fn run(args: Args) {
                 ticket: args.ticket.clone(),
                 distinct_users: args.distinct_users,
                 lane: args.lane,
+                chans: Default::default(),
             };
             run_with(Arc::new(p), args).await
         }

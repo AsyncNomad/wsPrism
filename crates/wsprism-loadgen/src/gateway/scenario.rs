@@ -22,6 +22,10 @@ pub enum Lane {
     Hot,
     /// JSON `chat:send` on the Ext Lane (reliable room fan-out).
     Ext,
+    /// Protocol v2 keyed Hot frames (`wsprism.v2.json`): each publisher sends
+    /// its state under one key, so lagging readers are conflated (latest
+    /// value wins) and `hot_tick_hz` pacing applies. wsPrism only.
+    Hot2,
 }
 
 #[derive(Debug, clap::Args)]

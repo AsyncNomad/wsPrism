@@ -1,6 +1,9 @@
 //! wsPrism: bearer ticket, `room:join`, then Hot (binary echo service) or
 //! Ext (`chat:send`) probes. Room fan-out includes the sender.
 
+use std::collections::HashMap;
+use std::sync::RwLock;
+
 use futures_util::SinkExt;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
@@ -17,7 +20,12 @@ pub struct Wsprism {
     /// Ticket `<ticket>:u<conn>`: one user per connection.
     pub distinct_users: bool,
     pub lane: Lane,
+    /// v2: room name -> room id from `sys.joined` (the same for every member).
+    pub chans: RwLock<HashMap<String, u32>>,
 }
+
+/// v2 Hot flags as sent by this client: KEY | SEQ.
+const V2_FLAGS: u8 = 0x03;
 
 /// Hot frame header: v=1, svc=1 (echo), op=1, flags=0.
 const HOT_HEADER: [u8; 4] = [1, 1, 1, 0];
@@ -41,18 +49,64 @@ impl Protocol for Wsprism {
             .parse()
             .map_err(|_| "ticket is not a valid header value".to_string())?;
         req.headers_mut().insert(AUTHORIZATION, auth);
+        if self.lane == Lane::Hot2 {
+            let proto = "wsprism.v2.json"
+                .parse()
+                .map_err(|_| "subprotocol header")?;
+            req.headers_mut().insert("sec-websocket-protocol", proto);
+        }
         let mut ws = open(req).await?;
         await_text(&mut ws, "sys.authed", |t| sys(t, "authed")).await?;
         let join = serde_json::json!({"v": 1, "svc": "room", "type": "join", "room": room});
         ws.send(Message::Text(join.to_string()))
             .await
             .map_err(|e| format!("join send: {e}"))?;
-        await_text(&mut ws, "sys.joined", |t| sys(t, "joined")).await?;
+        if self.lane == Lane::Hot2 {
+            let chan = await_text(&mut ws, "sys.joined", |t| {
+                sys(t, "joined").map(|r| {
+                    r.and_then(|()| {
+                        let v: serde_json::Value =
+                            serde_json::from_str(t).map_err(|e| e.to_string())?;
+                        v["chan"]
+                            .as_u64()
+                            .map(|c| c as u32)
+                            .ok_or_else(|| format!("no chan in {v}"))
+                    })
+                })
+            })
+            .await?;
+            self.chans
+                .write()
+                .map_err(|_| "chans lock")?
+                .insert(room.to_string(), chan);
+        } else {
+            await_text(&mut ws, "sys.joined", |t| sys(t, "joined")).await?;
+        }
         Ok(ws)
     }
 
-    fn encode(&self, room: &str, probe: Probe, _seq: u32, payload: usize) -> Message {
+    fn encode(&self, room: &str, probe: Probe, seq: u32, payload: usize) -> Message {
         match self.lane {
+            Lane::Hot2 => {
+                // [kind=1][KEY|SEQ][chan u32][svc 1][op 1][key=0][seq][ts u64][sender u32][padding]
+                let chan = self
+                    .chans
+                    .read()
+                    .ok()
+                    .and_then(|m| m.get(room).copied())
+                    .unwrap_or(0);
+                let body = payload.max(12);
+                let mut b = Vec::with_capacity(16 + body);
+                b.extend_from_slice(&[0x01, V2_FLAGS]);
+                b.extend_from_slice(&chan.to_le_bytes());
+                b.extend_from_slice(&[1, 1]);
+                b.extend_from_slice(&0u32.to_le_bytes());
+                b.extend_from_slice(&seq.to_le_bytes());
+                b.extend_from_slice(&probe.ts_ns.to_le_bytes());
+                b.extend_from_slice(&probe.sender.to_le_bytes());
+                b.resize(16 + body, 0);
+                Message::Binary(b)
+            }
             Lane::Hot => {
                 // [header][ts u64 LE][sender u32 LE][padding]
                 let mut b = Vec::with_capacity(HOT_HEADER.len() + payload.max(12));
@@ -76,6 +130,22 @@ impl Protocol for Wsprism {
 
     fn decode(&self, msg: &Message, out: &mut Vec<Incoming>) {
         let probe = match (self.lane, msg) {
+            // v2 server frame: [kind][flags][chan][svc][op][key?][seq?][sender][payload]
+            (Lane::Hot2, Message::Binary(b)) => (|| {
+                let flags = *b.get(1)?;
+                if *b.first()? != 0x01 {
+                    return None;
+                }
+                let opt = [0x01u8, 0x02, 0x04]
+                    .iter()
+                    .filter(|f| flags & **f != 0)
+                    .count();
+                let p = b.get(8 + 4 * opt..)?;
+                Some(Probe {
+                    ts_ns: u64::from_le_bytes(p.get(..8)?.try_into().ok()?),
+                    sender: u32::from_le_bytes(p.get(8..12)?.try_into().ok()?),
+                })
+            })(),
             // The echo service broadcasts the payload only (header stripped).
             (Lane::Hot, Message::Binary(b)) => (|| {
                 Some(Probe {
@@ -122,6 +192,7 @@ mod tests {
             ticket: "x".into(),
             distinct_users: false,
             lane,
+            chans: Default::default(),
         }
     }
 
@@ -154,6 +225,28 @@ mod tests {
         let broadcast = serde_json::json!({"svc": "chat", "type": "msg", "data": sent["data"]});
         let mut out = Vec::new();
         proto(Lane::Ext).decode(&Message::Text(broadcast.to_string()), &mut out);
+        assert_eq!(out, vec![Incoming::Probe(p)]);
+    }
+
+    #[test]
+    fn hot2_probe_round_trips_through_the_server_relay_format() {
+        let w = proto(Lane::Hot2);
+        w.chans.write().unwrap().insert("r".into(), 42);
+        let p = Probe {
+            sender: 7,
+            ts_ns: 123_456_789,
+        };
+        let Message::Binary(c) = w.encode("r", p, 9, 64) else {
+            panic!()
+        };
+        assert_eq!(&c[2..6], &42u32.to_le_bytes(), "chan from sys.joined");
+        // The relay adds SENDER after key/seq: [kind][flags|4][chan][svc][op][key][seq][sender][payload]
+        let mut relayed = c[..16].to_vec();
+        relayed[1] |= 0x04;
+        relayed.extend_from_slice(&99u32.to_le_bytes());
+        relayed.extend_from_slice(&c[16..]);
+        let mut out = Vec::new();
+        w.decode(&Message::Binary(relayed), &mut out);
         assert_eq!(out, vec![Incoming::Probe(p)]);
     }
 }
