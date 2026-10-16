@@ -40,6 +40,12 @@ pub(crate) use ws_io::split as split_websocket;
 /// Outcome of handling one event: keep going, or end the session.
 type Flow = ControlFlow<Exit>;
 
+/// Most queued frames written per flush. Coalescing a burst into one flush
+/// cuts per-message write cost under load; the cap bounds how long one write
+/// can delay the loop's other events (control, inbound, idle). Frames are fed
+/// straight from the queue, so coalescing keeps no buffer of its own.
+const MAX_WRITE_BATCH: usize = 64;
+
 /// Who is connected, fixed for the connection's lifetime.
 pub(crate) struct SessionIdentity {
     pub tenant: String,
@@ -114,7 +120,7 @@ impl Session {
             let flow = tokio::select! {
                 // C8: kick / replace / drain requests from other tasks.
                 Some(spec) = ctl_rx.recv() => Flow::Break(Exit::Close(spec)),
-                out = out_rx.recv() => self.write(tx, out).await,
+                out = out_rx.recv() => self.write(tx, out_rx, out).await,
                 incoming = rx.recv() => self.on_incoming(incoming).await,
                 _ = ping_tick.tick() => self.ping(),
                 _ = idle_tick.tick() => self.check_idle(),
@@ -125,14 +131,29 @@ impl Session {
         }
     }
 
-    /// Write one queued message to the connection (slow-consumer protection).
-    async fn write<Tx: SessionTx>(&self, tx: &mut Tx, out: Option<OutFrame>) -> Flow {
-        let Some(frame) = out else {
+    /// Write `first` plus whatever else is already queued (up to
+    /// `MAX_WRITE_BATCH` frames) with a single flush, under one slow-consumer
+    /// timeout. `None` means the queue closed.
+    async fn write<Tx: SessionTx>(
+        &self,
+        tx: &mut Tx,
+        out_rx: &mut mpsc::Receiver<OutFrame>,
+        first: Option<OutFrame>,
+    ) -> Flow {
+        let Some(first) = first else {
             return Flow::Break(Exit::Abort);
         };
-        match timeout(self.writer_timeout, tx.send(frame)).await {
+        let burst = async {
+            tx.feed(first).await?;
+            for _ in 1..MAX_WRITE_BATCH {
+                let Ok(frame) = out_rx.try_recv() else { break };
+                tx.feed(frame).await?;
+            }
+            tx.flush().await
+        };
+        match timeout(self.writer_timeout, burst).await {
             Ok(Ok(())) => Flow::Continue(()),
-            Ok(Err(_)) => Flow::Break(Exit::Abort),
+            Ok(Err(())) => Flow::Break(Exit::Abort),
             Err(_) => {
                 self.metrics
                     .writer_timeouts

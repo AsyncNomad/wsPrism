@@ -57,6 +57,14 @@ impl SessionTx for WsTx {
         self.0.send(to_message(frame)).await.map_err(|_| ())
     }
 
+    async fn feed(&mut self, frame: OutFrame) -> Result<(), ()> {
+        self.0.feed(to_message(frame)).await.map_err(|_| ())
+    }
+
+    async fn flush(&mut self) -> Result<(), ()> {
+        self.0.flush().await.map_err(|_| ())
+    }
+
     async fn send_close(&mut self, code: u16, reason: String) -> Result<(), ()> {
         let close = Message::Close(Some(CloseFrame {
             code,

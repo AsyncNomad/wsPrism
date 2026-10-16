@@ -38,6 +38,14 @@ pub(crate) trait SessionTx: Send {
     /// Write one frame on the ordered, reliable channel.
     fn send(&mut self, frame: OutFrame) -> impl Future<Output = Result<(), ()>> + Send;
 
+    /// Queue one frame for writing without flushing. A burst of `feed`s
+    /// followed by one `flush` lets the transport coalesce writes/syscalls
+    /// with no session-side buffer (design: performance-architecture §3.4).
+    fn feed(&mut self, frame: OutFrame) -> impl Future<Output = Result<(), ()>> + Send;
+
+    /// Write out everything fed so far.
+    fn flush(&mut self) -> impl Future<Output = Result<(), ()>> + Send;
+
     /// Send the transport's close signal with an RFC 6455-style code and
     /// reason (other transports carry the same codes, see PROTOCOL.md).
     fn send_close(
