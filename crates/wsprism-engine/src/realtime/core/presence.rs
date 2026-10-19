@@ -58,6 +58,8 @@ pub struct Member {
     pub key: Arc<str>,
     /// Delivery handles of the member session.
     pub conn: Connection,
+    /// The member's user id (without the tenant), for presence events.
+    pub user: Arc<str>,
     /// Assigned by `Presence::try_join` (callers pass 0).
     pub member_id: u32,
 }
@@ -68,6 +70,17 @@ pub struct Joined {
     /// The room's id, the same for every member (v2 Hot `chan`, ADR 0006 R7).
     pub room_id: u32,
     /// This membership's id, unique per join (v2 Hot `sender`).
+    pub member_id: u32,
+}
+
+/// A membership that ended (ADR 0010: `sys.member_left`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Departed {
+    /// Internal room key (`tenant::room`).
+    pub room_key: String,
+    /// The user id (without the tenant).
+    pub user: Arc<str>,
+    /// The membership's id (the Hot `sender` other members saw).
     pub member_id: u32,
 }
 
@@ -142,11 +155,11 @@ impl Presence {
         user_key: &str,
         member: Member,
         limits: &RoomLimits,
-    ) -> Result<Joined> {
+    ) -> Result<(Joined, bool)> {
         // O(1) check first; the member scan only runs for a repeated join.
         if self.is_member(room_key, &member.key) {
             if let Some(joined) = self.membership(room_key, &member.key) {
-                return Ok(joined);
+                return Ok((joined, false));
             }
         }
         // --- 1. Check Room Capacity (Max Users per Room) ---
@@ -208,7 +221,7 @@ impl Presence {
             add_to_set(&self.user_to_rooms, user_key, room_key);
         }
 
-        Ok(Joined { room_id, member_id })
+        Ok((Joined { room_id, member_id }, true))
     }
 
     /// Count a new room against the tenant, failing if `max_total` (0 =
@@ -227,7 +240,13 @@ impl Presence {
 
     /// Leave `room_key`. A no-op unless the session is a member, so the
     /// governance reference counts stay balanced.
-    pub fn leave(&self, tenant_id: &str, room_key: &str, user_key: &str, session_key: &str) {
+    pub fn leave(
+        &self,
+        tenant_id: &str,
+        room_key: &str,
+        user_key: &str,
+        session_key: &str,
+    ) -> Option<Departed> {
         // Only this session's own task (or its final cleanup) changes its
         // room set, so membership checked here cannot change under us.
         let was_member = self
@@ -235,11 +254,11 @@ impl Presence {
             .get_mut(session_key)
             .is_some_and(|mut rooms| rooms.remove(room_key));
         if !was_member {
-            return;
+            return None;
         }
         self.session_to_rooms
             .remove_if(session_key, |_, rooms| rooms.is_empty());
-        self.leave_routing_and_governance(tenant_id, room_key, user_key, session_key);
+        self.leave_routing_and_governance(tenant_id, room_key, user_key, session_key)
     }
 
     /// The part of a leave shared with `cleanup_session` (which has already
@@ -250,14 +269,20 @@ impl Presence {
         room_key: &str,
         user_key: &str,
         session_key: &str,
-    ) {
+    ) -> Option<Departed> {
         // 1. Routing. Removing the member and dropping an emptied room (and
         //    its tenant slot) is one step under the shard lock (C5).
+        let mut departed = None;
         let room_dropped = self
             .room_to_sessions
             .remove_if_mut(room_key, |_, room| {
                 if let Some(i) = room.members.iter().position(|m| &*m.key == session_key) {
-                    room.members.swap_remove(i);
+                    let m = room.members.swap_remove(i);
+                    departed = Some(Departed {
+                        room_key: room_key.to_string(),
+                        user: m.user,
+                        member_id: m.member_id,
+                    });
                 }
                 room.members.is_empty()
             })
@@ -280,6 +305,7 @@ impl Presence {
                 refs.remove();
             }
         }
+        departed
     }
 
     /// True if `session_key` has joined `room_key`.
@@ -335,12 +361,42 @@ impl Presence {
 
     // Called by RAII Drop
     /// Remove a closed session from every room it was in.
-    pub fn cleanup_session(&self, tenant_id: &str, user_key: &str, session_key: &str) {
-        if let Some(rooms) = self.session_to_rooms.remove(session_key).map(|(_, v)| v) {
-            for room_key in &rooms {
-                self.leave_routing_and_governance(tenant_id, room_key, user_key, session_key);
-            }
-        }
+    pub fn cleanup_session(
+        &self,
+        tenant_id: &str,
+        user_key: &str,
+        session_key: &str,
+    ) -> Vec<Departed> {
+        let Some((_, rooms)) = self.session_to_rooms.remove(session_key) else {
+            return Vec::new();
+        };
+        rooms
+            .iter()
+            .filter_map(|room_key| {
+                self.leave_routing_and_governance(tenant_id, room_key, user_key, session_key)
+            })
+            .collect()
+    }
+
+    /// The other members of `room_key` (`user`, `member_id`), at most `cap`;
+    /// the flag says whether some were left out (ADR 0010 snapshot).
+    pub fn members_except(
+        &self,
+        room_key: &str,
+        except_session: &str,
+        cap: usize,
+    ) -> (Vec<(Arc<str>, u32)>, bool) {
+        let Some(room) = self.room_to_sessions.get(room_key) else {
+            return (Vec::new(), false);
+        };
+        let mut others = room.members.iter().filter(|m| &*m.key != except_session);
+        let list: Vec<_> = others
+            .by_ref()
+            .take(cap)
+            .map(|m| (Arc::clone(&m.user), m.member_id))
+            .collect();
+        let truncated = others.next().is_some();
+        (list, truncated)
     }
 }
 
@@ -365,6 +421,7 @@ mod tests {
                 signals: super::super::SessionSignals::new(),
             },
             member_id: 0,
+            user: Arc::from("u"),
         }
     }
 
@@ -386,7 +443,7 @@ mod tests {
                         if !p.member_keys("t::r").contains(&sk) {
                             lost.store(true, Ordering::Relaxed);
                         }
-                        p.leave("t", "t::r", &uk, &sk);
+                        let _ = p.leave("t", "t::r", &uk, &sk);
                     }
                 });
             }
@@ -413,7 +470,7 @@ mod tests {
                     for n in 0..ITERS / 4 {
                         let rk = format!("t::r{}", n % 3);
                         p.try_join("t", &rk, &uk, m.clone(), &limits()).unwrap();
-                        p.leave("t", &rk, &uk, &sk);
+                        let _ = p.leave("t", &rk, &uk, &sk);
                     }
                 });
             }
@@ -465,7 +522,7 @@ mod tests {
             .unwrap();
         p.try_join("t", "t::r", "t::u", m, &limits()).unwrap();
         assert_eq!(p.member_keys("t::r"), vec!["t::u::s".to_string()]);
-        p.leave("t", "t::r", "t::u", "t::u::s");
+        let _ = p.leave("t", "t::r", "t::u", "t::u::s");
         assert!(p.room_to_sessions.is_empty());
         assert!(p.user_to_rooms.is_empty(), "user<->room link left behind");
         assert!(p.user_room_refs.is_empty());
@@ -478,7 +535,7 @@ mod tests {
         p.try_join("t", "t::r", "t::u", member("t::u::a"), &limits())
             .unwrap();
         // Another session of the same user leaves a room it never joined.
-        p.leave("t", "t::r", "t::u", "t::u::b");
+        let _ = p.leave("t", "t::r", "t::u", "t::u::b");
         assert_eq!(p.member_keys("t::r"), vec!["t::u::a".to_string()]);
         assert!(p
             .user_to_rooms
@@ -489,20 +546,51 @@ mod tests {
     /// Every member of a room sees the same room id; member ids differ, and
     /// re-joining returns the existing membership.
     #[test]
+    fn departures_and_snapshots_name_user_and_member() {
+        let p = Presence::new();
+        let mut a = member("t::u1::a");
+        a.user = Arc::from("u1");
+        let mut b = member("t::u2::b");
+        b.user = Arc::from("u2");
+        let (ja, _) = p.try_join("t", "t::r", "t::u1", a, &limits()).unwrap();
+        let (jb, _) = p.try_join("t", "t::r", "t::u2", b, &limits()).unwrap();
+        let (others, truncated) = p.members_except("t::r", "t::u1::a", 10);
+        assert_eq!(others, vec![(Arc::from("u2"), jb.member_id)]);
+        assert!(!truncated);
+        assert!(p.members_except("t::r", "x", 1).1, "cap reached");
+        let gone = p.cleanup_session("t", "t::u1", "t::u1::a");
+        assert_eq!(
+            gone,
+            vec![Departed {
+                room_key: "t::r".into(),
+                user: Arc::from("u1"),
+                member_id: ja.member_id
+            }]
+        );
+        assert_eq!(
+            p.leave("t", "t::r", "t::u2", "t::u2::b")
+                .map(|d| d.member_id),
+            Some(jb.member_id)
+        );
+    }
+
+    #[test]
     fn room_id_is_shared_and_member_ids_are_unique() {
         let p = Presence::new();
-        let a = p
+        let (a, new_a) = p
             .try_join("t", "t::r", "t::u1", member("t::u1::a"), &limits())
             .unwrap();
-        let b = p
+        let (b, _) = p
             .try_join("t", "t::r", "t::u2", member("t::u2::b"), &limits())
             .unwrap();
+        assert!(new_a);
         assert_eq!(a.room_id, b.room_id);
         assert_ne!(a.member_id, b.member_id);
-        let again = p
+        let (again, new_again) = p
             .try_join("t", "t::r", "t::u1", member("t::u1::a"), &limits())
             .unwrap();
         assert_eq!(again, a);
+        assert!(!new_again, "a repeated join is not a new membership");
         assert_eq!(p.membership("t::r", "t::u2::b"), Some(b));
     }
 }

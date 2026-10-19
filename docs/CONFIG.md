@@ -62,6 +62,11 @@ when updates arrive faster than the tick, at the cost of up to one tick of
 extra latency. Unkeyed frames are not paced.
 
 
+**`policy.presence_events`** (default `false`): send `sys.member_joined` /
+`sys.member_left` to room members and list current members in `sys.joined`
+(PROTOCOL.md, ADR 0010). Off by default because every join and leave is
+broadcast to the whole room.
+
 **`policy.hot_echo_to_sender`** (default `true`): whether a session's own Hot
 state comes back to it through the room relay. State-sync tenants usually set
 `false`: each client already has its own state, and it saves about 1/N of a

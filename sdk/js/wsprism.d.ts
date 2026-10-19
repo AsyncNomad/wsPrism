@@ -38,11 +38,26 @@ export interface Authed {
   user: string;
   sid: string;
 }
+export interface Member {
+  user: string;
+  /** Membership id (the Hot `sender` of this member). */
+  memberId: number;
+}
 export interface Joined {
   room: string;
   /** Room id used by Hot frames. */
   chan: number;
   /** This membership's id (the `sender` others see). */
+  memberId: number;
+  /** Who was already in the room (tenants with `presence_events`; else empty). */
+  members: Member[];
+  /** More members than the snapshot holds (1000). */
+  membersTruncated: boolean;
+}
+export interface Presence {
+  type: "joined" | "left";
+  room: string;
+  user: string;
   memberId: number;
 }
 /** Any Ext message: room broadcasts, server publishes, `sys.kicked`, ... */
@@ -84,6 +99,8 @@ export interface Events {
   close: CloseInfo;
   message: Message;
   state: State;
+  /** Someone joined or left a room (tenants with `presence_events`). */
+  presence: Presence;
   error: WsPrismError | Error;
   reconnecting: { attempt: number; delayMs: number };
   rejoined: Joined[];

@@ -161,6 +161,23 @@ Gateway periodically pings; client must pong. Idle connections are closed.
 
 ---
 
+### Presence events (ADR 0010)
+
+Tenants with `policy.presence_events: true` tell room members about
+membership changes (other members only; Reliable):
+
+```json
+{"v":1,"svc":"sys","type":"member_joined","room":"lobby","data":{"user":"bob","member_id":7}}
+{"v":1,"svc":"sys","type":"member_left","room":"lobby","data":{"user":"bob","member_id":7}}
+```
+
+Every way out sends `member_left`: `room.leave`, disconnect, eviction (sid
+reuse, session limit), and the server API's disconnect. `member_id` is the
+`sender` of that member's v2 Hot frames. Their `sys.joined` also lists who
+is already there: `"members": [{"user":"alice","member_id":3}]` (at most
+1000; `"members_truncated": true` if more). A repeated join of the same room
+sends nothing.
+
 ## 6) Error codes
 
 `sys.error` carries `data.code` from this fixed set (`ClientCode` in

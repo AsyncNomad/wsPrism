@@ -34,6 +34,8 @@ client.sendState("match:42", { svc: 1, op: 1, key: 0, payload: new Uint8Array([1
 - **Reconnects** follow the close-code ranges: 40xx stop (a backend disconnect, a replaced session, policy...). The exception is `4001 auth_expired`, which reconnects at once with a fresh `getTicket()`. 41xx reconnect after exponential backoff with jitter (1 s to 30 s). 42xx reconnect at once. Network failures, rejected handshakes and a failing `getTicket()` back off (a `TICKET_FAILED` error event is emitted). Joined rooms are re-joined after a reconnect (`rejoined` event); room `chan` and `memberId` may change.
 - **State** (Hot lane): frames older than the last `seq` seen for the same `(room, sender, svc, key)` (the gateway's own conflation key) are dropped (u32 wraparound aware). `sendState` numbers frames per key.
 
+- **Presence** (tenants with `policy.presence_events`): `join()` resolves with `members` (who was already there), and `presence` events report `{type: "joined" | "left", room, user, memberId}` — `memberId` is the `sender` of that member's state frames, so a client can drop its avatar.
+
 There is no in-band token refresh: when a token expires the gateway closes the connection with 4001, and the client reconnects with a new token.
 
 ## Tests

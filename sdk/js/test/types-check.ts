@@ -29,6 +29,11 @@ client.on("state", (s: State) => {
   const room: string | undefined = s.room;
   void bytes, room;
 });
+client.on("presence", (p) => {
+  const kind: "joined" | "left" = p.type;
+  const sender: number = p.memberId;
+  void kind, sender;
+});
 client.on("close", (c) => {
   const again: boolean = c.willReconnect;
   void again;

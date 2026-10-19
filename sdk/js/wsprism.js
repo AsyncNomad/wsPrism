@@ -154,7 +154,7 @@ export class WsPrismClient {
     this.stopped = false;
   }
 
-  /** Subscribe to "open" | "close" | "message" | "state" | "error" | "reconnecting" | "rejoined". */
+  /** Subscribe to "open" | "close" | "message" | "state" | "presence" | "error" | "reconnecting" | "rejoined". */
   on(event, fn) {
     if (!this.listeners.has(event)) this.listeners.set(event, new Set());
     this.listeners.get(event).add(fn);
@@ -250,6 +250,18 @@ export class WsPrismClient {
     }
     if (msg.svc === "sys" && msg.type === "error") {
       this.emit("error", new WsPrismError(msg.data?.code, msg.data?.msg));
+      return;
+    }
+    if (msg.svc === "sys" && (msg.type === "member_joined" || msg.type === "member_left")) {
+      const info = this.rooms.get(msg.room);
+      const memberId = msg.data?.member_id;
+      if (msg.type === "member_left" && info) this.forgetSender(info.chan, memberId);
+      this.emit("presence", {
+        type: msg.type === "member_joined" ? "joined" : "left",
+        room: msg.room,
+        user: msg.data?.user,
+        memberId,
+      });
       return;
     }
     this.emit("message", msg); // includes sys.kicked before a close
@@ -354,7 +366,14 @@ export class WsPrismClient {
   /** Join `room`; resolves with `{room, chan, memberId}`. Re-joined after reconnects. */
   async join(room) {
     const r = await this.request("room", "join", { room });
-    const info = { room, chan: r.chan, memberId: r.member_id };
+    const info = {
+      room,
+      chan: r.chan,
+      memberId: r.member_id,
+      // Tenants with presence_events: who was already there (ADR 0010).
+      members: (r.members ?? []).map((m) => ({ user: m.user, memberId: m.member_id })),
+      membersTruncated: r.members_truncated === true,
+    };
     this.rooms.set(room, info);
     this.chanRoom.set(r.chan, room);
     return info;
@@ -368,6 +387,12 @@ export class WsPrismClient {
       this.forgetChan(info.chan);
     }
     await this.request("room", "leave", { room });
+  }
+
+  /** Drop stale-frame bookkeeping for one member of a room id (it left). */
+  forgetSender(chan, memberId) {
+    const prefix = `${chan}:${memberId}:`;
+    for (const k of this.lastSeen.keys()) if (k.startsWith(prefix)) this.lastSeen.delete(k);
   }
 
   /** Drop stale-frame bookkeeping for a room id (left, or rejoined under a new id). */

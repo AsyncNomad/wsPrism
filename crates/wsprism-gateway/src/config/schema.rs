@@ -788,6 +788,12 @@ pub struct TenantPolicy {
     #[serde(default = "default_true")]
     pub hot_echo_to_sender: bool,
 
+    /// Tell room members when someone joins or leaves (`sys.member_joined` /
+    /// `sys.member_left`) and list current members in `sys.joined`
+    /// (ADR 0010). Off by default: each join/leave is broadcast to the room.
+    #[serde(default)]
+    pub presence_events: bool,
+
     /// Send each session's pending keyed Hot state at most this many times
     /// per second (0 = as soon as it arrives). Fewer flushes under heavy
     /// update rates, at the cost of up to one tick of extra latency.
@@ -839,6 +845,7 @@ impl Default for TenantPolicy {
             hot_error_mode: default_hot_error_mode(),
             hot_requires_active_room: default_hot_requires_active_room(),
             hot_echo_to_sender: true,
+            presence_events: false,
             hot_tick_hz: 0,
             allowed_origins: Vec::new(),
             ticket_sources: default_ticket_sources(),

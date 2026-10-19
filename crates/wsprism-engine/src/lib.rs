@@ -29,7 +29,9 @@ mod sys;
 pub use dispatch::{HotService, TextService};
 pub use limits::{validate_room_name, RoomLimits, MAX_ROOM_NAME_LEN};
 pub use permissions::{Permissions, RoomPattern};
-pub use realtime::core::{DeferredReply, Joined, Publisher, RealtimeCtx};
+pub use realtime::core::{
+    DeferredReply, Joined, MemberInfo, MemberSnapshot, Publisher, RealtimeCtx, MAX_SNAPSHOT_MEMBERS,
+};
 pub use realtime::types::{Outgoing, Payload, QoS};
 
 /// Server / transport provider interface: what the gateway (or another
@@ -38,8 +40,8 @@ pub use realtime::types::{Outgoing, Payload, QoS};
 pub mod spi {
     pub use crate::dispatch::Dispatcher;
     pub use crate::realtime::core::{
-        now_ms, CloseRequest, Connection, CtxIdentity, EgressCounters, HotSlot, Member, Presence,
-        Put, RealtimeCore, SessionRegistry, SessionSignals, SlotKey, DEFAULT_SLOT_CAP,
+        now_ms, CloseRequest, Connection, CtxIdentity, Departed, EgressCounters, HotSlot, Member,
+        Presence, Put, RealtimeCore, SessionRegistry, SessionSignals, SlotKey, DEFAULT_SLOT_CAP,
     };
     pub use crate::realtime::types::{close_code, CloseSpec, HotOut, OutFrame, Utf8Text};
 

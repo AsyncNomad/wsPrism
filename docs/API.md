@@ -44,6 +44,8 @@ Your binary also needs `tokio` (with `macros`, `rt-multi-thread`).
   join or leave rooms. From another task (a timer, a backend call), answer
   with `defer_reply` and send with `publisher()`; the context itself is not
   `Clone`, because room membership only changes on the session's own task.
+- **Presence:** with tenant `presence_events`, `ctx.room_members(room)` returns a
+  `MemberSnapshot`; the gateway sends `sys.member_joined` / `sys.member_left` itself.
 - **Names:** `room`, `chat`, `sys` and Hot id `1` are built in. Registering
   one of them, or the same name twice, fails `build()`.
 - **Allowlists still apply:** a tenant must list your `svc:type` in

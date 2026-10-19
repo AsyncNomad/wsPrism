@@ -71,7 +71,7 @@ function jwt(sub, ttlS) {
   return `${head}.${createHmac("sha256", JWT_SECRET).update(head).digest("base64url")}`;
 }
 
-async function gateway({ rpcUrl } = {}) {
+async function gateway({ rpcUrl, presence } = {}) {
   const [ws, api] = [await freePort(), await freePort()];
   const digest = createHash("sha256").update(API_KEY).digest("hex");
   const dir = mkdtempSync(join(tmpdir(), "wsprism-sdk-"));
@@ -89,9 +89,9 @@ tenants:
     auth: [{ kind: ticket }]
     api_keys: [{ name: test, sha256: "${digest}" }]
 ${rpcUrl ? `    rpc: { url: "${rpcUrl}", allow: ["game:*"], timeout_ms: 2000 }\n` : ""}    policy:
-      ext_allowlist: ["room:*", "chat:*", "game:*"]
+      ext_allowlist: ["room:*", "chat:*"${rpcUrl ? ', "game:*"' : ""}]
       hot_allowlist: ["1:*"]
-  - id: j
+${presence ? "      presence_events: true\n" : ""}  - id: j
     auth: [{ kind: jwt, algorithm: HS256, secret_file: "${secret}", leeway_s: 0 }]
     policy:
       ext_allowlist: ["room:*"]
@@ -329,4 +329,22 @@ test("stale-frame dropping is per (room, sender, svc, key)", () => {
   assert.deepEqual(got, ["1:5", "2:1"]);
   c.forgetChan(9);
   assert.equal(c.lastSeen.size, 0);
+});
+
+test("presence events and the join snapshot", async () => {
+  const pg = await gateway({ presence: true });
+  const a = new WsPrismClient({ url: pg.url, tenant: "t", getTicket: pg.ticketFor("ivy") });
+  const b = new WsPrismClient({ url: pg.url, tenant: "t", getTicket: pg.ticketFor("jon") });
+  await a.connect();
+  await b.connect();
+  const ja = await a.join("hall");
+  assert.deepEqual(ja.members, []);
+  const joined = next(a, "presence", (p) => p.type === "joined");
+  const jb = await b.join("hall");
+  assert.deepEqual(jb.members, [{ user: "ivy", memberId: ja.memberId }]);
+  assert.deepEqual(await joined, { type: "joined", room: "hall", user: "jon", memberId: jb.memberId });
+  const left = next(a, "presence", (p) => p.type === "left");
+  b.close();
+  assert.equal((await left).memberId, jb.memberId);
+  a.close();
 });

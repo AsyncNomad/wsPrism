@@ -25,12 +25,23 @@ impl RoomService {
         let room = room.unwrap_or_else(|| "default".to_string());
         let joined = ctx.join_room(&room)?;
         ctx.set_active_room(Some(&room));
-        let msg = match ctx.protocol() {
+        let mut msg = match ctx.protocol() {
             ProtocolVersion::V1 => sys::joined(&room, ctx.trace_id()),
             ProtocolVersion::V2 => {
                 sys::joined_v2(&room, joined.room_id, joined.member_id, ctx.trace_id())
             }
         };
+        // Presence snapshot (tenant presence_events, ADR 0010).
+        if let Some(snapshot) = ctx.room_members(&room) {
+            msg["members"] = snapshot
+                .members
+                .iter()
+                .map(|m| serde_json::json!({"user": &*m.user, "member_id": m.member_id}))
+                .collect();
+            if snapshot.truncated {
+                msg["members_truncated"] = true.into();
+            }
+        }
         ctx.reply(msg)
     }
 

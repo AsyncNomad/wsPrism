@@ -112,7 +112,10 @@ test("two users chat, roll dice through the backend, and share positions", async
   const alice = await user("alice");
   const bob = await user("bob");
   const a = await alice.join("lobby");
-  await bob.join("lobby");
+  const bobJoined = next(alice, "presence", (p) => p.type === "joined" && p.user === "bob");
+  const b = await bob.join("lobby");
+  await bobJoined;
+  assert.deepEqual(b.members.map((m) => m.user), ["alice"], "snapshot lists who is there");
 
   // Chat (Ext lane, built-in service).
   const chat = next(bob, "message", (m) => m.svc === "chat");
@@ -137,8 +140,11 @@ test("two users chat, roll dice through the backend, and share positions", async
   alice.sendState("lobby", { svc: 1, op: 1, key: 0, payload: latest });
   assert.deepEqual([...(await moved).payload], [...latest]);
 
-  alice.close();
+  // Leaving is announced, with the member id that tagged bob's state.
+  const bobLeft = next(alice, "presence", (p) => p.type === "left");
   bob.close();
+  assert.equal((await bobLeft).memberId, b.memberId);
+  alice.close();
 });
 
 test("the ticket's permissions keep users in the lobby", async () => {

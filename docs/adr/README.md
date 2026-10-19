@@ -14,5 +14,6 @@
 | [0007](0007-transport-own-framing.md) | P2 전송: axum 0.8을 건너뛰고 서버 측 WebSocket 프레이밍 직접 구현 | 보류 (단계 1 기준 미달, 성능 단계 재개 시 재판단) |
 | [0008](0008-m2-lite-integration.md) | M2-lite — 인증·권한·서버 API·백엔드 프록시·SDK | 채택 (단계별) |
 | [0009](0009-crate-split-and-public-api.md) | 크레이트 분리(protocol·engine·gateway·파사드)와 공개 API 정책 | 채택 (단계별) |
+| [0010](0010-presence-events.md) | 멤버 입장·퇴장 이벤트 (presence events) | 채택 |
 
 새 ADR은 다음 번호로 만들고, 결정이 바뀌면 기존 ADR을 고치지 말고 새 ADR에서 "대체함"을 밝힌다.

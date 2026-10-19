@@ -26,6 +26,8 @@ the Rust API may break in 0.x minor releases, always listed here.
   `/tickets`, `/rooms/{room}/presence`) with SHA-256-hashed API keys.
 - `/metrics` is served on the internal listener (`gateway.api.listen`), not
   on the public port, unless `gateway.public_metrics: true`.
+- Presence events (opt-in `policy.presence_events`): `sys.member_joined` /
+  `sys.member_left` on every way in and out, and a member snapshot in `sys.joined`.
 - RPC proxy: allowlisted Ext requests answered by your backend over HTTP,
   without blocking the session. Requests naming a room the session has not joined are refused
   by default (`rpc.require_joined_room`); the backend gets `joined`.

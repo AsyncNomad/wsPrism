@@ -68,6 +68,11 @@ pub fn joined_v2(room: &str, room_id: u32, member_id: u32, trace_id: &str) -> Va
     json!({ "v": 1, "svc": "sys", "type": "joined", "room": room, "chan": room_id, "member_id": member_id, "trace_id": trace_id })
 }
 
+/// `sys.member_joined` / `sys.member_left` (`kind`), ADR 0010.
+pub fn member_event(kind: &str, room: &str, user: &str, member_id: u32) -> Value {
+    json!({ "v": 1, "svc": "sys", "type": kind, "room": room, "data": { "user": user, "member_id": member_id } })
+}
+
 /// `sys.left`.
 pub fn left(room: &str, trace_id: &str) -> Value {
     json!({ "v": 1, "svc": "sys", "type": "left", "room": room, "trace_id": trace_id })

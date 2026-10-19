@@ -32,6 +32,8 @@ pub(super) struct SessionCleanup {
     user_key: String,
     session_key: String,
     metrics: Arc<GatewayMetrics>,
+    /// Tenant `presence_events`: tell remaining members (ADR 0010).
+    presence_events: bool,
 }
 
 impl Drop for SessionCleanup {
@@ -45,9 +47,12 @@ impl Drop for SessionCleanup {
             .is_some();
         // Presence cleanup is unconditional: an evicted session may have
         // re-joined rooms before its loop ended.
-        self.core
-            .presence
-            .cleanup_session(&self.tenant_id, &self.user_key, &self.session_key);
+        self.core.remove_session_presence(
+            &self.tenant_id,
+            &self.user_key,
+            &self.session_key,
+            self.presence_events,
+        );
         if removed {
             self.metrics
                 .ws_active_sessions
@@ -57,21 +62,31 @@ impl Drop for SessionCleanup {
     }
 }
 
+/// Who evicts whom, and why.
+struct Eviction<'a> {
+    tenant: &'a str,
+    user_key: &'a str,
+    victim_key: &'a str,
+    reason: &'a str,
+    trace_id: &'a str,
+    presence_events: bool,
+}
+
 /// Evict a live session: unregister it (owning the gauge decrement, see C2),
 /// clear its presence, then tell it why and close it.
-fn evict_session(
-    core: &RealtimeCore,
-    metrics: &GatewayMetrics,
-    tenant: &str,
-    user_key: &str,
-    victim_key: &str,
-    reason: &str,
-    trace_id: &str,
-) {
+fn evict_session(core: &RealtimeCore, metrics: &GatewayMetrics, e: Eviction<'_>) {
+    let Eviction {
+        tenant,
+        user_key,
+        victim_key,
+        reason,
+        trace_id,
+        presence_events,
+    } = e;
     let Some(conn) = core.sessions.remove_session(user_key, victim_key) else {
         return; // already gone (raced with its own cleanup or another evictor)
     };
-    core.presence.cleanup_session(tenant, user_key, victim_key);
+    core.remove_session_presence(tenant, user_key, victim_key, presence_events);
     metrics.ws_active_sessions.dec(&[("tenant", tenant)]);
     // C8: ask the victim's loop to stop and close itself (notice + 1008).
     conn.signals
@@ -112,11 +127,14 @@ impl Session {
             evict_session(
                 &core,
                 &metrics,
-                &id.tenant,
-                &user_key,
-                &prev,
-                "replaced",
-                &id.trace_id,
+                Eviction {
+                    tenant: &id.tenant,
+                    user_key: &user_key,
+                    victim_key: &prev,
+                    reason: "replaced",
+                    trace_id: &id.trace_id,
+                    presence_events: policy.presence_events(),
+                },
             );
         }
 
@@ -144,11 +162,14 @@ impl Session {
                         evict_session(
                             &core,
                             &metrics,
-                            &id.tenant,
-                            &user_key,
-                            &victim,
-                            "max_sessions_exceeded",
-                            &id.trace_id,
+                            Eviction {
+                                tenant: &id.tenant,
+                                user_key: &user_key,
+                                victim_key: &victim,
+                                reason: "max_sessions_exceeded",
+                                trace_id: &id.trace_id,
+                                presence_events: policy.presence_events(),
+                            },
                         );
                     }
                 }
@@ -184,6 +205,7 @@ impl Session {
             user_key: user_key.clone(),
             session_key: session_key.clone(),
             metrics: metrics.clone(),
+            presence_events: policy.presence_events(),
         };
         // The queue is empty and only this task consumes it, so this cannot be full.
         out_tx
@@ -204,6 +226,7 @@ impl Session {
                 protocol: id.protocol,
                 permissions: id.permissions,
                 hot_echo_to_sender: policy.hot_echo_to_sender(),
+                presence_events: policy.presence_events(),
             },
             app.room_limits(&t_cfg.id),
             conn,

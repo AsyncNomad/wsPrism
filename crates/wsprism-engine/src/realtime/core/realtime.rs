@@ -6,7 +6,7 @@
 //! contention to preserve throughput.
 
 use crate::realtime::core::{
-    now_ms, CloseRequest, Connection, Joined, Member, Presence, Put, SessionRegistry,
+    now_ms, CloseRequest, Connection, Departed, Joined, Member, Presence, Put, SessionRegistry,
 };
 use crate::realtime::types::{close_code, CloseSpec, OutFrame, Outgoing, Payload, QoS};
 use crate::sys;
@@ -237,6 +237,59 @@ impl RealtimeCore {
         Ok(n)
     }
 
+    /// Remove a closed or evicted session from every room; with `notify`
+    /// (tenant `presence_events`), tell the remaining members (ADR 0010).
+    /// The one place every departure path goes through.
+    pub fn remove_session_presence(
+        &self,
+        tenant: &str,
+        user_key: &str,
+        session_key: &str,
+        notify: bool,
+    ) {
+        let departed = self.presence.cleanup_session(tenant, user_key, session_key);
+        if notify {
+            for d in &departed {
+                self.notify_member_left(tenant, d);
+            }
+        }
+    }
+
+    /// `sys.member_left` to the remaining members of `d.room_key`.
+    fn notify_member_left(&self, tenant: &str, d: &Departed) {
+        self.notify_member(
+            tenant,
+            &d.room_key,
+            "member_left",
+            &d.user,
+            d.member_id,
+            None,
+        );
+    }
+
+    /// A presence event to a room's members (Reliable: a lost leave would
+    /// leave a ghost), optionally skipping one session.
+    fn notify_member(
+        &self,
+        tenant: &str,
+        room_key: &str,
+        kind: &str,
+        user: &str,
+        member_id: u32,
+        except: Option<&str>,
+    ) {
+        let prefix_len = tenant.len() + 2; // "tenant::"
+        let room = room_key.get(prefix_len..).unwrap_or(room_key);
+        let out = Outgoing {
+            qos: QoS::Reliable,
+            payload: Payload::TextJson(sys::member_event(kind, room, user, member_id)),
+        };
+        let _ = match except {
+            Some(skip) => self.publish_room_except(room_key, out, skip),
+            None => self.publish_room(room_key, out),
+        };
+    }
+
     /// Publish to a room with `QoS::Lossy`, whatever `out.qos` says.
     pub fn publish_room_lossy(&self, room_key: &str, out: Outgoing) -> Result<usize> {
         self.publish_room(
@@ -357,7 +410,29 @@ pub struct RealtimeCtx {
     /// per-message paths need precomputed.
     joined: Vec<JoinedRoom>,
     hot_echo_to_sender: bool,
+    presence_events: bool,
     core: Arc<RealtimeCore>,
+}
+
+/// Most members listed in a `sys.joined` snapshot (ADR 0010).
+pub const MAX_SNAPSHOT_MEMBERS: usize = 1000;
+
+/// One room member as presence reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberInfo {
+    /// User id (without the tenant).
+    pub user: Arc<str>,
+    /// Membership id (the member's Hot `sender`).
+    pub member_id: u32,
+}
+
+/// Who else is in a room (ADR 0010 snapshot).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MemberSnapshot {
+    /// Up to [`MAX_SNAPSHOT_MEMBERS`] other members.
+    pub members: Vec<MemberInfo>,
+    /// True if more members were left out.
+    pub truncated: bool,
 }
 
 /// A joined room as the session keeps it: the internal key and the publish
@@ -390,6 +465,9 @@ pub struct CtxIdentity {
     /// Whether Hot state a session publishes is also sent back to it
     /// (tenant policy `hot_echo_to_sender`).
     pub hot_echo_to_sender: bool,
+    /// Tell room members when this session joins or leaves (tenant policy
+    /// `presence_events`, ADR 0010).
+    pub presence_events: bool,
 }
 
 impl RealtimeCtx {
@@ -418,6 +496,7 @@ impl RealtimeCtx {
             permissions: id.permissions,
             joined: Vec::new(),
             hot_echo_to_sender: id.hot_echo_to_sender,
+            presence_events: id.presence_events,
             core,
         }
     }
@@ -554,14 +633,25 @@ impl RealtimeCtx {
             key: Arc::clone(&self.session_key),
             conn: self.conn.clone(),
             member_id: 0,
+            user: Arc::clone(&self.user),
         };
-        let joined = self.core.presence.try_join(
+        let (joined, new) = self.core.presence.try_join(
             self.tenant(),
             &rk,
             self.user_key(),
             member,
             &self.limits,
         )?;
+        if new && self.presence_events {
+            self.core.notify_member(
+                &self.tenant,
+                &rk,
+                "member_joined",
+                &self.user,
+                joined.member_id,
+                Some(&self.session_key),
+            );
+        }
         if !self.joined.iter().any(|j| &*j.name == room) {
             self.joined.push(JoinedRoom {
                 name: Arc::from(room),
@@ -603,9 +693,33 @@ impl RealtimeCtx {
         }
         let rk = self.room_key(room).into_owned();
         self.joined.retain(|j| &*j.name != room);
-        self.core
-            .presence
-            .leave(self.tenant(), &rk, self.user_key(), self.session_key());
+        let departed =
+            self.core
+                .presence
+                .leave(self.tenant(), &rk, self.user_key(), self.session_key());
+        if let (Some(d), true) = (departed, self.presence_events) {
+            self.core.notify_member_left(&self.tenant, &d);
+        }
+    }
+
+    /// With tenant `presence_events`: the other members of `room` for the
+    /// `sys.joined` snapshot (at most [`MAX_SNAPSHOT_MEMBERS`]; the flag says
+    /// whether some were left out). `None` when presence events are off.
+    pub fn room_members(&self, room: &str) -> Option<MemberSnapshot> {
+        self.presence_events.then(|| {
+            let (list, truncated) = self.core.presence.members_except(
+                &self.room_key(room),
+                &self.session_key,
+                MAX_SNAPSHOT_MEMBERS,
+            );
+            MemberSnapshot {
+                members: list
+                    .into_iter()
+                    .map(|(user, member_id)| MemberInfo { user, member_id })
+                    .collect(),
+                truncated,
+            }
+        })
     }
 
     /// Send to every session of this user (Reliable or Lossy per `out.qos`).
@@ -673,6 +787,7 @@ mod tests {
             protocol: ProtocolVersion::V2,
             permissions,
             hot_echo_to_sender: true,
+            presence_events: false,
         };
         (
             RealtimeCtx::new(id, Arc::default(), conn, Arc::clone(core)),

@@ -68,6 +68,14 @@ $("login").onsubmit = async (e) => {
     d.style.left = `${v.getUint16(0, true) / 10}%`;
     d.style.top = `${v.getUint16(2, true) / 10}%`;
   });
+  // Presence (presence_events): drop a member's cursor when it leaves.
+  client.on("presence", (p) => {
+    log(`${p.user} ${p.type === "joined" ? "joined" : "left"}`, "muted");
+    if (p.type === "left") {
+      dots.get(p.memberId)?.remove();
+      dots.delete(p.memberId);
+    }
+  });
   client.on("close", (c) => log(`disconnected (${c.code})${c.willReconnect ? ", reconnecting..." : ""}`, "muted"));
   client.on("error", (err) => log(`error: ${err.code} ${err.message}`, "muted"));
 
@@ -75,7 +83,7 @@ $("login").onsubmit = async (e) => {
   const me = await client.join("lobby");
   $("login").hidden = true;
   $("app").hidden = false;
-  log(`joined as ${name} (member ${me.memberId})`, "muted");
+  log(`joined as ${name} (member ${me.memberId}); here: ${me.members.map((m) => m.user).join(", ") || "nobody"}`, "muted");
 
   $("chat").onsubmit = (e) => {
     e.preventDefault();

@@ -22,3 +22,4 @@ tenants:
       ext_allowlist: ["room:*", "chat:*", "game:*"]
       hot_allowlist: ["1:*"]          # svc 1 relays Hot frames to the room
       hot_tick_hz: 30                 # state is sent at most 30x/s per viewer
+      presence_events: true           # sys.member_joined / member_left + snapshot in sys.joined
