@@ -321,23 +321,15 @@ impl AppState {
 
     /// Extra counters that are owned by other modules (egress drop/timeouts).
     pub fn metrics_extra(&self) -> Vec<(&'static str, u64)> {
+        let c = self.realtime.counters();
         vec![
-            (
-                "wsprism_egress_drop_total",
-                wsprism_engine::spi::egress_drop_count(),
-            ),
+            ("wsprism_egress_drop_total", c.drops()),
             (
                 "wsprism_egress_slow_consumer_closes_total",
-                wsprism_engine::spi::egress_slow_consumer_count(),
+                c.slow_consumer_closes(),
             ),
-            (
-                "wsprism_hot_slot_overwritten_total",
-                wsprism_engine::spi::hot_slot_overwrite_count(),
-            ),
-            (
-                "wsprism_hot_slot_full_drops_total",
-                wsprism_engine::spi::hot_slot_full_count(),
-            ),
+            ("wsprism_hot_slot_overwritten_total", c.slot_overwrites()),
+            ("wsprism_hot_slot_full_drops_total", c.slot_full_drops()),
         ]
     }
 }

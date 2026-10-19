@@ -21,29 +21,36 @@ use wsprism_protocol::protocol::ProtocolVersion;
 
 use crate::permissions::Permissions;
 
-static DROP_COUNT: AtomicU64 = AtomicU64::new(0);
-static SLOT_OVERWRITE_COUNT: AtomicU64 = AtomicU64::new(0);
-static SLOT_FULL_COUNT: AtomicU64 = AtomicU64::new(0);
+/// Egress counters of one engine instance (not process-wide: two gateways
+/// in one process, or tests, keep separate numbers).
+#[derive(Debug, Default)]
+pub struct EgressCounters {
+    drops: AtomicU64,
+    slow_consumer_closes: AtomicU64,
+    slot_overwrites: AtomicU64,
+    slot_full_drops: AtomicU64,
+}
 
-/// Keyed Hot frames replaced in a recipient's slot before being sent
-/// (normal: latest state wins; high values mean readers lag the update rate).
-pub fn hot_slot_overwrite_count() -> u64 {
-    SLOT_OVERWRITE_COUNT.load(Ordering::Relaxed)
+impl EgressCounters {
+    /// Lossy messages dropped because the recipient's queue was full.
+    pub fn drops(&self) -> u64 {
+        self.drops.load(Ordering::Relaxed)
+    }
+    /// Recipients closed because a reliable message didn't fit their queue.
+    pub fn slow_consumer_closes(&self) -> u64 {
+        self.slow_consumer_closes.load(Ordering::Relaxed)
+    }
+    /// Keyed Hot frames replaced in a recipient's slot before being sent
+    /// (normal: latest state wins; high values mean readers lag the update rate).
+    pub fn slot_overwrites(&self) -> u64 {
+        self.slot_overwrites.load(Ordering::Relaxed)
+    }
+    /// Keyed Hot frames dropped because a recipient's slot was at capacity.
+    pub fn slot_full_drops(&self) -> u64 {
+        self.slot_full_drops.load(Ordering::Relaxed)
+    }
 }
-/// Keyed Hot frames dropped because a recipient's slot was at capacity.
-pub fn hot_slot_full_count() -> u64 {
-    SLOT_FULL_COUNT.load(Ordering::Relaxed)
-}
-static SLOW_CONSUMER_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// Lossy messages dropped because the recipient's queue was full.
-pub fn egress_drop_count() -> u64 {
-    DROP_COUNT.load(Ordering::Relaxed)
-}
-/// Recipients closed because a reliable message didn't fit their queue.
-pub fn egress_slow_consumer_count() -> u64 {
-    SLOW_CONSUMER_COUNT.load(Ordering::Relaxed)
-}
 fn sample_every_1024(n: u64) -> bool {
     (n & 1023) == 1
 }
@@ -54,6 +61,7 @@ pub struct RealtimeCore {
     pub sessions: Arc<SessionRegistry>,
     /// Room membership.
     pub presence: Arc<Presence>,
+    counters: EgressCounters,
 }
 
 impl Default for RealtimeCore {
@@ -68,7 +76,13 @@ impl RealtimeCore {
         Self {
             sessions: Arc::new(SessionRegistry::new()),
             presence: Arc::new(Presence::new()),
+            counters: EgressCounters::default(),
         }
+    }
+
+    /// This engine's egress counters (for metrics).
+    pub fn counters(&self) -> &EgressCounters {
+        &self.counters
     }
 
     /// Ask every session to close with 1001 during draining. A session that
@@ -115,10 +129,14 @@ impl RealtimeCore {
                 match conn.signals.hot.put(key, Arc::clone(h)) {
                     Put::Inserted => {}
                     Put::Overwritten => {
-                        SLOT_OVERWRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+                        self.counters
+                            .slot_overwrites
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                     Put::Full => {
-                        SLOT_FULL_COUNT.fetch_add(1, Ordering::Relaxed);
+                        self.counters
+                            .slot_full_drops
+                            .fetch_add(1, Ordering::Relaxed);
                     }
                 }
                 return;
@@ -128,13 +146,16 @@ impl RealtimeCore {
             Ok(()) | Err(TrySendError::Closed(_)) => {} // closed = session ending
             Err(TrySendError::Full(_)) => match qos {
                 QoS::Lossy => {
-                    let n = DROP_COUNT.fetch_add(1, Ordering::Relaxed);
+                    let n = self.counters.drops.fetch_add(1, Ordering::Relaxed);
                     if sample_every_1024(n) {
                         tracing::warn!(%session_key, drops=%n, "lossy egress drop");
                     }
                 }
                 QoS::Reliable => {
-                    let n = SLOW_CONSUMER_COUNT.fetch_add(1, Ordering::Relaxed);
+                    let n = self
+                        .counters
+                        .slow_consumer_closes
+                        .fetch_add(1, Ordering::Relaxed);
                     if sample_every_1024(n) {
                         tracing::warn!(%session_key, closes=%n, "reliable egress: closing slow consumer");
                     }

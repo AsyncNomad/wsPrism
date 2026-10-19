@@ -38,9 +38,8 @@ pub use realtime::types::{Outgoing, Payload, QoS};
 pub mod spi {
     pub use crate::dispatch::Dispatcher;
     pub use crate::realtime::core::{
-        egress_drop_count, egress_slow_consumer_count, hot_slot_full_count,
-        hot_slot_overwrite_count, now_ms, CloseRequest, Connection, CtxIdentity, HotSlot, Member,
-        Presence, Put, RealtimeCore, SessionRegistry, SessionSignals, SlotKey, DEFAULT_SLOT_CAP,
+        now_ms, CloseRequest, Connection, CtxIdentity, EgressCounters, HotSlot, Member, Presence,
+        Put, RealtimeCore, SessionRegistry, SessionSignals, SlotKey, DEFAULT_SLOT_CAP,
     };
     pub use crate::realtime::types::{close_code, CloseSpec, HotOut, OutFrame, Utf8Text};
 

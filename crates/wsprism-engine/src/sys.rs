@@ -50,7 +50,11 @@ pub fn reply(data: Value, trace_id: &str) -> Value {
 
 /// `sys.kicked`: the session is being closed for `reason`.
 pub fn kicked(reason: &str, trace_id: &str) -> Value {
-    json!({ "v": 1, "svc": "sys", "type": "kicked", "data": { "reason": reason }, "trace_id": trace_id })
+    let mut v = json!({ "v": 1, "svc": "sys", "type": "kicked", "data": { "reason": reason } });
+    if !trace_id.is_empty() {
+        v["trace_id"] = json!(trace_id);
+    }
+    v
 }
 
 /// `sys.joined` (v1).

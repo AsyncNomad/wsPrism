@@ -57,12 +57,10 @@ impl SessionRegistry {
     }
 
     // Sprint 5: try_insert with limits enforcement
-    /// Insert a session while enforcing a tenant-wide cap (best-effort).
-    ///
-    /// Concurrency note: For throughput, this uses lock-free atomics plus an
-    /// optimistic increment/check pattern. Under extreme contention, a small
-    /// temporary overshoot of `max_total` is possible before the counter is
-    /// corrected. This is an intentional trade-off to avoid global locks.
+    /// Insert a session while enforcing a tenant-wide cap (`0` = none). The
+    /// cap is exact: the check and the increment are one CAS (the old
+    /// increment-then-check could refuse two racing sessions when only one
+    /// was over).
     pub fn try_insert(
         &self,
         tenant_id: String,
@@ -77,26 +75,19 @@ impl SessionRegistry {
             .entry(tenant_id.clone())
             .or_insert_with(|| AtomicU64::new(0));
 
-        // Strict enforcement
-        if max_total > 0 {
-            let current = counter.load(Ordering::Relaxed);
-            if current >= max_total {
+        let mut n = counter.load(Ordering::Relaxed);
+        loop {
+            if max_total > 0 && n >= max_total {
                 return Err(WsPrismError::ResourceExhausted(
                     "tenant session limit reached".into(),
                 ));
             }
+            match counter.compare_exchange_weak(n, n + 1, Ordering::Relaxed, Ordering::Relaxed) {
+                Ok(_) => break,
+                Err(actual) => n = actual,
+            }
         }
-
-        // Optimistic increment
-        counter.fetch_add(1, Ordering::Relaxed);
-
-        // Check again (race condition mitigation) - Optional but safer
-        if max_total > 0 && counter.load(Ordering::Relaxed) > max_total {
-            counter.fetch_sub(1, Ordering::Relaxed);
-            return Err(WsPrismError::ResourceExhausted(
-                "tenant session limit reached (race)".into(),
-            ));
-        }
+        drop(counter);
 
         self.user_index
             .entry(user_key)
@@ -252,6 +243,38 @@ mod tests {
             tx,
             signals: SessionSignals::new(),
         }
+    }
+
+    /// The tenant cap is exact under contention: exactly `max_total`
+    /// sessions get in, never fewer, never more.
+    #[test]
+    fn tenant_cap_is_exact_under_contention() {
+        let r = SessionRegistry::new();
+        let ok = std::sync::atomic::AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for t in 0..8 {
+                let (r, ok) = (&r, &ok);
+                s.spawn(move || {
+                    for i in 0..200 {
+                        let sk = format!("t::u{t}::{i}");
+                        if r.try_insert(
+                            "t".into(),
+                            format!("t::u{t}"),
+                            sk,
+                            "s".into(),
+                            conn(),
+                            1000,
+                        )
+                        .is_ok()
+                        {
+                            ok.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+        assert_eq!(ok.load(Ordering::Relaxed), 1000);
+        assert_eq!(r.count_tenant_sessions("t"), 1000);
     }
 
     /// C5: removing one of a user's sessions must never drop a concurrently

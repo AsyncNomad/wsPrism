@@ -111,7 +111,8 @@ credentials. The token is forwarded to the backend: use `https` outside a
 trusted network.
 
 **JWT** (`kind: jwt`): `sub` is the user id (`[A-Za-z0-9_-]{1,64}`), `exp`
-is required, `nbf` is honoured. The algorithm is fixed per link — a token
+is required, `nbf` is honoured. (`exp` / `nbf` must be integer seconds; fractional
+NumericDates are rejected by the verifier.) The algorithm is fixed per link — a token
 whose header names another algorithm (or another `kid`, if `kid` is set)
 is passed to the next link, never verified with a different algorithm.
 
