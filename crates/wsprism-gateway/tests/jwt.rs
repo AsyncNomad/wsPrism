@@ -120,9 +120,15 @@ async fn valid_hs256_token_admits_its_subject() {
 async fn invalid_tokens_are_rejected() {
     let gw = spawn(&hs_yaml()).await;
     let exp = now() + 60;
-    let mut bad_sig = hs(claims_a("alice", exp));
-    bad_sig.pop();
-    bad_sig.push('A');
+    // Corrupt a character in the middle of the signature. (Changing the last
+    // one is unreliable: it may already be that character, and its low bits
+    // are padding that decoding ignores — the cause of a 1-in-~50 flake.)
+    let good = hs(claims_a("alice", exp));
+    let mid = good.rfind('.').unwrap() + 20;
+    let mut bad_sig = good.clone();
+    let swap = if &good[mid..=mid] == "A" { "B" } else { "A" };
+    bad_sig.replace_range(mid..=mid, swap);
+    assert_ne!(bad_sig, good);
     let other_key = encode(
         &Header::new(Algorithm::HS256),
         &claims_a("alice", exp),
