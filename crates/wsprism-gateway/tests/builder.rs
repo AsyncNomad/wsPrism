@@ -140,6 +140,15 @@ async fn user_service_and_auth_plugin_work_end_to_end() {
     assert_eq!(gw.session_count(), 1);
     assert!(gw.metrics_text().contains("wsprism_ws_sessions_active"));
 
+    // A plugin returning an id outside the user id rule is overruled by the
+    // chain (review M3).
+    let r = try_connect_with(
+        &ws_url(addr, "t", None),
+        &[("authorization", "Bearer corp-a::b")],
+    )
+    .await;
+    assert!(matches!(r, Err(e) if e.contains("401")));
+
     // Not the plugin's format, and no other link: rejected.
     let r = try_connect_with(&ws_url(addr, "t", None), &[("authorization", "Bearer dev")]).await;
     assert!(matches!(r, Err(e) if e.contains("401")));

@@ -30,6 +30,9 @@ the Rust API may break in 0.x minor releases, always listed here.
   without blocking the session. Requests naming a room the session has not joined are refused
   by default (`rpc.require_joined_room`); the backend gets `joined`.
 - Startup fails when an allowlist names a service that does not exist.
+- Every authenticator's user id (including plugins) must be `[A-Za-z0-9_-]{1,64}`;
+  the client `sid` follows the same rule (HTTP 400 otherwise). The dev
+  authenticator's users are now `dev` / `<id>` (no `user:` prefix).
 - Room names are limited to 1-128 bytes without control characters; `max_rooms_per_user` defaults to 64.
 
 ### Rust API

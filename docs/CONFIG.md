@@ -73,8 +73,13 @@ tenants:
   - id: acme
     auth:
       - kind: ticket     # one-time `wpt_...` tickets from POST /api/v1/tickets
-      - kind: dev        # development only: `dev` / `dev:<id>`
+      - kind: dev        # development only: `dev` -> user dev, `dev:<id>` -> user <id>
 ```
+
+Whatever the authenticator (built-in or plugin), the user id it returns must
+be 1-64 characters of `[A-Za-z0-9_-]`; anything else is rejected (and
+logged), because user ids become parts of internal keys. The same rule
+applies to the client's `?sid=` (HTTP 400).
 
 Omitting `auth` means `[dev]` and logs a startup warning: anyone presenting
 `dev` is admitted.

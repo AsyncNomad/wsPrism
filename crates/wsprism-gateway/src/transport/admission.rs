@@ -33,6 +33,8 @@ pub struct HandshakeRequest<'a> {
     /// TCP peer address.
     pub peer: SocketAddr,
     pub headers: &'a HeaderMap,
+    /// `?sid=` as sent by the client (unvalidated).
+    pub sid: Option<&'a str>,
 }
 
 /// A request that passed every check.
@@ -105,6 +107,7 @@ async fn check_all(
 ) -> Result<Admitted, Rejection> {
     let client_ip = app.trusted_proxies().client_ip(req.peer.ip(), req.headers);
     rate_limit(app, client_ip)?;
+    valid_sid(req)?;
     not_draining(app)?;
     let tenant = tenant.ok_or_else(|| {
         Rejection::new(StatusCode::BAD_REQUEST, "unknown_tenant", "Unknown Tenant")
@@ -135,6 +138,19 @@ fn rate_limit(app: &AppState, client_ip: IpAddr) -> Result<(), Rejection> {
         )
         .retry_after(wait_secs)
     })
+}
+
+/// The client-chosen `sid` becomes part of internal keys, log fields and
+/// `sys.authed`: same rule as user ids.
+fn valid_sid(req: &HandshakeRequest<'_>) -> Result<(), Rejection> {
+    match req.sid {
+        Some(sid) if !crate::ident::is_safe_id(sid) => Err(Rejection::new(
+            StatusCode::BAD_REQUEST,
+            "bad_sid",
+            "sid must be 1-64 characters of [A-Za-z0-9_-]",
+        )),
+        _ => Ok(()),
+    }
 }
 
 fn not_draining(app: &AppState) -> Result<(), Rejection> {

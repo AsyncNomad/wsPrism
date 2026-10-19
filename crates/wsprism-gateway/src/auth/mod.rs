@@ -137,6 +137,16 @@ impl AuthChain {
         for link in &self.links {
             match link.authenticate(req).await {
                 Err(AuthError::NotMine) => continue,
+                // User ids become parts of internal keys and log fields:
+                // enforce the rule here for every authenticator, built-in
+                // or plugin, rather than trusting each one.
+                Ok(identity) if !crate::ident::is_safe_id(&identity.user_id) => {
+                    tracing::warn!(
+                        authenticator = link.kind(),
+                        "authenticator returned a user id outside [A-Za-z0-9_-]{{1,64}}; rejected"
+                    );
+                    return Err(AuthError::Rejected("invalid user id from authenticator"));
+                }
                 decided => return decided,
             }
         }

@@ -130,7 +130,7 @@ async fn disconnect_closes_the_users_sessions_with_a_reason() {
         "POST",
         "/api/v1/disconnect",
         Some(KEY_A),
-        Some(json!({"user":"user:dev","reason":"banned"})),
+        Some(json!({"user":"dev","reason":"banned"})),
     )
     .await;
     assert_eq!(status, 200, "{resp}");
@@ -169,7 +169,7 @@ async fn presence_lists_the_rooms_users() {
     )
     .await;
     assert_eq!(status, 200, "{resp}");
-    assert_eq!(resp["users"], json!(["user:dev"]));
+    assert_eq!(resp["users"], json!(["dev"]));
     // Tenant b's key sees tenant b's (empty) room.
     let (_, resp) = http(
         gw.api,

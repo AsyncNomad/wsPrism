@@ -61,6 +61,7 @@ pub async fn ws_upgrade(
         query_ticket: q.ticket.as_deref(),
         peer,
         headers: &headers,
+        sid: q.sid.as_deref(),
     };
     let admitted = match admission::admit(&app, &req).await {
         Ok(admitted) => admitted,

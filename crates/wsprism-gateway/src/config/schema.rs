@@ -331,7 +331,7 @@ pub struct ApiKeyConfig {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[non_exhaustive]
 pub enum AuthConfig {
-    /// `dev` -> `user:dev`, `dev:<id>` -> `user:<id>`. Development only.
+    /// `dev` -> user `dev`, `dev:<id>` -> user `<id>`. Development only.
     Dev,
     /// One-time tickets issued through the server API (`wpt_...`).
     Ticket,

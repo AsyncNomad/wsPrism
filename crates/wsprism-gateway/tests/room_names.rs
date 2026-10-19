@@ -50,3 +50,19 @@ async fn rooms_per_user_default_to_64() {
     let v = join(&mut ws, "one-too-many").await;
     assert_eq!(v["data"]["code"], "RESOURCE_EXHAUSTED", "{v}");
 }
+
+/// Client-chosen sids become parts of internal keys and logs (review M2).
+#[tokio::test]
+async fn invalid_sids_are_refused_before_authentication() {
+    let gw = spawn(YAML).await;
+    for bad in ["a%3A%3Ab", "has%20space", &"x".repeat(65), "line%0Abreak"] {
+        let url = format!("ws://{}/v1/ws?tenant=t&sid={bad}", gw.addr);
+        let r = try_connect_with(&url, &[AUTH]).await;
+        assert!(
+            matches!(&r, Err(e) if e.contains("400")),
+            "sid {bad}: {:?}",
+            r.map(|_| ())
+        );
+    }
+    connect(gw.addr, "t", Some("tab-1_OK")).await;
+}

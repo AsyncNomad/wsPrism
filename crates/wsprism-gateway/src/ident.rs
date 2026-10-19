@@ -1,5 +1,6 @@
 //! Identifier rules for values that become parts of internal keys, metric
-//! labels or log fields (tenant ids, dev-ticket user ids).
+//! labels or log fields (tenant ids, user ids from every authenticator,
+//! client session ids).
 //!
 //! Restricting them to `[A-Za-z0-9_-]{1,64}` keeps them free of the `::`
 //! separator used in internal keys (see performance-architecture §2: keys

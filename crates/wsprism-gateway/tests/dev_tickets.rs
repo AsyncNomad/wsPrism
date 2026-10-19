@@ -23,8 +23,8 @@ async fn authed_user(ticket: &str) -> Result<String, String> {
 
 #[tokio::test]
 async fn named_dev_ticket_maps_to_its_own_user() {
-    assert_eq!(authed_user("dev").await.as_deref(), Ok("user:dev"));
-    assert_eq!(authed_user("dev:alice").await.as_deref(), Ok("user:alice"));
+    assert_eq!(authed_user("dev").await.as_deref(), Ok("dev"));
+    assert_eq!(authed_user("dev:alice").await.as_deref(), Ok("alice"));
 }
 
 #[tokio::test]
