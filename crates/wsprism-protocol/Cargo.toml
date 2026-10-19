@@ -1,10 +1,15 @@
 [package]
 name = "wsprism-protocol"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+description = "wsPrism wire protocol: JSON envelopes, binary Hot frames (v1/v2), close and error codes"
+readme = "README.md"
+keywords = ["websocket", "realtime", "protocol", "gamedev"]
+categories = ["network-programming", "encoding", "web-programming::websocket"]
 
 [dependencies]
 thiserror = { workspace = true }

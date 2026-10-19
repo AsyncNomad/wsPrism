@@ -1,11 +1,15 @@
 [package]
 name = "wsprism"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "wsPrism realtime gateway: build a gateway with your own services and authenticators (the crate to depend on)"
+homepage.workspace = true
+description = "Multi-tenant realtime gateway: build a WebSocket gateway with your own services and authenticators"
+readme = "README.md"
+keywords = ["websocket", "gateway", "realtime", "multi-tenant", "gamedev"]
+categories = ["network-programming", "web-programming::websocket", "asynchronous", "game-development"]
 
 [dependencies]
 wsprism-protocol = { workspace = true }

@@ -1,11 +1,15 @@
 [package]
 name = "wsprism-engine"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "wsPrism realtime engine: rooms, delivery classes, Hot-lane state, services (no transport, config format or HTTP)"
+homepage.workspace = true
+description = "wsPrism realtime engine: rooms, reliable/lossy delivery, latest-value Hot state, service traits"
+readme = "README.md"
+keywords = ["websocket", "realtime", "pubsub", "gamedev"]
+categories = ["network-programming", "asynchronous", "game-development"]
 
 [dependencies]
 wsprism-protocol = { workspace = true }

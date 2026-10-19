@@ -1,10 +1,15 @@
 [package]
 name = "wsprism-gateway"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+description = "wsPrism gateway server: multi-tenant WebSocket gateway with auth, server API and backend proxies (library + binary)"
+readme = "README.md"
+keywords = ["websocket", "gateway", "realtime", "multi-tenant", "gamedev"]
+categories = ["network-programming", "web-programming::websocket", "asynchronous", "game-development"]
 
 [dependencies]
 wsprism-protocol = { workspace = true }

@@ -195,6 +195,8 @@ graph TD
 |---|---|
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | 와이어 프로토콜 계약: 핸드셰이크·인증, 두 레인, 룸, 에러 코드, 종료 코드 |
 | [`docs/CONFIG.md`](docs/CONFIG.md) | 설정: 인증(티켓·JWT·프록시·플러그인), 서버 API, RPC 프록시 |
+| [`CHANGELOG.md`](CHANGELOG.md) | 변경 기록 (모든 크레이트 같은 버전) |
+| [`docs/RELEASING.md`](docs/RELEASING.md) | 배포 절차 |
 | [`docs/API.md`](docs/API.md) | Rust API: `Gateway::builder`로 사용자 서비스·인증기 붙이기, API 등급과 호환성 정책 |
 | [`sdk/js/`](sdk/js/README.md) | JavaScript 클라이언트 SDK (의존성 없음, 프로토콜 v2) |
 | [`examples/chat-and-state/`](examples/chat-and-state/README.md) | Node 백엔드 + SDK 예제 앱 (채팅·RPC·Hot 상태) |
