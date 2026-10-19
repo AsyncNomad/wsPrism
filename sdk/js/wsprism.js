@@ -179,7 +179,15 @@ export class WsPrismClient {
 
   async open() {
     this.state = "connecting";
-    const ticket = await this.opts.getTicket();
+    let ticket;
+    try {
+      ticket = await this.opts.getTicket();
+    } catch (e) {
+      // No socket was created, so no close event will follow: the caller
+      // (connect or scheduleReconnect) decides what happens next.
+      this.state = "closed";
+      throw new WsPrismError("TICKET_FAILED", `getTicket failed: ${e?.message ?? e}`);
+    }
     const q = new URLSearchParams({ tenant: this.opts.tenant });
     if (this.opts.sid) q.set("sid", this.opts.sid);
     const url = `${this.opts.url}${this.opts.url.includes("?") ? "&" : "?"}${q}`;
@@ -287,8 +295,16 @@ export class WsPrismClient {
     if (this.stopped) return;
     try {
       await this.open();
-    } catch {
-      // onClose already scheduled the next attempt (or stopped).
+    } catch (e) {
+      if (e?.code === "TICKET_FAILED") {
+        // Nothing else will retry (no socket, no close event): back off and try again.
+        this.emit("error", e);
+        if (!this.stopped && this.reconnect.enabled) {
+          this.state = "connecting";
+          this.scheduleReconnect("backoff");
+        }
+      }
+      // Otherwise onClose already scheduled the next attempt (or stopped).
     }
   }
 

@@ -286,3 +286,25 @@ test("an expired token (4001) reconnects at once with a fresh one and rejoins", 
   assert.notEqual(a.rooms.get("hall").memberId, first.memberId);
   a.close();
 });
+
+test("a failing getTicket during reconnect is retried with backoff", async () => {
+  let calls = 0;
+  const a = new WsPrismClient({
+    url: gw.url,
+    tenant: "j",
+    reconnect: { minDelayMs: 200, maxDelayMs: 400 },
+    getTicket: () => {
+      calls += 1;
+      if (calls === 2) throw new Error("auth server down");
+      return jwt("hana", calls === 1 ? 2 : 600);
+    },
+  });
+  const errors = [];
+  a.on("error", (e) => errors.push(e));
+  await a.connect();
+  const reopened = next(a, "open", () => true, 9000);
+  await reopened;
+  assert.equal(calls, 3, "first ticket, failed ticket, then a retry");
+  assert.ok(errors.some((e) => e.code === "TICKET_FAILED"), "the failure is reported");
+  a.close();
+});

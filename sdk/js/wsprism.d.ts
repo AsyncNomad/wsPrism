@@ -3,7 +3,7 @@
 export const PROTOCOL: "wsprism.v2.json";
 
 export class WsPrismError extends Error {
-  /** Gateway / backend code (`NOT_ALLOWED`, `UNAVAILABLE`, ...) or a client-side one (`TIMEOUT`, `DISCONNECTED`, `NOT_CONNECTED`, `NOT_JOINED`, `CONNECT_FAILED`). */
+  /** Gateway / backend code (`NOT_ALLOWED`, `UNAVAILABLE`, ...) or a client-side one (`TIMEOUT`, `DISCONNECTED`, `NOT_CONNECTED`, `NOT_JOINED`, `CONNECT_FAILED`, `TICKET_FAILED`). */
   readonly code: string;
   constructor(code: string, message?: string);
 }
