@@ -19,9 +19,12 @@ Publish order follows the dependency chain.
    cargo deny check                                        # advisories, licenses
    sdk/js/run-tests.sh && examples/chat-and-state/run-tests.sh
    ```
-5. **Package dry run** (builds each packaged crate against the others):
+5. **Package dry run** (builds each packaged crate against the others), in a
+   **fresh target directory**: packages of the same version are cached as
+   registry crates (immutable to Cargo), so a repeated dry run can verify
+   against stale ones and fail for no real reason:
    ```sh
-   cargo package --workspace --exclude wsprism-loadgen --locked
+   CARGO_TARGET_DIR=$(mktemp -d) cargo package --workspace --exclude wsprism-loadgen --locked
    ```
 6. **Names:** confirm the names are still free or owned by us
    (`https://crates.io/api/v1/crates/<name>`; send no personal data in the
