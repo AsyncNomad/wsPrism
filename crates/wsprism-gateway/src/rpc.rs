@@ -33,6 +33,7 @@ pub struct RpcProxy {
     endpoint: Endpoint,
     rules: Vec<ExtRule>,
     max_in_flight: u32,
+    require_joined_room: bool,
 }
 
 /// A backend's own error code: `[A-Z0-9_]{1,32}` (like the catalogued ones).
@@ -73,6 +74,7 @@ impl RpcProxy {
             endpoint: Endpoint::new("rpc", &cfg.url, cfg.timeout_ms, cfg.secret_env.as_deref())?,
             rules,
             max_in_flight: cfg.max_in_flight,
+            require_joined_room: cfg.require_joined_room,
         })
     }
 
@@ -88,6 +90,14 @@ impl RpcProxy {
     /// Start a call for `env`; the answer arrives later. Errs only when the
     /// session's budget is exhausted.
     pub fn call(self: &Arc<Self>, ctx: &RealtimeCtx, env: Envelope) -> Result<()> {
+        // The room comes from the client: say whether the gateway verified
+        // membership, and by default don't forward rooms it didn't.
+        let joined = env.room.as_deref().is_some_and(|r| ctx.is_in_room(r));
+        if env.room.is_some() && !joined && self.require_joined_room {
+            return Err(WsPrismError::NotAllowed(
+                "join the room before sending it requests".into(),
+            ));
+        }
         let reply = ctx
             .defer_reply(self.max_in_flight)
             .ok_or(WsPrismError::RateLimited)?;
@@ -98,6 +108,7 @@ impl RpcProxy {
             "svc": env.svc,
             "type": env.msg_type,
             "room": env.room,
+            "joined": joined,
             "data": env.data,
         });
         let trace_id = ctx.trace_id().to_string();

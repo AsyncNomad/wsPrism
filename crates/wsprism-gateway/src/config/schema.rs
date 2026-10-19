@@ -398,6 +398,11 @@ pub struct RpcConfig {
     pub max_in_flight: u32,
     #[serde(default)]
     pub secret_env: Option<String>,
+    /// Forward a request naming a `room` only if this session has joined
+    /// it (default). With `false` the request is forwarded anyway and the
+    /// backend gets `joined: false` — it must not trust such a room.
+    #[serde(default = "default_true")]
+    pub require_joined_room: bool,
 }
 
 fn default_rpc_timeout_ms() -> u64 {

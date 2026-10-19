@@ -197,13 +197,18 @@ tenants:
       timeout_ms: 5000                # default 5000 (1-60000)
       max_in_flight: 16               # pending calls per connection (default 16)
       secret_env: BACKEND_SECRET      # optional: `Authorization: Bearer <value>`
+      require_joined_room: true       # default: a request naming a room the session hasn't joined gets NOT_ALLOWED
     policy:
       ext_allowlist: ["room:*", "game:*", "shop:buy"]   # still required: allow routes, the allowlist admits
 ```
 
 For each matching request the gateway sends
-`POST url {"tenant", "user", "sid", "svc", "type", "room", "data"}` and
-answers the client with:
+`POST url {"tenant", "user", "sid", "svc", "type", "room", "joined", "data"}`
+and answers the client with the table below. `room` is what the client sent;
+`joined` says whether the gateway verified the session is in it. By default
+requests naming a room the session hasn't joined are not forwarded
+(`NOT_ALLOWED`); with `require_joined_room: false` they are, with
+`joined: false`, and **the backend must not trust that room**.
 
 | Backend reply | Client receives |
 |---|---|

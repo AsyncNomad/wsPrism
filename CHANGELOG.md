@@ -27,7 +27,8 @@ the Rust API may break in 0.x minor releases, always listed here.
 - `/metrics` is served on the internal listener (`gateway.api.listen`), not
   on the public port, unless `gateway.public_metrics: true`.
 - RPC proxy: allowlisted Ext requests answered by your backend over HTTP,
-  without blocking the session.
+  without blocking the session. Requests naming a room the session has not joined are refused
+  by default (`rpc.require_joined_room`); the backend gets `joined`.
 - Startup fails when an allowlist names a service that does not exist.
 - Room names are limited to 1-128 bytes without control characters; `max_rooms_per_user` defaults to 64.
 

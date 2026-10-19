@@ -236,6 +236,24 @@ async fn rpc_forwards_requests_and_returns_replies() {
         .await
         .expect("admitted");
 
+    // A room the session hasn't joined is not forwarded (review M1).
+    send_json(
+        &mut ws,
+        json!({"v":1,"svc":"game","type":"echo","seq":6,"room":"r1","data":{"x":1}}),
+    )
+    .await;
+    assert_eq!(reply_for(&mut ws, 6).await["data"]["code"], "NOT_ALLOWED");
+    assert!(
+        seen.rpc.lock().unwrap().is_empty(),
+        "nothing reached the backend"
+    );
+
+    send_json(
+        &mut ws,
+        json!({"v":1,"svc":"room","type":"join","room":"r1","seq":5}),
+    )
+    .await;
+    assert_eq!(reply_for(&mut ws, 5).await["type"], "joined");
     send_json(
         &mut ws,
         json!({"v":1,"svc":"game","type":"echo","seq":7,"room":"r1","data":{"x":1}}),
@@ -249,6 +267,7 @@ async fn rpc_forwards_requests_and_returns_replies() {
     assert_eq!(req["tenant"], "a");
     assert_eq!(req["svc"], "game");
     assert_eq!(req["room"], "r1");
+    assert_eq!(req["joined"], true, "membership verified by the gateway");
     assert!(req["sid"].is_string());
 
     send_json(&mut ws, json!({"v":1,"svc":"game","type":"fail","seq":8})).await;
