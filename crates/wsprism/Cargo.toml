@@ -4,7 +4,16 @@ version = "0.1.0"
 edition = "2021"
 license.workspace = true
 repository.workspace = true
+description = "wsPrism realtime gateway: build a gateway with your own services and authenticators (the crate to depend on)"
 
 [dependencies]
 wsprism-protocol = { workspace = true }
+wsprism-engine = { workspace = true }
 wsprism-gateway = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tokio-tungstenite = "0.24"
+futures-util = { workspace = true }

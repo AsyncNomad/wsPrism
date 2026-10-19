@@ -25,6 +25,7 @@ pub const DEFAULT_SLOT_CAP: usize = 1024;
 /// What `put` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Put {
+    /// A new key was stored.
     Inserted,
     /// Replaced a value the session had not sent yet (normal: latest wins).
     Overwritten,
@@ -32,6 +33,7 @@ pub enum Put {
     Full,
 }
 
+/// The latest pending Hot frame per `(sender, svc, key)` for one session.
 #[derive(Debug)]
 pub struct HotSlot {
     latest: Mutex<HashMap<SlotKey, Arc<HotOut>>>,
@@ -43,6 +45,7 @@ pub struct HotSlot {
 }
 
 impl HotSlot {
+    /// A slot holding at most `cap` distinct keys.
     pub fn new(cap: usize) -> Self {
         Self {
             latest: Mutex::new(HashMap::new()),

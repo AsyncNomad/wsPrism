@@ -17,6 +17,7 @@
 #![deny(clippy::expect_used)]
 #![deny(clippy::panic)]
 #![warn(unreachable_pub)]
+#![warn(missing_docs)]
 
 mod dispatch;
 mod limits;

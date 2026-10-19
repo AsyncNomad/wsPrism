@@ -47,7 +47,9 @@ pub struct HotOut {
 /// Application-level outgoing message.
 #[derive(Debug, Clone)]
 pub struct Outgoing {
+    /// What happens when a recipient's queue is full.
     pub qos: QoS,
+    /// The message.
     pub payload: Payload,
 }
 
@@ -64,6 +66,7 @@ impl Utf8Text {
         Ok(Self(bytes))
     }
 
+    /// The UTF-8 bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
@@ -83,7 +86,9 @@ impl From<String> for Utf8Text {
 /// fan-out to N sessions does not copy the payload N times.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutFrame {
+    /// A text message (JSON).
     Text(Utf8Text),
+    /// A binary message (Hot frame).
     Binary(Bytes),
     /// Keep-alive ping (empty payload).
     Ping,
@@ -132,6 +137,7 @@ pub mod close_code {
 /// preceded by a `sys.*` notice explaining why.
 #[derive(Debug, Clone)]
 pub struct CloseSpec {
+    /// Close code (standard; mapped per protocol on the wire).
     pub code: u16,
     /// Short machine-readable reason (sent in the close frame, <= 123 bytes).
     pub reason: String,
@@ -140,6 +146,7 @@ pub struct CloseSpec {
 }
 
 impl CloseSpec {
+    /// A close with `code`, `reason`, and an optional `sys.*` notice sent first.
     pub fn new(code: u16, reason: impl Into<String>, notice: Option<String>) -> Self {
         Self {
             code,

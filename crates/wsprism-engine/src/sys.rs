@@ -16,6 +16,7 @@ pub fn reply_to(mut msg: Value, seq: Option<u64>) -> Value {
     msg
 }
 
+/// `sys.authed`: the greeting after admission.
 pub fn authed(tenant: &str, user: &str, sid: &str, trace_id: &str) -> Value {
     json!({ "v": 1, "svc": "sys", "type": "authed", "data": { "tenant": tenant, "user": user, "sid": sid }, "trace_id": trace_id })
 }
@@ -47,10 +48,12 @@ pub fn reply(data: Value, trace_id: &str) -> Value {
     json!({ "v": 1, "svc": "sys", "type": "reply", "data": data, "trace_id": trace_id })
 }
 
+/// `sys.kicked`: the session is being closed for `reason`.
 pub fn kicked(reason: &str, trace_id: &str) -> Value {
     json!({ "v": 1, "svc": "sys", "type": "kicked", "data": { "reason": reason }, "trace_id": trace_id })
 }
 
+/// `sys.joined` (v1).
 pub fn joined(room: &str, trace_id: &str) -> Value {
     json!({ "v": 1, "svc": "sys", "type": "joined", "room": room, "trace_id": trace_id })
 }
@@ -61,6 +64,7 @@ pub fn joined_v2(room: &str, room_id: u32, member_id: u32, trace_id: &str) -> Va
     json!({ "v": 1, "svc": "sys", "type": "joined", "room": room, "chan": room_id, "member_id": member_id, "trace_id": trace_id })
 }
 
+/// `sys.left`.
 pub fn left(room: &str, trace_id: &str) -> Value {
     json!({ "v": 1, "svc": "sys", "type": "left", "room": room, "trace_id": trace_id })
 }

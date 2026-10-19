@@ -16,6 +16,7 @@ pub struct HotRelayService {
 }
 
 impl HotRelayService {
+    /// The built-in relay for Hot service id `svc_id` (the gateway uses 1).
     pub fn new(svc_id: u8) -> Self {
         Self { svc_id }
     }

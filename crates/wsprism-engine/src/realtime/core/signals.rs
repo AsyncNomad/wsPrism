@@ -31,6 +31,7 @@ pub enum CloseRequest {
     Idle,
 }
 
+/// Per-session control shared with other tasks (close requests, liveness, Hot slot).
 #[derive(Debug)]
 pub struct SessionSignals {
     close: Mutex<Option<CloseRequest>>,
@@ -46,6 +47,7 @@ pub struct SessionSignals {
 }
 
 impl SessionSignals {
+    /// Signals for a new session.
     pub fn new() -> Arc<Self> {
         let now = now_ms();
         Arc::new(Self {
@@ -125,6 +127,7 @@ impl SessionSignals {
         false
     }
 
+    /// Release a slot taken by `try_begin_deferred`.
     pub fn end_deferred(&self) {
         self.deferred.fetch_sub(1, Ordering::AcqRel);
     }

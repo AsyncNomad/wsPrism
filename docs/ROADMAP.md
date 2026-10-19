@@ -49,17 +49,20 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 |---|---|---|
 | ① 설정 | 운영자 | YAML, `--check-config`, 핫 리로드(M6) |
 | ② 백엔드 프록시 | **대부분의 팀(언어 무관)** | connect / rpc를 백엔드로 위임(HTTP → gRPC), 서버 발행 API, 1회용 티켓 발급 |
-| ③ Rust 트레이트 | 성능이 필요한 팀 | `Authenticator`, `Service`(Text/Binary), 이후 `Broker` → 빌더로 조립 |
+| ③ Rust 트레이트 | 성능이 필요한 팀 | `Authenticator`, `TextService`·`HotService`, 이후 `Broker` → `Gateway::builder`로 조립 (✅ ADR 0009) |
 | ④ WASM 플러그인 | SaaS 테넌트별 커스텀 | Ext Lane 전용, 샌드박스. Hot Lane에는 넣지 않는다 |
 
 ## 제품 구조
 
 ```
-wsprism-protocol      프로토콜 (전송·런타임 무관)
-wsprism-engine    트레이트로 확장 가능한 엔진 (현재 gateway를 재구성)
-wsprism-server    engine + 기본 플러그인(JWT, HTTP 프록시, 이후 Redis)을 조립한 바이너리
-wsprism-sdk-*     클라이언트 SDK (TS → Unity C# → Dart). WebTransport 우선, WebSocket 폴백
+wsprism-protocol  와이어 계약 (전송·런타임 무관)
+wsprism-engine    룸·전달·Hot 상태·서비스 트레이트 (axum·HTTP·설정 형식 무관)
+wsprism-gateway   서버: 설정·핸드셰이크·전송·인증(JWT·티켓·프록시·플러그인)·서버 API + 바이너리
+wsprism           파사드: 안정 API + GatewayBuilder (사용자가 의존하는 크레이트)
+sdk/js            클라이언트 SDK (JS 완료 → Unity C# → Dart). WebTransport 우선, WebSocket 폴백
 ```
+
+(ADR 0009로 확정: 처음 구상한 `wsprism-server`는 `wsprism-gateway`가 맡고, 사용자 진입점은 파사드 `wsprism`의 `Gateway::builder`.)
 
 ## 단계
 

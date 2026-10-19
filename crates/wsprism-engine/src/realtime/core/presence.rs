@@ -54,7 +54,9 @@ fn add_to_set(map: &SetIndex, key: &str, item: &str) {
 /// handle clone per recipient (performance-architecture §2.2).
 #[derive(Clone)]
 pub struct Member {
+    /// The member session's internal key.
     pub key: Arc<str>,
+    /// Delivery handles of the member session.
     pub conn: Connection,
     /// Assigned by `Presence::try_join` (callers pass 0).
     pub member_id: u32,
@@ -105,6 +107,7 @@ pub struct Presence {
 }
 
 impl Presence {
+    /// No rooms yet.
     pub fn new() -> Self {
         Self {
             room_to_sessions: DashMap::new(),
@@ -331,6 +334,7 @@ impl Presence {
     }
 
     // Called by RAII Drop
+    /// Remove a closed session from every room it was in.
     pub fn cleanup_session(&self, tenant_id: &str, user_key: &str, session_key: &str) {
         if let Some(rooms) = self.session_to_rooms.remove(session_key).map(|(_, v)| v) {
             for room_key in &rooms {

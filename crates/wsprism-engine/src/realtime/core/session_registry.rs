@@ -46,6 +46,7 @@ pub struct SessionRegistry {
 }
 
 impl SessionRegistry {
+    /// No sessions yet.
     pub fn new() -> Self {
         Self {
             sessions: DashMap::new(),
@@ -116,6 +117,7 @@ impl SessionRegistry {
         Ok(())
     }
 
+    /// Remove a session; returns its handles if it was registered.
     pub fn remove_session(&self, user_key: &str, session_key: &str) -> Option<Connection> {
         // C5: remove the key and drop the user's set if it became empty in
         // one step under the shard lock; inserts go through `entry` and hold
@@ -136,6 +138,7 @@ impl SessionRegistry {
         }
     }
 
+    /// Handles of a connected session.
     pub fn get_session(&self, session_key: &str) -> Option<Connection> {
         self.sessions
             .get(session_key)
@@ -150,11 +153,13 @@ impl SessionRegistry {
             .unwrap_or_default()
     }
 
+    /// Connected sessions of one user.
     pub fn count_user_sessions(&self, user_key: &str) -> usize {
         self.user_index.get(user_key).map(|s| s.len()).unwrap_or(0)
     }
 
     // Sprint 5: O(1) Tenant Counter Lookup
+    /// Connected sessions of one tenant.
     pub fn count_tenant_sessions(&self, tenant_id: &str) -> u64 {
         self.tenant_counts
             .get(tenant_id)
@@ -182,6 +187,7 @@ impl SessionRegistry {
             .collect()
     }
 
+    /// Connected sessions in total.
     pub fn len_sessions(&self) -> usize {
         self.sessions.len()
     }

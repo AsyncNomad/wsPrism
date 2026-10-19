@@ -48,8 +48,11 @@ fn sample_every_1024(n: u64) -> bool {
     (n & 1023) == 1
 }
 
+/// Shared realtime state: every session and every room of every tenant.
 pub struct RealtimeCore {
+    /// Connected sessions.
     pub sessions: Arc<SessionRegistry>,
+    /// Room membership.
     pub presence: Arc<Presence>,
 }
 
@@ -228,6 +231,7 @@ pub struct DeferredReply {
 }
 
 impl DeferredReply {
+    /// Send `msg` as the answer (Reliable; `reply_to` added).
     pub fn send(self, msg: serde_json::Value) {
         let frame = OutFrame::text(sys::reply_to(msg, self.seq).to_string());
         self.core
@@ -272,14 +276,19 @@ pub struct RealtimeCtx {
 
 /// Who a session is, fixed for its lifetime (input to [`RealtimeCtx::new`]).
 pub struct CtxIdentity {
+    /// Tenant id.
     pub tenant: Arc<str>,
+    /// User id.
     pub user: Arc<str>,
     /// Client-facing sid (may repeat across connections).
     pub session_id: Arc<str>,
     /// Gateway-internal, per-connection unique key (see S4 in docs/HARDENING.md).
     pub session_key: Arc<str>,
+    /// Trace id (logs, `sys.*` messages).
     pub trace_id: Arc<str>,
+    /// Negotiated wire protocol.
     pub protocol: ProtocolVersion,
+    /// Room permissions from the authenticator.
     pub permissions: Permissions,
 }
 
@@ -317,9 +326,11 @@ impl RealtimeCtx {
         &self.trace_id
     }
 
+    /// Tenant this session belongs to.
     pub fn tenant(&self) -> &str {
         &self.tenant
     }
+    /// Authenticated user id.
     pub fn user(&self) -> &str {
         &self.user
     }
@@ -328,6 +339,7 @@ impl RealtimeCtx {
     pub fn user_key(&self) -> &str {
         &self.user_key
     }
+    /// Client-facing session id (`sid`; may repeat across connections).
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
@@ -378,6 +390,7 @@ impl RealtimeCtx {
         })
     }
 
+    /// Wire protocol this session negotiated (v1 / v2).
     pub fn protocol(&self) -> ProtocolVersion {
         self.protocol
     }
@@ -459,6 +472,7 @@ impl RealtimeCtx {
         self.core.presence.is_member(&rk, self.session_key())
     }
 
+    /// Leave `room` (no-op if not joined).
     pub fn leave_room(&mut self, room: &str) {
         self.joined.retain(|(r, _)| &**r != room);
         let rk = self.room_key(room);
@@ -467,6 +481,7 @@ impl RealtimeCtx {
             .leave(self.tenant(), &rk, self.user_key(), self.session_key());
     }
 
+    /// Send to every session of this user (Reliable or Lossy per `out.qos`).
     pub fn send_to_user(&self, out: Outgoing) -> Result<()> {
         self.core.send_to_user(self.user_key(), out)
     }
@@ -477,11 +492,13 @@ impl RealtimeCtx {
             .deliver(self.session_key(), &self.conn, frame, &out.qos);
         Ok(())
     }
+    /// Publish to `room`, dropped for recipients whose queue is full. Requires publish permission.
     pub fn publish_room_lossy(&self, room: &str, out: Outgoing) -> Result<()> {
         self.check_publish(room)?;
         let rk = self.room_key(room);
         self.core.publish_room_lossy(&rk, out).map(|_| ())
     }
+    /// Publish to `room`; a recipient whose queue is full is closed as a slow consumer. Requires publish permission.
     pub fn publish_room_reliable(&self, room: &str, out: Outgoing) -> Result<()> {
         self.check_publish(room)?;
         let rk = self.room_key(room);

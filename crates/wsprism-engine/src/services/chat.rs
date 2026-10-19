@@ -13,6 +13,7 @@ use crate::realtime::{Outgoing, Payload, QoS, RealtimeCtx};
 pub struct ChatService;
 
 impl ChatService {
+    /// The built-in `chat` service.
     pub fn new() -> Self {
         Self
     }

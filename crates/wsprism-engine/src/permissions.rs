@@ -11,6 +11,7 @@ pub struct RoomPattern {
 }
 
 impl RoomPattern {
+    /// Parse an exact room name, or a prefix ending in `*` (`match:*`).
     pub fn parse(s: &str) -> Self {
         match s.strip_suffix('*') {
             Some(prefix) => Self {
@@ -24,6 +25,7 @@ impl RoomPattern {
         }
     }
 
+    /// True if `room` matches this pattern.
     pub fn matches(&self, room: &str) -> bool {
         if self.prefix {
             room.starts_with(&self.text)
@@ -36,7 +38,9 @@ impl RoomPattern {
 /// `None` = unrestricted (what development and plain tickets get).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Permissions {
+    /// Rooms the user may join (`None` = any).
     pub subscribe: Option<Vec<RoomPattern>>,
+    /// Rooms the user may publish to (`None` = any).
     pub publish: Option<Vec<RoomPattern>>,
 }
 
@@ -61,10 +65,12 @@ impl Permissions {
         }
     }
 
+    /// May the user join `room`?
     pub fn can_subscribe(&self, room: &str) -> bool {
         allows(&self.subscribe, room)
     }
 
+    /// May the user publish to `room`?
     pub fn can_publish(&self, room: &str) -> bool {
         allows(&self.publish, room)
     }

@@ -16,6 +16,7 @@ use crate::sys;
 pub struct RoomService;
 
 impl RoomService {
+    /// The built-in `room` service.
     pub fn new() -> Self {
         Self
     }
