@@ -77,6 +77,7 @@ async fn main() -> wsprism::Result<()> {
 
 - `build()`는 지금 `AppState::new`가 하는 일(검증·컴파일·allowlist↔서비스 대조)을 **사용자 서비스까지 포함해서** 한다.
   - **정정(S4 구현 중):** 초안에 "allowlist가 등록되지 않은 서비스를 가리키면 지금처럼 기동이 실패한다"고 썼는데 틀렸다. 이 검사는 Sprint 3.5부터 **경고만** 낸다(`FAIL_FAST_ON_MISMATCH = false`). 동작을 바꾸지 않는 단계라 그대로 두었다. **제안(미결):** 기본을 실패로 바꾸기 — 이제 사용자 서비스·RPC·플러그인이 있어 allowlist 오타를 조용히 넘기는 비용이 커졌다. 사용자 결정 필요.
+  - **결정(2026-10-19, 사용자 승인): 실패로 바꿨다.** 바꾸자마자 레퍼런스 설정 `wsprism.yaml`에서 존재하지 않는 서비스 3개(`match:*`, Hot `2:10`, `metrics:subscribe`)가 걸렸다 — 경고였던 동안 아무도 몰랐다. `match:*`는 RPC 예시로, `2:10`은 "직접 등록하면" 주석으로, `metrics`는 `/metrics` 안내로 바꿨다. 리포의 모든 설정이 빌드되는지 테스트(`shipped_configs_build`)로 고정했다.
 - **사용자 인증기 설정:** `- kind: plugin` + `name: corp_sso` + `options: {...}` 형태로 쓴다. 내장 `kind`는 계속 `deny_unknown_fields`로 엄격하게 검사한다. 그래서 `kind: jtw` 같은 오타는 여전히 기동 오류가 된다. `options`는 플러그인 팩토리에 넘기는 자유 형식 JSON 값이다. 등록되지 않은 `name`도 기동 오류다.
 - **내장 서비스 이름은 예약한다**(`room`, `chat`, `sys`, Hot svc 1). 사용자 서비스가 같은 이름을 쓰면 `build()`가 실패한다. 조용히 덮어쓰는 것보다 낫다.
 - **dogfooding:** 배포 바이너리 `main.rs`를 이 빌더만으로 다시 쓴다. 공개 API로 서버 하나를 끝까지 만들 수 없다면 공개 API가 부족하다는 뜻이다.

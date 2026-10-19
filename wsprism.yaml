@@ -169,6 +169,15 @@ tenants:
       max_users_per_room: 200       # Large matches/lobbies
       max_rooms_per_user: 0         # Unlimited room joins (e.g., global chat + guild + match)
 
+    # Game logic lives in your own backend (any language): `match:*` requests
+    # are forwarded to it over HTTP and its answers come back as sys.reply
+    # (RPC proxy, docs/CONFIG.md). Every allowlisted service must exist:
+    # built-in, registered with GatewayBuilder, or routed here. Until a
+    # backend listens on this URL, match requests are answered UNAVAILABLE.
+    rpc:
+      url: "http://127.0.0.1:9000/wsprism/rpc"
+      allow: ["match:*"]
+
     policy:
       rate_limit_rps: 2000
       rate_limit_burst: 4000
@@ -193,8 +202,10 @@ tenants:
       
       # Binary OpCodes (Service ID : OpCode)
       hot_allowlist:
-        - "1:*"   # Service 1 (Movement): All opcodes allowed
-        - "2:10"  # Service 2 (Combat): Only opcode 10 allowed
+        - "1:*"     # Service 1: the built-in room relay (positions etc.), all opcodes
+        # - "2:10"  # Your own Hot service 2, opcode 10 only — register it first
+        #           # with GatewayBuilder::hot_service (docs/API.md); an allowlist
+        #           # entry for an unregistered service fails startup
 
 
   # ============================================================================
@@ -220,5 +231,5 @@ tenants:
         on_exceed: kick_oldest
 
       ext_allowlist:
-        - "sys:*"                   # Allow all system commands
-        - "metrics:subscribe"
+        - "room:*"                  # Dashboards join rooms and receive server publishes
+      # Gateway metrics are not a WebSocket service: scrape GET /metrics.

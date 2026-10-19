@@ -26,9 +26,6 @@ use wsprism_engine::RoomLimits;
 use crate::transport::client_ip::TrustedProxies;
 use crate::transport::handshake::HandshakeDefender;
 
-/// If true, the gateway fails fast on allowlist/dispatcher mismatches at boot.
-const FAIL_FAST_ON_MISMATCH: bool = false;
-
 /// Shared, clonable gateway application state (config + policy + runtimes).
 #[derive(Clone)]
 pub struct AppState {
@@ -180,49 +177,41 @@ impl AppState {
             }
         }
 
-        // allowlist <-> dispatcher sanity check
+        // Allowlist <-> services: every allowlisted service must exist. A rule
+        // naming nothing is almost always a typo that would otherwise only
+        // show up as clients' requests failing (ADR 0009, user decision
+        // 2026-10-19; it only warned before).
         {
             let text_svcs = dispatcher.registered_text_svcs();
             let hot_svcs = dispatcher.registered_hot_svcs();
-
-            let exempt_text = ["sys"]; // reserved for gateway-originated messages
-
             for t in &cfg.tenants {
-                // ext rules: "svc:type"
                 for rule in &t.policy.ext_allowlist {
-                    if let Some((svc, _ty)) = rule.split_once(':') {
-                        if exempt_text.contains(&svc) {
-                            continue;
-                        }
-                        let by_rpc = tenant_rpc
-                            .get(&t.id)
-                            .is_some_and(|r: &Arc<RpcProxy>| r.covers_svc(svc));
-                        if !text_svcs.contains(&svc) && !by_rpc {
-                            tracing::warn!(tenant=%t.id, rule=%rule, "ext_allowlist refers to unregistered text service");
-                            if FAIL_FAST_ON_MISMATCH {
-                                return Err(WsPrismError::BadRequest(format!(
-                                    "tenant {} ext_allowlist references unregistered text service: {}",
-                                    t.id, svc
-                                )));
-                            }
-                        }
+                    let Some((svc, _)) = rule.split_once(':') else {
+                        continue;
+                    };
+                    let by_rpc = tenant_rpc
+                        .get(&t.id)
+                        .is_some_and(|r: &Arc<RpcProxy>| r.covers_svc(svc));
+                    // `sys` is reserved for gateway-originated messages.
+                    if svc != "sys" && !text_svcs.contains(&svc) && !by_rpc {
+                        return Err(WsPrismError::BadRequest(format!(
+                            "tenant {}: ext_allowlist rule `{rule}` names service `{svc}`, which is not registered \
+                             (built-ins: room, chat; add yours with GatewayBuilder::text_service or route it with tenants[].rpc)",
+                            t.id
+                        )));
                     }
                 }
-
-                // hot rules: "sid:opcode"
                 for rule in &t.policy.hot_allowlist {
-                    if let Some((sid_s, _op)) = rule.split_once(':') {
-                        if let Ok(sid) = sid_s.parse::<u8>() {
-                            if !hot_svcs.contains(&sid) {
-                                tracing::warn!(tenant=%t.id, rule=%rule, sid=%sid, "hot_allowlist refers to unregistered binary service");
-                                if FAIL_FAST_ON_MISMATCH {
-                                    return Err(WsPrismError::BadRequest(format!(
-                                        "tenant {} hot_allowlist references unregistered hot service id: {}",
-                                        t.id, sid
-                                    )));
-                                }
-                            }
-                        }
+                    let Some(sid) = rule.split_once(':').and_then(|(s, _)| s.parse::<u8>().ok())
+                    else {
+                        continue;
+                    };
+                    if !hot_svcs.contains(&sid) {
+                        return Err(WsPrismError::BadRequest(format!(
+                            "tenant {}: hot_allowlist rule `{rule}` names hot service {sid}, which is not registered \
+                             (built-in: 1; add yours with GatewayBuilder::hot_service)",
+                            t.id
+                        )));
                     }
                 }
             }

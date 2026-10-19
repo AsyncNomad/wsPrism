@@ -33,6 +33,17 @@ roadmap milestone M6.
 
 ---
 
+## Allowlists must name existing services
+
+Every `svc` in `policy.ext_allowlist` must be a built-in service (`room`,
+`chat`), one registered with `GatewayBuilder::text_service`, or routed to a
+backend by `tenants[].rpc`. Every service id in `policy.hot_allowlist` must be
+the built-in relay (`1`) or registered with `GatewayBuilder::hot_service`.
+Otherwise startup and `--check-config` fail with the offending rule
+(development builds before the first release only warned).
+
+---
+
 ## Hot Lane pacing (`tenants[].policy.hot_tick_hz`)
 
 `0` (default): keyed Hot state is sent as soon as it arrives. `1..=240`: each

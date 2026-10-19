@@ -150,3 +150,24 @@ fn jwt_keys_are_loaded_and_checked_at_startup() {
         assert!(build(link).is_err(), "{name} must fail at startup");
     }
 }
+
+/// Every config shipped in the repository must build (the reference
+/// `wsprism.yaml` once allowlisted services that did not exist, unnoticed
+/// while that was only a warning).
+#[test]
+fn shipped_configs_build() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for rel in [
+        "wsprism.yaml",
+        "bench/gateway.yaml",
+        "examples/chat-and-state/gateway.yaml",
+    ] {
+        let path = root.join(rel);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        let cfg = config::load_from_str(&text)
+            .unwrap_or_else(|e| panic!("{rel}: {}", e.client_message()));
+        if let Err(e) = wsprism_gateway::Gateway::builder().config(cfg).build() {
+            panic!("{rel}: {}", e.client_message());
+        }
+    }
+}

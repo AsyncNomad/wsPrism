@@ -187,15 +187,29 @@ fn plugin_entries_are_strict_and_builtin_kinds_still_catch_typos() {
 }
 
 #[test]
-fn allowlisted_user_service_builds() {
-    // The boot-time allowlist check only warns about unregistered services
-    // (FAIL_FAST_ON_MISMATCH = false); with the service registered there is
-    // nothing to warn about.
+fn allowlist_must_name_registered_services() {
     let yaml =
         "version: 1\ntenants:\n  - id: t\n    policy: { ext_allowlist: [\"greet:hello\"] }\n";
+    let err = match Gateway::builder()
+        .config(config::load_from_str(yaml).unwrap())
+        .build()
+    {
+        Ok(_) => panic!("unregistered greet must fail the build"),
+        Err(e) => e.client_message().to_string(),
+    };
+    assert!(
+        err.contains("greet") && err.contains("not registered"),
+        "{err}"
+    );
     Gateway::builder()
         .config(config::load_from_str(yaml).unwrap())
         .text_service(Greeter)
         .build()
         .expect("greet is registered");
+
+    let hot = "version: 1\ntenants:\n  - id: t\n    policy: { hot_allowlist: [\"9:*\"] }\n";
+    assert!(Gateway::builder()
+        .config(config::load_from_str(hot).unwrap())
+        .build()
+        .is_err());
 }
