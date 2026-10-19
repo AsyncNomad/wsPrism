@@ -396,6 +396,10 @@ pub struct RpcConfig {
     /// Calls in flight per session; more are answered `RATE_LIMITED`.
     #[serde(default = "default_rpc_in_flight")]
     pub max_in_flight: u32,
+    /// Calls in flight for the whole tenant (protects the backend from a
+    /// connection storm); more are answered `RESOURCE_EXHAUSTED`.
+    #[serde(default = "default_rpc_in_flight_total")]
+    pub max_in_flight_total: u32,
     #[serde(default)]
     pub secret_env: Option<String>,
     /// Forward a request naming a `room` only if this session has joined
@@ -411,6 +415,10 @@ fn default_rpc_timeout_ms() -> u64 {
 
 fn default_rpc_in_flight() -> u32 {
     16
+}
+
+fn default_rpc_in_flight_total() -> u32 {
+    1024
 }
 
 /// A backend URL: `http` or `https`, with a host.
@@ -452,6 +460,11 @@ impl RpcConfig {
     pub fn validate(&self) -> Result<()> {
         validate_backend_url("rpc", &self.url)?;
         validate_timeout("rpc", self.timeout_ms, self.max_in_flight)?;
+        if self.max_in_flight_total == 0 {
+            return Err(WsPrismError::BadRequest(
+                "rpc.max_in_flight_total must be > 0".into(),
+            ));
+        }
         if self.allow.is_empty() {
             return Err(WsPrismError::BadRequest(
                 "rpc.allow must not be empty".into(),

@@ -376,3 +376,29 @@ tenants:
         .and_then(|c| wsprism_gateway::Gateway::builder().config(c).build())
         .expect("rpc svc counts as registered");
 }
+
+/// The tenant-wide RPC budget caps calls across sessions (review M5).
+#[tokio::test]
+async fn rpc_tenant_budget_caps_calls_across_sessions() {
+    std::env::set_var("WSPRISM_TEST_BACKEND_SECRET", "s3cret");
+    let (addr, _) = backend().await;
+    let yaml = yaml(addr).replace(
+        "max_in_flight: 2",
+        "max_in_flight: 2\n      max_in_flight_total: 1",
+    );
+    let gw = spawn(&yaml).await;
+    let (mut a, _) = connect_token(&gw, "good:ann", None).await.expect("a");
+    let (mut b, _) = connect_token(&gw, "good:ben", None).await.expect("b");
+    send_json(&mut a, json!({"v":1,"svc":"game","type":"hang","seq":1})).await;
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    send_json(&mut b, json!({"v":1,"svc":"game","type":"echo","seq":2})).await;
+    assert_eq!(
+        reply_for(&mut b, 2).await["data"]["code"],
+        "RESOURCE_EXHAUSTED"
+    );
+    // a's call ends (here by the 400 ms timeout: `hang` takes 800 ms)...
+    reply_for(&mut a, 1).await;
+    // ...and releases the budget: b gets through now.
+    send_json(&mut b, json!({"v":1,"svc":"game","type":"echo","seq":3})).await;
+    assert_eq!(reply_for(&mut b, 3).await["type"], "reply");
+}

@@ -201,6 +201,7 @@ tenants:
       allow: ["game:*", "shop:buy"]   # svc:type / svc:*; built-in services (room, chat, sys) are refused
       timeout_ms: 5000                # default 5000 (1-60000)
       max_in_flight: 16               # pending calls per connection (default 16)
+      max_in_flight_total: 1024       # pending calls for the whole tenant; more get RESOURCE_EXHAUSTED
       secret_env: BACKEND_SECRET      # optional: `Authorization: Bearer <value>`
       require_joined_room: true       # default: a request naming a room the session hasn't joined gets NOT_ALLOWED
     policy:

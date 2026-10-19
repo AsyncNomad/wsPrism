@@ -15,6 +15,7 @@
 use std::sync::Arc;
 
 use serde_json::{json, Value};
+use tokio::sync::Semaphore;
 use wsprism_protocol::error::{ClientCode, Result, WsPrismError};
 use wsprism_protocol::protocol::text::Envelope;
 
@@ -34,6 +35,8 @@ pub struct RpcProxy {
     rules: Vec<ExtRule>,
     max_in_flight: u32,
     require_joined_room: bool,
+    /// Tenant-wide budget of calls in flight.
+    total: Arc<Semaphore>,
 }
 
 /// A backend's own error code: `[A-Z0-9_]{1,32}` (like the catalogued ones).
@@ -75,6 +78,7 @@ impl RpcProxy {
             rules,
             max_in_flight: cfg.max_in_flight,
             require_joined_room: cfg.require_joined_room,
+            total: Arc::new(Semaphore::new(cfg.max_in_flight_total as usize)),
         })
     }
 
@@ -101,6 +105,9 @@ impl RpcProxy {
         let reply = ctx
             .defer_reply(self.max_in_flight)
             .ok_or(WsPrismError::RateLimited)?;
+        let permit = Arc::clone(&self.total).try_acquire_owned().map_err(|_| {
+            WsPrismError::ResourceExhausted("rpc backend at capacity, retry later".into())
+        })?;
         let body = json!({
             "tenant": ctx.tenant(),
             "user": ctx.user(),
@@ -113,7 +120,10 @@ impl RpcProxy {
         });
         let trace_id = ctx.trace_id().to_string();
         let this = Arc::clone(self);
-        tokio::spawn(async move { this.round_trip(body, reply, &trace_id).await });
+        tokio::spawn(async move {
+            this.round_trip(body, reply, &trace_id).await;
+            drop(permit);
+        });
         Ok(())
     }
 
