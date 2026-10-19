@@ -1,8 +1,78 @@
 # ADR 0011: Broker 경계, 메시지 이력·복구, 멀티 노드 (M3 + M4)
 
-- 상태: **채택 (개정 2, 2026-10-19)** — 외부 검토 2회 반영(「개정 2」 > 「개정 1」 > 본문 순으로 우선), 사용자 승인("진행"). 순서: 기준선 재측정 → ADR 0012(JWKS·토큰 갱신) → R1
+- 상태: **채택 (개정 2, 2026-10-19)** — 외부 검토 2회 반영(「개정 2」 > 「개정 1」 > 본문 순으로 우선), 사용자 승인("진행"). **R1 완료 (2026-10-19, 아래 「R1 구현」)**, 다음 R2
 - 관련: [ROADMAP](../ROADMAP.md) M3·M4, [ADR 0006](0006-protocol-v2.md)(v2 프레임·`member_id`), [ADR 0008](0008-m2-lite-integration.md)(티켓·서버 API), [ADR 0010](0010-presence-events.md)(presence), [HARDENING C1](../HARDENING.md)(느린 수신자는 끊고 재동기화)
 - 사용자 결정(2026-10-19): "배포는 나중에, 최대한 대기업급에 가깝게부터"
+
+## R1 구현 (2026-10-19)
+
+### 만든 것
+
+| 항목 | 위치 | 내용 |
+|---|---|---|
+| Broker 경계 (B6의 R1 연산) | `crates/wsprism-engine/src/broker/mod.rs` | `Broker` 트레이트(`mode`, `node_slot`, `publish`, `subscription`, `incoming`), `BrokerFrame`, `Subscription`, `Incoming`, `BrokerError`, `MemoryBroker`. 모듈 문서에 "실험적 — R3 전까지 외부 구현 금지" |
+| 송신 큐 (B4) | `broker/outbox.rs` | 총량 65,536 + 테넌트당 16,384 프레임. 가득 차면 Reliable Ext는 `UNAVAILABLE`, Lossy는 버림. 엔진 task 하나가 순서대로 비운다(한 번에 256개, 연속 프레임은 `publish` 한 번). `Unavailable`은 같은 호출을 백오프(50 ms→2 s)로 재시도해 순서를 지키고, `Rejected`는 버리고 센다 |
+| 경로 분기 | `RealtimeCore::publish_room` / `publish_room_except` → `route_queued` | 모든 룸 발행이 이 두 함수를 거친다(presence 이벤트, 서비스, `Publisher`, 서버 API 포함). Inline이면 지금과 같이 로컬 팬아웃, Queued면 Ext는 Broker 경유만, Hot은 로컬 먼저 + 발행 |
+| 구독 명령 (B5) | `presence.rs` `try_join`(룸 생성) / `leave_routing_and_governance`(룸 삭제) | 룸을 만들고 지우는 바로 그 shard 락 안에서 `Subscribe`/`Unsubscribe`를 송신 큐에 넣는다. 송신 큐 락은 shard 락 다음에만 잡는다(역순 없음) |
+| member id (B1) | `presence.rs` `Room::issue_member_id` | `slot << 22 \| 룸별 카운터`. 카운터는 1부터(슬롯 0이 0 = 서버 sender를 내지 않게), 한 바퀴 돈 뒤에만 살아 있는 멤버 id를 건너뛴다(선형 검색, 그 전에는 비용 0) |
+| 게이트웨이 연결 | `GatewayBuilder::broker`(숨김), `server.rs`(task 시작), 서버 API 503, `/metrics` | Queued일 때만 `wsprism_broker_outbox_refused_total`·`wsprism_broker_retries_total`·`wsprism_broker_failed_total` |
+| 검증용 Broker (B3) | `broker/testing.rs` `TestBroker`(엔진 기능 `testing`) | 아래 「바꾼 점」 3 |
+| `UNAVAILABLE` 오류 | `wsprism-protocol` `WsPrismError::Unavailable` | 기존 `ClientCode::Unavailable`에 연결 |
+
+### 설계와 다르게 한 점 (구현 중 결정)
+
+1. **`publish`·`subscription`은 비동기이고, 엔진의 task 하나만 부른다**(B6 표는 "동기, 큐에 넣기"). 큐는 이미 엔진(송신 큐)에 있으므로 Broker마다 큐를 또 두지 않는다. Redis 구현은 받은 묶음을 파이프라인 한 번으로 보내고 끝나면 반환하면 되고, 순서·재시도·할당량은 엔진이 한 곳에서 맡는다.
+2. **Inline Broker는 아예 호출하지 않는다.** B4의 "Inline: 비용 0"을 문자 그대로 지키기 위해서다. `MemoryBroker::publish`를 빈 함수로 부르는 것조차 하지 않는다. 그래서 "모든 경로가 Broker를 거치는가"(B3)는 Queued 모드에서 검증한다. 분기점이 두 함수뿐이라 Inline과 Queued가 다른 경로를 탈 수 없다.
+3. **검증용 Broker는 하나(`TestBroker`)로 두 역할을 한다.** 기록(발행 프레임·구독 명령)과 장애 주입(지연·`Unavailable`·`Rejected`·일시 정지)을 한 타입에 넣었다. 루프백은 **구독된 룸의 프레임만** 돌려준다. 그래서 구독 누락은 실제 Broker에서처럼 메시지 유실로 드러난다. 구독 명령이 상태와 맞지 않으면(이중 구독, 없는 구독 해제) `anomalies`로 센다.
+4. **게이트웨이 테스트 전체를 Queued 모드로도 돌린다** (`WSPRISM_TEST_BROKER=queued`, CI 단계 추가). 경로 테스트만으로는 놓칠 수 있는 동작 차이(순서, 응답 시점)를 기존 테스트 전부로 확인한다.
+5. **Queued 모드의 `publish_room` 반환값**(서버 API `recipients`)은 발행 시점의 로컬 멤버 수다. 클러스터 전체 수는 발행 시점에 알 수 없다. R3에서 의미를 다시 정한다.
+
+### 확인된 동작 (문서화)
+
+- **첫 입장자도 `member_joined`를 발행한다**(지금 받는 사람은 0명). 다른 노드의 멤버가 있을 수 있으므로 클러스터에서는 맞는 동작이다.
+- **룸이 비워졌다가 다시 생기면 member id가 1부터 다시 시작한다.** 룸 id(`chan`)는 새로 발급되므로 멤버십은 `(chan, member_id)`로 구분되고, SDK의 오래된 프레임 기록도 이 쌍을 키로 쓴다(`forgetSender`). SDK 테스트 하나가 "재접속 후 member id가 달라야 한다"고 가정하고 있어서 쌍을 비교하도록 고쳤다.
+- **틱 송신은 별도 룸 경로가 아니다.** 팬아웃 뒤 세션별 Hot 슬롯을 비우는 송신 측 동작이라, 들어온 프레임도 같은 로컬 팬아웃을 거쳐 슬롯에 들어간다. B3 목록의 "틱 송신"은 그래서 따로 시험하지 않는다.
+
+### R3로 넘긴 것
+
+- 다른 노드에서 온 Hot 프레임의 `chan` 재인코딩(§5). 지금은 버린다. 다른 노드가 아직 없기 때문이다.
+- `sys.gap`(구독 끊김 알림, §4), 노드 슬롯 임대(지금은 Broker가 주는 값, 기본 0), 노드 간 프레임 직렬화(§7).
+- 세션 키의 노드 간 유일성: 세션 키 끝의 `#N`은 노드별 카운터라, 다른 노드에서 온 `except`는 무시한다(원래 노드에서만 의미가 있다).
+- 송신 큐 설정 노출(`gateway.broker.outbox`): 실제 Queued Broker가 생길 때 넣는다. 지금은 `OutboxLimits` 기본값이고 빌더로만 바꿀 수 있다.
+- 종료 시 송신 큐 비우기(drain), 송신 큐 락 분할(Redis 처리량 측정 A15 뒤에 필요하면).
+
+### 테스트
+
+- 엔진 `tests/broker.rs` (9개):
+  - Ext는 Broker를 거쳐서만 도착(일시 정지 중에는 도착하지 않음).
+  - 엔진의 모든 룸 경로 기록.
+  - Hot은 로컬 먼저 전달되고 중복 전달 없음.
+  - 송신 큐가 가득 차면 Reliable `UNAVAILABLE`·Lossy 버림, 받아 둔 것은 순서대로 도착.
+  - 테넌트 몫 격리.
+  - `Unavailable` 재시도 순서와 `Rejected` 버림.
+  - **4개 스레드 경쟁 입장·퇴장 + 구독 지연에서 구독 집합이 실제 룸 집합과 같고 이상 0**.
+  - member id의 노드 슬롯, 슬롯 상한.
+- 엔진 단위 테스트: 카운터 순환 후 살아 있는 id 건너뛰기.
+- 게이트웨이 `tests/broker_paths.rs` (3개):
+  - 클라이언트 경로: 채팅, Hot relay, 입장·퇴장·연결 종료·sid 교체의 presence 이벤트.
+  - 서버 API 경로: publish Ext·Hot, disconnect.
+  - 송신 큐 포화 시 503.
+- 테스트가 결함을 잡는지 일부러 버그를 넣어 확인했다.
+  - Queued에서 Ext를 로컬에도 바로 전달하게 하면 → 5개 실패.
+  - 구독 해제를 빠뜨리면 → 1개 실패.
+
+### B2 결과 (`bench/results/icount-r1.jsonl`, `mem-r1.jsonl`)
+
+| 시나리오 | 기준선 | R1 | 변화 |
+|---|---|---|---|
+| ext | 301.7 | 299.8 | −0.6% |
+| hot | 188.2 | 189.6 | +0.7% |
+| hot_keyed | 543.4 | 544.8 | +0.3% |
+| api | 174.1 | 172.6 | −0.9% |
+| churn | 384,064 | 384,557 | +0.1% |
+| disconnect | 73,600 | 73,187 | −0.6% |
+
+모두 ±2% 안. 유휴 1만 연결의 연결당 메모리(3회 중앙값): 사용자 분산 20.96 → 20.96 KB (+0.03%), 사용자 공유 20.61 → 20.63 KB (+0.07%). +2% 기준 안.
 
 ## 개정 2 (2026-10-19): 외부 검토 2차 반영 — R1 착수 조건
 

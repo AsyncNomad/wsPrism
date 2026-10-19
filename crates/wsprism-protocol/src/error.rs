@@ -84,6 +84,10 @@ pub enum WsPrismError {
     ResourceExhausted(String),
     #[error("unsupported protocol version")]
     UnsupportedVersion,
+    /// A dependency (e.g. the cluster broker) cannot take the request now;
+    /// the client may retry.
+    #[error("unavailable: {0}")]
+    Unavailable(String),
     #[error("internal: {0}")]
     Internal(String),
 }
@@ -96,7 +100,8 @@ impl WsPrismError {
         match self {
             WsPrismError::BadRequest(m)
             | WsPrismError::NotAllowed(m)
-            | WsPrismError::ResourceExhausted(m) => m,
+            | WsPrismError::ResourceExhausted(m)
+            | WsPrismError::Unavailable(m) => m,
             WsPrismError::AuthFailed => "authentication failed",
             WsPrismError::RateLimited => "rate limited",
             WsPrismError::PayloadTooLarge => "payload too large",
@@ -115,6 +120,7 @@ impl WsPrismError {
             WsPrismError::NotAllowed(_) => ClientCode::NotAllowed,
             WsPrismError::ResourceExhausted(_) => ClientCode::ResourceExhausted,
             WsPrismError::UnsupportedVersion => ClientCode::UnsupportedVersion,
+            WsPrismError::Unavailable(_) => ClientCode::Unavailable,
             WsPrismError::Internal(_) => ClientCode::Internal,
         }
     }

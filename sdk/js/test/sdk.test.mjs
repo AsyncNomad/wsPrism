@@ -281,10 +281,13 @@ test("an expired token (4001) reconnects at once with a fresh one and rejoins", 
   assert.equal(c.willReconnect, true);
   await reopened;
   assert.equal(issued, 2, "a fresh credential per connection");
-  // Re-joined automatically, with a new membership.
+  // Re-joined automatically, with a new membership. The room emptied and
+  // was recreated, so it has a new chan; member ids count per room
+  // (ADR 0011 B1), so the pair identifies the membership.
   const rejoined = await next(a, "rejoined", () => true, 3000).catch(() => null);
   assert.ok(rejoined, "rejoined event");
-  assert.notEqual(a.rooms.get("hall").memberId, first.memberId);
+  const now = a.rooms.get("hall");
+  assert.notEqual(`${now.chan}:${now.memberId}`, `${first.chan}:${first.memberId}`);
   a.close();
 });
 

@@ -132,7 +132,10 @@ impl AppState {
         }
 
         // 2) Create core components
-        let realtime = Arc::new(RealtimeCore::new());
+        let realtime = Arc::new(match ext.broker {
+            None => RealtimeCore::new(),
+            Some((broker, limits)) => RealtimeCore::with_broker(broker, limits)?,
+        });
         let mut dispatcher = Dispatcher::new();
 
         // 3) Register built-in services (Sprint 3)
@@ -322,7 +325,7 @@ impl AppState {
     /// Extra counters that are owned by other modules (egress drop/timeouts).
     pub fn metrics_extra(&self) -> Vec<(&'static str, u64)> {
         let c = self.realtime.counters();
-        vec![
+        let mut v = vec![
             ("wsprism_egress_drop_total", c.drops()),
             (
                 "wsprism_egress_slow_consumer_closes_total",
@@ -330,6 +333,15 @@ impl AppState {
             ),
             ("wsprism_hot_slot_overwritten_total", c.slot_overwrites()),
             ("wsprism_hot_slot_full_drops_total", c.slot_full_drops()),
-        ]
+        ];
+        // Queued broker only (ADR 0011 B4).
+        if let Some(b) = self.realtime.broker_counters() {
+            v.extend([
+                ("wsprism_broker_outbox_refused_total", b.refused()),
+                ("wsprism_broker_retries_total", b.retries()),
+                ("wsprism_broker_failed_total", b.failed()),
+            ]);
+        }
+        v
     }
 }

@@ -1,6 +1,6 @@
 //! Server-side cost sampling from /proc (CPU time, resident memory).
 
-/// Linux USER_HZ: /proc/<pid>/stat CPU times are in these ticks.
+/// Linux USER_HZ: `/proc/<pid>/stat` CPU times are in these ticks.
 const CLK_TCK: f64 = 100.0;
 
 #[derive(Debug, Clone, Copy)]

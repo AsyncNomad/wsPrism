@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::session_registry::Connection;
+use crate::broker::{BrokerOutbox, Subscription, NODE_SLOT_BITS};
 use wsprism_protocol::error::{Result, WsPrismError};
 
 /// Atomically replace the value with `f(value)` (CAS loop); `None` from `f`
@@ -88,6 +89,49 @@ pub struct Departed {
 struct Room {
     id: u32,
     members: Vec<Member>,
+    /// Next member counter (low bits of a member id, ADR 0011 B1).
+    next_member: u32,
+    /// The counter has wrapped: new ids must skip live members' ids.
+    wrapped: bool,
+}
+
+/// Bits of a member id counted per room (the rest is the node slot).
+const MEMBER_BITS: u32 = 32 - NODE_SLOT_BITS;
+const MEMBER_MASK: u32 = (1 << MEMBER_BITS) - 1;
+
+impl Room {
+    fn new(id: u32) -> Self {
+        Self {
+            id,
+            members: Vec::new(),
+            next_member: 1,
+            wrapped: false,
+        }
+    }
+
+    /// A member id no live member of this room has: `slot | counter`
+    /// (ADR 0011 B1). The counter starts at 1, so slot 0 never issues 0
+    /// (the server's `sender`). Until the counter first wraps (~4.2 million
+    /// joins of this room on this node) ids are fresh by construction; after
+    /// that, live members' ids are skipped.
+    fn issue_member_id(&mut self, slot: u32) -> Result<u32> {
+        for _ in 0..MEMBER_MASK {
+            let c = self.next_member;
+            if c == MEMBER_MASK {
+                self.next_member = 1;
+                self.wrapped = true;
+            } else {
+                self.next_member = c + 1;
+            }
+            let id = slot | c;
+            if !self.wrapped || !self.members.iter().any(|m| m.member_id == id) {
+                return Ok(id);
+            }
+        }
+        Err(WsPrismError::ResourceExhausted(
+            "no free member id in this room".into(),
+        ))
+    }
 }
 
 /// Room presence: `room_key -> members`, `session_key -> rooms`.
@@ -112,16 +156,26 @@ pub struct Presence {
     // O(1) Counters
     tenant_room_counts: DashMap<String, AtomicU64>,
 
-    // Id sources. Room ids live as long as the room (no table of past names
-    // to grow); member ids are per join. u32 wrap-around after ~4 billion
-    // rooms/joins is accepted (collisions need both to still be live).
+    // Room ids live as long as the room (no table of past names to grow);
+    // u32 wrap-around after ~4 billion rooms is accepted (a collision needs
+    // both rooms to still be live). Member ids are per room (`Room`).
     next_room_id: AtomicU32,
-    next_member_id: AtomicU32,
+    /// This node's slot, pre-shifted into a member id's top bits.
+    slot_bits: u32,
+    /// Queued broker: where room creation/removal records its
+    /// (un)subscription, under the same shard lock (ADR 0011 B5).
+    outbox: Option<Arc<BrokerOutbox>>,
 }
 
 impl Presence {
-    /// No rooms yet.
+    /// No rooms yet (single node: slot 0, no broker subscriptions).
     pub fn new() -> Self {
+        Self::with_routing(0, None)
+    }
+
+    /// For node `slot` (already validated), recording subscriptions into
+    /// `outbox` if the broker is queued.
+    pub(crate) fn with_routing(slot: u16, outbox: Option<Arc<BrokerOutbox>>) -> Self {
         Self {
             room_to_sessions: DashMap::new(),
             session_to_rooms: DashMap::new(),
@@ -130,7 +184,8 @@ impl Presence {
             user_room_refs: DashMap::new(),
             tenant_room_counts: DashMap::new(),
             next_room_id: AtomicU32::new(1),
-            next_member_id: AtomicU32::new(1),
+            slot_bits: u32::from(slot) << MEMBER_BITS,
+            outbox,
         }
     }
 
@@ -188,24 +243,31 @@ impl Presence {
         // --- 3. Routing. Creating the room set reserves a tenant room slot
         //        atomically, under the room's shard lock.
         let session_key = Arc::clone(&member.key);
-        let member_id = self.next_member_id.fetch_add(1, Ordering::Relaxed);
-        let member = Member {
-            member_id,
-            ..member
-        };
-        let room_id = match self.room_to_sessions.entry(room_key.to_string()) {
+        let (room_id, member_id) = match self.room_to_sessions.entry(room_key.to_string()) {
             Entry::Occupied(mut room) => {
-                room.get_mut().members.push(member);
-                room.get().id
+                let room = room.get_mut();
+                let member_id = room.issue_member_id(self.slot_bits)?;
+                room.members.push(Member {
+                    member_id,
+                    ..member
+                });
+                (room.id, member_id)
             }
             Entry::Vacant(slot) => {
                 self.reserve_room_slot(tenant_id, limits.max_rooms_total)?;
-                let id = self.next_room_id.fetch_add(1, Ordering::Relaxed);
-                slot.insert(Room {
-                    id,
-                    members: vec![member],
+                let mut room = Room::new(self.next_room_id.fetch_add(1, Ordering::Relaxed));
+                let member_id = room.issue_member_id(self.slot_bits)?;
+                room.members.push(Member {
+                    member_id,
+                    ..member
                 });
-                id
+                let id = room.id;
+                slot.insert(room);
+                // Still under the shard lock: commands keep the real order.
+                if let Some(outbox) = &self.outbox {
+                    outbox.push_sub(Subscription::Subscribe(Arc::from(room_key)));
+                }
+                (id, member_id)
             }
         };
         add_to_set(&self.session_to_rooms, &session_key, room_key);
@@ -284,7 +346,14 @@ impl Presence {
                         member_id: m.member_id,
                     });
                 }
-                room.members.is_empty()
+                let empty = room.members.is_empty();
+                if empty {
+                    // Under the shard lock, like the Subscribe (B5).
+                    if let Some(outbox) = &self.outbox {
+                        outbox.push_sub(Subscription::Unsubscribe(Arc::from(room_key)));
+                    }
+                }
+                empty
             })
             .is_some();
         if room_dropped {
@@ -323,6 +392,13 @@ impl Presence {
         if let Some(room) = self.room_to_sessions.get(room_key) {
             room.members.iter().for_each(&mut f);
         }
+    }
+
+    /// How many sessions are in the room.
+    pub fn member_count(&self, room_key: &str) -> usize {
+        self.room_to_sessions
+            .get(room_key)
+            .map_or(0, |r| r.members.len())
     }
 
     /// The room's id, if the room exists (has members).
@@ -592,5 +668,33 @@ mod tests {
         assert_eq!(again, a);
         assert!(!new_again, "a repeated join is not a new membership");
         assert_eq!(p.membership("t::r", "t::u2::b"), Some(b));
+    }
+
+    /// ADR 0011 B1: after the per-room counter wraps, new ids skip the ids
+    /// of members still in the room, never issue 0, and keep the node slot.
+    #[test]
+    fn member_ids_skip_live_members_after_the_counter_wraps() {
+        let p = Presence::with_routing(3, None);
+        let join = |s: &str| {
+            p.try_join("t", "t::r", "t::u", member(s), &limits())
+                .unwrap()
+                .0
+                .member_id
+        };
+        let slot = 3 << MEMBER_BITS;
+        let first = join("t::u::s1"); // counter 1, stays in the room
+        let second = join("t::u::s2"); // counter 2, stays too
+        assert_eq!((first, second), (slot | 1, slot | 2));
+        // Jump to the end of the counter.
+        p.room_to_sessions.get_mut("t::r").unwrap().next_member = MEMBER_MASK - 1;
+        assert_eq!(join("t::u::s3"), slot | (MEMBER_MASK - 1));
+        assert_eq!(join("t::u::s4"), slot | MEMBER_MASK);
+        // Wraps to 1 and 2 (live: skipped), then 3.
+        assert_eq!(join("t::u::s5"), slot | 3);
+        // Once a live member leaves, its id may be issued again.
+        p.leave("t", "t::r", "t::u", "t::u::s1");
+        p.room_to_sessions.get_mut("t::r").unwrap().next_member = 1;
+        assert_eq!(join("t::u::s6"), slot | 1);
+        assert_eq!(join("t::u::s7"), slot | 4);
     }
 }

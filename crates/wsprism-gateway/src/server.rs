@@ -31,6 +31,8 @@ pub async fn serve_with_api(
     });
     let app = router::build_router(state.clone());
     let _sweeper = AbortOnDrop(tokio::spawn(sweeper(state.clone())));
+    // Queued broker: outbox drain and incoming frames (none for one node).
+    let _broker = state.realtime().start();
     let socket = &state.cfg().gateway.socket;
     axum::serve(
         listener,

@@ -2647,6 +2647,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "wsprism-engine",
  "wsprism-protocol",
 ]
 

@@ -20,6 +20,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tokio::net::TcpListener;
+use wsprism_engine::broker::{Broker, OutboxLimits};
 use wsprism_engine::{HotService, TextService};
 use wsprism_protocol::error::{Result, WsPrismError};
 
@@ -38,6 +39,8 @@ pub(crate) struct Extensions {
     pub(crate) text: Vec<Arc<dyn TextService>>,
     pub(crate) hot: Vec<Arc<dyn HotService>>,
     pub(crate) auth_plugins: HashMap<String, AuthPluginFactory>,
+    /// `None` = the single-node `MemoryBroker`.
+    pub(crate) broker: Option<(Arc<dyn Broker>, OutboxLimits)>,
 }
 
 /// Collects config and extensions; [`GatewayBuilder::build`] validates
@@ -81,6 +84,15 @@ impl GatewayBuilder {
         F: Fn(&serde_json::Value) -> Result<Arc<dyn Authenticator>> + Send + Sync + 'static,
     {
         self.ext.auth_plugins.insert(name.into(), Arc::new(factory));
+        self
+    }
+
+    /// Route room traffic through `broker` (ADR 0011). **Experimental**:
+    /// the broker trait changes until the Redis broker ships (R3); for this
+    /// repository's tests only.
+    #[doc(hidden)]
+    pub fn broker(mut self, broker: Arc<dyn Broker>, limits: OutboxLimits) -> Self {
+        self.ext.broker = Some((broker, limits));
         self
     }
 

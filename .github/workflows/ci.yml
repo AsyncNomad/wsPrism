@@ -41,6 +41,13 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      # The gateway suite again, room traffic through a queued loopback
+      # broker (ADR 0011 B3): queued mode must behave like one node.
+      - name: Test (queued broker)
+        run: cargo test -p wsprism-gateway --locked
+        env:
+          WSPRISM_TEST_BROKER: queued
+
   # Minimum supported Rust version (workspace rust-version; ADR 0009 §5-4).
   msrv:
     runs-on: ubuntu-latest

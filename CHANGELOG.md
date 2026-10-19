@@ -25,7 +25,8 @@ the Rust API may break in 0.x minor releases, always listed here.
 - JWT keys from the issuer's JWKS URL (`jwks_url`), picked by `kid`, refreshed
   in the background and refetched on rotation.
 - In-band token refresh (`sys.refresh`): renew an expiring credential without
-  reconnecting; the SDK does it automatically at 80% of the lifetime.
+  reconnecting; the SDK does it automatically at a random 70–90% of the
+  lifetime.
 - Server API on a separate listener (`/api/v1/publish`, `/disconnect`,
   `/tickets`, `/rooms/{room}/presence`) with SHA-256-hashed API keys.
 - `/metrics` is served on the internal listener (`gateway.api.listen`), not
@@ -44,12 +45,18 @@ the Rust API may break in 0.x minor releases, always listed here.
 - `policy.hot_echo_to_sender: false` relays Hot state to everyone but the sender;
   services get `RealtimeCtx::publish_room_others`.
 - Room names are limited to 1-128 bytes without control characters; `max_rooms_per_user` defaults to 64.
+- Server API publish answers 503 + `Retry-After` when a cluster broker's queue
+  is full (not reachable with the single-node default).
 
 ### Rust API
 - `wsprism` facade with `Gateway::builder()`: add your own `TextService` /
   `HotService` and authenticator plugins; `prelude`.
 - API levels: stable (facade), SPI (`wsprism_engine::spi`, unstable),
   internal. MSRV 1.95.
+- Broker boundary (`wsprism_engine::broker`, **experimental** until the Redis
+  broker ships; ADR 0011 R1). One node uses the inline `MemoryBroker`, which
+  costs nothing. Member ids (Hot `sender`) are now a node slot plus a per-room
+  counter, unique among a room's live members across a cluster.
 
 ### Clients
 - JavaScript SDK (`sdk/js`, no dependencies, Node 22+ and browsers): tickets
@@ -58,7 +65,7 @@ the Rust API may break in 0.x minor releases, always listed here.
 - Example app `examples/chat-and-state` (Node backend + SDK).
 
 ### Known limitations
-- Single node (no shared room state across gateways yet).
-- Fan-out micro-benchmark is 8–12% slower than before the crate split until
-  the release profile is tuned (ADR 0009 §6).
-- No in-band token refresh: clients reconnect with a new credential (4001).
+- Single node: the broker boundary is in place (ADR 0011 R1), but no
+  cluster broker ships yet, so gateways do not share rooms.
+- Embedders should build with `codegen-units = 1` like this workspace
+  (fan-out micro-benchmark −9–10% otherwise; docs/API.md).

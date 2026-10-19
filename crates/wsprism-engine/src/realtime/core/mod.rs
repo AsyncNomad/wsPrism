@@ -12,7 +12,7 @@ mod signals;
 pub use hot_slot::{HotSlot, Put, SlotKey, DEFAULT_SLOT_CAP};
 pub use presence::{Departed, Joined, Member, Presence};
 pub use realtime::{
-    CtxIdentity, DeferredReply, EgressCounters, MemberInfo, MemberSnapshot, Publisher,
+    BrokerTasks, CtxIdentity, DeferredReply, EgressCounters, MemberInfo, MemberSnapshot, Publisher,
     RealtimeCore, RealtimeCtx, MAX_SNAPSHOT_MEMBERS,
 };
 pub use session_registry::{Connection, SessionRegistry};

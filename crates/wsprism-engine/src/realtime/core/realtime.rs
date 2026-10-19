@@ -5,6 +5,10 @@
 //! intentionally lock-free; small temporary overshoots are possible under high
 //! contention to preserve throughput.
 
+use crate::broker::{
+    run_outbox, Broker, BrokerFrame, BrokerMode, BrokerOutbox, Incoming, MemoryBroker,
+    OutboxCounters, OutboxLimits, MAX_NODE_SLOT,
+};
 use crate::realtime::core::{
     now_ms, CloseRequest, Connection, Departed, Joined, Member, Presence, Put, SessionRegistry,
 };
@@ -12,7 +16,7 @@ use crate::realtime::types::{close_code, CloseSpec, OutFrame, Outgoing, Payload,
 use crate::sys;
 use crate::RoomLimits;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tokio::sync::mpsc::error::TrySendError;
 use wsprism_protocol::error::ClientCode;
 use wsprism_protocol::error::{Result, WsPrismError};
@@ -62,6 +66,10 @@ pub struct RealtimeCore {
     /// Room membership.
     pub presence: Arc<Presence>,
     counters: EgressCounters,
+    broker: Arc<dyn Broker>,
+    /// `Some` iff the broker is queued: room frames go through it.
+    outbox: Option<Arc<BrokerOutbox>>,
+    node_slot: u16,
 }
 
 impl Default for RealtimeCore {
@@ -71,13 +79,65 @@ impl Default for RealtimeCore {
 }
 
 impl RealtimeCore {
-    /// Create a new realtime core with fresh registries.
+    /// Create a new realtime core with fresh registries (single node:
+    /// [`MemoryBroker`]).
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(SessionRegistry::new()),
             presence: Arc::new(Presence::new()),
             counters: EgressCounters::default(),
+            broker: Arc::new(MemoryBroker),
+            outbox: None,
+            node_slot: 0,
         }
+    }
+
+    /// A core whose room traffic goes through `broker` (ADR 0011;
+    /// experimental). A queued broker needs [`RealtimeCore::start`].
+    pub fn with_broker(broker: Arc<dyn Broker>, limits: OutboxLimits) -> Result<Self> {
+        let node_slot = broker.node_slot();
+        if node_slot > MAX_NODE_SLOT {
+            return Err(WsPrismError::BadRequest(format!(
+                "broker node slot {node_slot} is above {MAX_NODE_SLOT}"
+            )));
+        }
+        if limits.capacity == 0 || limits.per_tenant == 0 {
+            return Err(WsPrismError::BadRequest(
+                "broker outbox limits must be positive".into(),
+            ));
+        }
+        let outbox =
+            (broker.mode() == BrokerMode::Queued).then(|| Arc::new(BrokerOutbox::new(limits)));
+        Ok(Self {
+            sessions: Arc::new(SessionRegistry::new()),
+            presence: Arc::new(Presence::with_routing(node_slot, outbox.clone())),
+            counters: EgressCounters::default(),
+            broker,
+            outbox,
+            node_slot,
+        })
+    }
+
+    /// Start the broker tasks (outbox drain, incoming frames) on the current
+    /// Tokio runtime; they stop when the returned guard is dropped. Nothing to
+    /// start for an inline broker.
+    pub fn start(self: &Arc<Self>) -> BrokerTasks {
+        let mut tasks = Vec::new();
+        if let Some(outbox) = &self.outbox {
+            tasks.push(tokio::spawn(run_outbox(
+                Arc::clone(outbox),
+                Arc::clone(&self.broker),
+            )));
+            if let Some(rx) = self.broker.incoming() {
+                tasks.push(tokio::spawn(run_incoming(Arc::downgrade(self), rx)));
+            }
+        }
+        BrokerTasks(tasks)
+    }
+
+    /// The outbox's counters, if the broker is queued.
+    pub fn broker_counters(&self) -> Option<&OutboxCounters> {
+        self.outbox.as_deref().map(BrokerOutbox::counters)
     }
 
     /// This engine's egress counters (for metrics).
@@ -208,14 +268,83 @@ impl RealtimeCore {
     /// many sessions it was delivered to. Members carry
     /// their delivery handles, so this is one shard read lock per publish and
     /// a `try_send` per recipient — no lookup, key copy or handle clone.
+    ///
+    /// With a queued broker (ADR 0011 §2), Ext frames reach local members
+    /// through the broker, and the count is the local members at publish
+    /// time; Hot frames are delivered locally at once and also published. A
+    /// full outbox refuses Reliable Ext frames with `UNAVAILABLE` (Lossy
+    /// ones are dropped).
     pub fn publish_room(&self, room_key: &str, out: Outgoing) -> Result<usize> {
         let frame = OutFrame::from_payload(&out.payload)?;
+        match &self.outbox {
+            None => Ok(self.fan_out(room_key, &frame, &out.qos)),
+            Some(outbox) => self.route_queued(outbox, room_key, frame, out.qos, None),
+        }
+    }
+
+    /// Every local member of the room.
+    fn fan_out(&self, room_key: &str, frame: &OutFrame, qos: &QoS) -> usize {
         let mut n = 0;
         self.presence.for_each_member(room_key, |m| {
-            self.deliver(&m.key, &m.conn, frame.clone(), &out.qos);
+            self.deliver(&m.key, &m.conn, frame.clone(), qos);
             n += 1;
         });
-        Ok(n)
+        n
+    }
+
+    /// Every local member of the room but session `except`.
+    fn fan_out_except(&self, room_key: &str, frame: &OutFrame, qos: &QoS, except: &str) -> usize {
+        let mut n = 0;
+        self.presence.for_each_member(room_key, |m| {
+            if &*m.key != except {
+                self.deliver(&m.key, &m.conn, frame.clone(), qos);
+                n += 1;
+            }
+        });
+        n
+    }
+
+    /// The queued-broker path of every room publish (the one place it
+    /// branches off, so no room path can bypass the broker).
+    #[cold]
+    fn route_queued(
+        &self,
+        outbox: &BrokerOutbox,
+        room_key: &str,
+        frame: OutFrame,
+        qos: QoS,
+        except: Option<&str>,
+    ) -> Result<usize> {
+        let hot = matches!(frame, OutFrame::Hot(_));
+        let n = match (hot, except) {
+            (true, None) => self.fan_out(room_key, &frame, &qos),
+            (true, Some(skip)) => self.fan_out_except(room_key, &frame, &qos, skip),
+            (false, _) => self.presence.member_count(room_key),
+        };
+        let reliable = matches!(qos, QoS::Reliable);
+        let bf = BrokerFrame::new(self.node_slot, room_key, qos, frame).except(except);
+        match outbox.push_frame(bf) {
+            Ok(()) => Ok(n),
+            Err(_) if reliable && !hot => Err(WsPrismError::Unavailable(
+                "cluster broker is busy; retry".into(),
+            )),
+            // Lossy, or Hot (already delivered here): other nodes miss it.
+            Err(_) => Ok(n),
+        }
+    }
+
+    /// A frame from the broker: deliver it to this node's members.
+    fn deliver_incoming(&self, f: &BrokerFrame) {
+        let local = f.origin == self.node_slot;
+        if let OutFrame::Hot(_) = f.body {
+            // Our own Hot frames were delivered when published. Other nodes'
+            // Hot frames need this node's `chan` (ADR 0011 §5): R3.
+            return;
+        }
+        match (&f.except, local) {
+            (Some(skip), true) => self.fan_out_except(&f.room_key, &f.body, &f.qos, skip),
+            _ => self.fan_out(&f.room_key, &f.body, &f.qos),
+        };
     }
 
     /// Like [`RealtimeCore::publish_room`], but skipping the session
@@ -227,14 +356,10 @@ impl RealtimeCore {
         except: &str,
     ) -> Result<usize> {
         let frame = OutFrame::from_payload(&out.payload)?;
-        let mut n = 0;
-        self.presence.for_each_member(room_key, |m| {
-            if &*m.key != except {
-                self.deliver(&m.key, &m.conn, frame.clone(), &out.qos);
-                n += 1;
-            }
-        });
-        Ok(n)
+        match &self.outbox {
+            None => Ok(self.fan_out_except(room_key, &frame, &out.qos, except)),
+            Some(outbox) => self.route_queued(outbox, room_key, frame, out.qos, Some(except)),
+        }
     }
 
     /// Remove a closed or evicted session from every room; with `notify`
@@ -310,6 +435,29 @@ impl RealtimeCore {
                 ..out
             },
         )
+    }
+}
+
+/// The broker tasks of a core ([`RealtimeCore::start`]); dropping this
+/// stops them.
+#[must_use = "dropping the guard stops the broker tasks"]
+pub struct BrokerTasks(Vec<tokio::task::JoinHandle<()>>);
+
+impl Drop for BrokerTasks {
+    fn drop(&mut self) {
+        for t in &self.0 {
+            t.abort();
+        }
+    }
+}
+
+/// Frames from the broker to local members, until the core is gone.
+async fn run_incoming(core: Weak<RealtimeCore>, mut rx: tokio::sync::mpsc::Receiver<Incoming>) {
+    while let Some(msg) = rx.recv().await {
+        let Some(core) = core.upgrade() else { return };
+        match msg {
+            Incoming::Frame(f) => core.deliver_incoming(&f),
+        }
     }
 }
 

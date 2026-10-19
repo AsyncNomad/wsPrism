@@ -19,6 +19,7 @@
 #![warn(unreachable_pub)]
 #![warn(missing_docs)]
 
+pub mod broker;
 mod dispatch;
 mod limits;
 mod permissions;
@@ -40,8 +41,9 @@ pub use realtime::types::{Outgoing, Payload, QoS};
 pub mod spi {
     pub use crate::dispatch::Dispatcher;
     pub use crate::realtime::core::{
-        now_ms, CloseRequest, Connection, CtxIdentity, Departed, EgressCounters, HotSlot, Member,
-        Presence, Put, RealtimeCore, SessionRegistry, SessionSignals, SlotKey, DEFAULT_SLOT_CAP,
+        now_ms, BrokerTasks, CloseRequest, Connection, CtxIdentity, Departed, EgressCounters,
+        HotSlot, Member, Presence, Put, RealtimeCore, SessionRegistry, SessionSignals, SlotKey,
+        DEFAULT_SLOT_CAP,
     };
     pub use crate::realtime::types::{close_code, CloseSpec, HotOut, OutFrame, Utf8Text};
 

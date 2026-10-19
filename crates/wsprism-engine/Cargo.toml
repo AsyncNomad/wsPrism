@@ -20,3 +20,11 @@ tracing = { workspace = true }
 bytes = { workspace = true }
 dashmap = { workspace = true }
 async-trait = { workspace = true }
+
+[features]
+# Test brokers (`broker::testing`) for this repository's tests only.
+testing = []
+
+[dev-dependencies]
+# Integration tests use the test brokers.
+wsprism-engine = { path = ".", features = ["testing"] }

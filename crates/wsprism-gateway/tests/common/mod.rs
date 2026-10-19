@@ -42,6 +42,21 @@ pub struct Gateway {
     pub state: AppState,
 }
 
+/// The builder every test gateway starts from. With
+/// `WSPRISM_TEST_BROKER=queued`, room traffic goes through a queued loopback
+/// broker (ADR 0011 B3), so the whole suite checks that queued mode behaves
+/// like a single node.
+pub fn builder() -> wsprism_gateway::GatewayBuilder {
+    let b = Built::builder();
+    match std::env::var("WSPRISM_TEST_BROKER").as_deref() {
+        Ok("queued") => b.broker(
+            wsprism_engine::broker::testing::TestBroker::new(0),
+            wsprism_engine::broker::OutboxLimits::default(),
+        ),
+        _ => b,
+    }
+}
+
 /// Boot a gateway from YAML on 127.0.0.1:0.
 ///
 /// The server runs on its own OS thread and multi-thread runtime, isolated
@@ -50,7 +65,7 @@ pub struct Gateway {
 /// hanging forever.
 pub async fn spawn(yaml: &str) -> Gateway {
     let cfg = config::load_from_str(yaml).expect("test config must parse");
-    let built = Built::builder().config(cfg).build().expect("gateway");
+    let built = builder().config(cfg).build().expect("gateway");
     let state = built.__state().clone();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     listener.set_nonblocking(true).expect("nonblocking");
@@ -83,7 +98,11 @@ pub struct ApiGateway {
 /// Boot a gateway from YAML with the server API listener enabled.
 pub async fn spawn_with_api(yaml: &str) -> ApiGateway {
     let cfg = config::load_from_str(yaml).expect("test config must parse");
-    let built = Built::builder().config(cfg).build().expect("gateway");
+    spawn_built_with_api(builder().config(cfg).build().expect("gateway")).await
+}
+
+/// Serve an already built gateway with the server API listener enabled.
+pub async fn spawn_built_with_api(built: Built) -> ApiGateway {
     let state = built.__state().clone();
     let ws = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ws");
     let api = std::net::TcpListener::bind("127.0.0.1:0").expect("bind api");

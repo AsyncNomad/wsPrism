@@ -9,13 +9,14 @@ use std::sync::Arc;
 
 use axum::extract::{FromRequestParts, Path, State};
 use axum::http::request::Parts;
-use axum::http::{header::AUTHORIZATION, StatusCode};
+use axum::http::{header, header::AUTHORIZATION, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use wsprism_protocol::error::WsPrismError;
 use wsprism_protocol::protocol::hot::{encode_hot_frame_v2, HotOutV2};
 
 use crate::app_state::AppState;
@@ -172,6 +173,13 @@ async fn publish(
     };
     match core.publish_room(&room_key, out) {
         Ok(n) => Json(json!({"recipients": n})).into_response(),
+        // The cluster broker's outbox is full (ADR 0011 B4): retry later.
+        Err(e @ WsPrismError::Unavailable(_)) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, "1")],
+            Json(json!({"error": e.client_message()})),
+        )
+            .into_response(),
         Err(e) => bad_request(e.client_message()),
     }
 }
