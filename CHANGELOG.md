@@ -24,6 +24,8 @@ the Rust API may break in 0.x minor releases, always listed here.
   plugins. Per-user room permissions (subscribe / publish).
 - Server API on a separate listener (`/api/v1/publish`, `/disconnect`,
   `/tickets`, `/rooms/{room}/presence`) with SHA-256-hashed API keys.
+- `/metrics` is served on the internal listener (`gateway.api.listen`), not
+  on the public port, unless `gateway.public_metrics: true`.
 - RPC proxy: allowlisted Ext requests answered by your backend over HTTP,
   without blocking the session.
 - Startup fails when an allowlist names a service that does not exist.

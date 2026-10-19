@@ -124,6 +124,25 @@ pub async fn http(
     bearer: Option<&str>,
     body: Option<Value>,
 ) -> (u16, Value) {
+    let (status, body) = http_raw(addr, method, path, bearer, body).await;
+    // Bodies are small; chunked encoding is not used for them by axum here,
+    // but tolerate it by finding the JSON object.
+    let json = body
+        .find('{')
+        .and_then(|i| body[i..].rfind('}').map(|j| &body[i..i + j + 1]))
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or(Value::Null);
+    (status, json)
+}
+
+/// Status and raw body of an HTTP/1.1 request.
+pub async fn http_raw(
+    addr: SocketAddr,
+    method: &str,
+    path: &str,
+    bearer: Option<&str>,
+    body: Option<Value>,
+) -> (u16, String) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut tcp = TcpStream::connect(addr).await.expect("api connect");
     let body = body.map(|b| b.to_string()).unwrap_or_default();
@@ -147,14 +166,7 @@ pub async fn http(
         .and_then(|s| s.parse().ok())
         .expect("status code");
     let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
-    // Bodies are small; chunked encoding is not used for them by axum here,
-    // but tolerate it by finding the JSON object.
-    let json = body
-        .find('{')
-        .and_then(|i| body[i..].rfind('}').map(|j| &body[i..i + j + 1]))
-        .and_then(|j| serde_json::from_str(j).ok())
-        .unwrap_or(Value::Null);
-    (status, json)
+    (status, body.to_string())
 }
 
 pub fn ws_url(addr: SocketAddr, tenant: &str, sid: Option<&str>) -> String {

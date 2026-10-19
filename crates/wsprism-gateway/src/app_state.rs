@@ -107,6 +107,12 @@ impl AppState {
             }
         }
 
+        if !cfg.gateway.public_metrics && cfg.gateway.api.is_none() {
+            tracing::warn!(
+                "metrics are not served: set gateway.api.listen (internal listener) or gateway.public_metrics"
+            );
+        }
+
         // Authentication chains.
         let tickets = Arc::new(TicketStore::default());
         let backend = Backend::new()?;

@@ -76,7 +76,7 @@ INFO wsprism_gateway: wsprism-gateway starting listen=0.0.0.0:8080 config=wspris
 ```bash
 curl http://localhost:8080/healthz   # ok
 curl http://localhost:8080/readyz    # ready (503 while draining)
-curl http://localhost:8080/metrics   # Prometheus metrics
+curl http://127.0.0.1:8081/metrics   # Prometheus metrics (internal listener gateway.api.listen; not on the public port)
 ```
 
 ### 4. Connect

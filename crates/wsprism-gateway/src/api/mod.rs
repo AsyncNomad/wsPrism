@@ -31,6 +31,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/disconnect", post(disconnect))
         .route("/api/v1/tickets", post(tickets))
         .route("/api/v1/rooms/:room/presence", get(presence))
+        // Operations on the internal listener (no API key: scrapers and
+        // probes; the listener itself must not be public).
+        .route("/metrics", get(crate::ops::metrics))
+        .route("/healthz", get(crate::ops::healthz))
+        .route("/readyz", get(crate::ops::readyz))
         .with_state(state)
 }
 

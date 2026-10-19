@@ -169,6 +169,11 @@ tenants:
 
 Requests send `Authorization: Bearer <key>`; the key selects the tenant.
 
+The same internal listener also serves `/metrics`, `/healthz` and `/readyz`
+without an API key (for scrapers and probes). `/metrics` is **not** on the
+public WebSocket port unless `gateway.public_metrics: true`; health checks
+stay on both.
+
 | Endpoint | Body | Result |
 |---|---|---|
 | `POST /api/v1/publish` | `{"room": "r", "data": {...}}` (Ext, reliable by default) or `{"room": "r", "hot": {"svc": 1, "op": 2, "key": 0, "data_b64": "..."}}` (Hot, lossy by default); optional `"qos": "reliable"\|"lossy"` | `{"recipients": n}` |

@@ -16,6 +16,17 @@ gateway:
   # WebSocket server bind address (Host:Port).
   listen: "0.0.0.0:8080"
 
+  # Internal listener — never expose it publicly. Serves the server API for
+  # your backend (/api/v1/*, authenticated by tenants[].api_keys) and the
+  # operational endpoints (/metrics, /healthz, /readyz). Bind it to loopback
+  # or a private network. Omit to disable.
+  api:
+    listen: "127.0.0.1:8081"
+
+  # Also serve /metrics on the public listener above. Off by default: metrics
+  # name your tenants and reveal load.
+  public_metrics: false
+
   # Server-side heartbeat interval (Ping).
   # The gateway sends PING frames to keep connections alive through load balancers.
   # type: integer (ms)
@@ -232,4 +243,5 @@ tenants:
 
       ext_allowlist:
         - "room:*"                  # Dashboards join rooms and receive server publishes
-      # Gateway metrics are not a WebSocket service: scrape GET /metrics.
+      # Gateway metrics are not a WebSocket service: scrape GET /metrics on the
+      # internal listener (gateway.api.listen).

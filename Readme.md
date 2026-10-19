@@ -74,7 +74,7 @@ INFO wsprism_gateway: wsprism-gateway starting listen=0.0.0.0:8080 config=wspris
 ```bash
 curl http://localhost:8080/healthz   # ok
 curl http://localhost:8080/readyz    # ready (드레인 중이면 503)
-curl http://localhost:8080/metrics   # Prometheus 메트릭
+curl http://127.0.0.1:8081/metrics   # Prometheus 메트릭 (내부 리스너 gateway.api.listen — 공개 포트에는 없음)
 ```
 
 ### 4. 연결 (Connect)

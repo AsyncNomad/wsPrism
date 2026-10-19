@@ -181,3 +181,22 @@ async fn presence_lists_the_rooms_users() {
     .await;
     assert_eq!(resp["users"], json!([]));
 }
+
+/// Metrics name tenants and reveal load: internal listener only, unless
+/// `gateway.public_metrics` (review H2).
+#[tokio::test]
+async fn metrics_are_served_on_the_internal_listener_only() {
+    let gw = spawn_with_api(&yaml()).await;
+    let (status, body) = http_raw(gw.api, "GET", "/metrics", None, None).await;
+    assert_eq!(status, 200);
+    assert!(body.contains("wsprism_ws_sessions_active"), "{body}");
+    let (status, _) = http_raw(gw.addr, "GET", "/metrics", None, None).await;
+    assert_eq!(status, 404, "not on the public port");
+    let (status, _) = http_raw(gw.addr, "GET", "/healthz", None, None).await;
+    assert_eq!(status, 200, "health stays public for load balancers");
+
+    let public =
+        spawn("version: 1\ngateway: { public_metrics: true }\ntenants:\n  - id: t\n").await;
+    let (status, _) = http_raw(public.addr, "GET", "/metrics", None, None).await;
+    assert_eq!(status, 200);
+}

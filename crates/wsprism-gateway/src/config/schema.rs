@@ -81,6 +81,12 @@ pub struct GatewaySection {
     #[serde(default)]
     pub api: Option<ApiConfig>,
 
+    /// Also serve `/metrics` on the public listener. Off by default: metrics
+    /// name tenants and reveal load. They are always served on the internal
+    /// `api.listen` listener.
+    #[serde(default)]
+    pub public_metrics: bool,
+
     /// WebSocket ping interval in milliseconds.
     #[serde(default = "default_ping_interval_ms")]
     pub ping_interval_ms: u64,
@@ -205,6 +211,7 @@ impl Default for GatewaySection {
     fn default() -> Self {
         Self {
             listen: default_listen(),
+            public_metrics: false,
             ping_interval_ms: default_ping_interval_ms(),
             idle_timeout_ms: default_idle_timeout_ms(),
             writer_send_timeout_ms: default_writer_send_timeout_ms(),
