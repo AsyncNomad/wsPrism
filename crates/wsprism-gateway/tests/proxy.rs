@@ -342,7 +342,7 @@ async fn rpc_config_is_validated() {
     for (name, rpc) in cases {
         let yaml = format!("version: 1\ntenants:\n  - id: a\n    {rpc}\n");
         let built = wsprism_gateway::config::load_from_str(&yaml)
-            .and_then(wsprism_gateway::app_state::AppState::new);
+            .and_then(|c| wsprism_gateway::Gateway::builder().config(c).build());
         assert!(built.is_err(), "{name} must be rejected");
     }
     // An allowlisted rpc service passes the boot-time allowlist check.
@@ -354,6 +354,6 @@ tenants:
     policy: { ext_allowlist: ["game:move"] }
 "#;
     wsprism_gateway::config::load_from_str(ok)
-        .and_then(wsprism_gateway::app_state::AppState::new)
+        .and_then(|c| wsprism_gateway::Gateway::builder().config(c).build())
         .expect("rpc svc counts as registered");
 }

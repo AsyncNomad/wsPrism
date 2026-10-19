@@ -35,6 +35,8 @@ jsonwebtoken = { version = "9.3", default-features = false, features = ["use_pem
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
 
 [dev-dependencies]
+# Tests and benchmarks see the `internals` module (ADR 0009 §4-3).
+wsprism-gateway = { path = ".", features = ["internals"] }
 criterion = { workspace = true }
 ring = "0.17"
 tokio-tungstenite = "0.24"
@@ -45,3 +47,5 @@ harness = false
 
 [features]
 mimalloc = ["dep:mimalloc"]
+# Internals for this repository's tests, benchmarks and fuzz targets only.
+internals = []

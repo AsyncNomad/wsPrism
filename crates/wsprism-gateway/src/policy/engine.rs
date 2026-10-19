@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use wsprism_protocol::error::ClientCode;
 
-pub use crate::config::schema::{HotErrorMode, OnExceed, SessionMode};
+pub use crate::config::schema::{HotErrorMode, OnExceed};
 use crate::config::schema::{RateLimitScope, SessionPolicy, TenantPolicy, TicketSource};
 
 use super::allowlist::{
@@ -28,8 +28,6 @@ pub enum PolicyDecision {
 /// Tenant-scoped policy runtime.
 /// Construct once at startup, then share via Arc.
 pub struct TenantPolicyRuntime {
-    pub tenant_id: String,
-
     max_frame_bytes: usize,
     ext_rules: Vec<ExtRule>,
     hot_rules: Vec<HotRule>,
@@ -53,11 +51,7 @@ pub struct TenantPolicyRuntime {
 }
 
 impl TenantPolicyRuntime {
-    pub fn new(
-        tenant_id: String,
-        max_frame_bytes: usize,
-        policy: &TenantPolicy,
-    ) -> wsprism_protocol::Result<Self> {
+    pub fn new(max_frame_bytes: usize, policy: &TenantPolicy) -> wsprism_protocol::Result<Self> {
         let ext_rules = compile_ext_rules(&policy.ext_allowlist)?;
         let hot_rules = compile_hot_rules(&policy.hot_allowlist)?;
 
@@ -70,7 +64,6 @@ impl TenantPolicyRuntime {
         };
 
         Ok(Self {
-            tenant_id,
             max_frame_bytes,
             ext_rules,
             hot_rules,

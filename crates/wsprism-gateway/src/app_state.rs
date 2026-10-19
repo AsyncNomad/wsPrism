@@ -11,6 +11,7 @@ use wsprism_protocol::error::{Result, WsPrismError};
 
 use crate::auth::{AuthChain, TicketStore};
 use crate::backend::Backend;
+use crate::gateway::Extensions;
 use crate::obs::metrics::GatewayMetrics;
 use crate::rpc::RpcProxy;
 use crate::{
@@ -61,7 +62,7 @@ impl AppState {
     /// Build application state (config + compiled policies + runtimes).
     ///
     /// Returns `Result` so the binary can surface startup errors without panic.
-    pub fn new(cfg: GatewayConfig) -> Result<Self> {
+    pub(crate) fn with_extensions(cfg: GatewayConfig, ext: Extensions) -> Result<Self> {
         let metrics = Arc::new(GatewayMetrics::default());
         // Sprint 5
         let handshake = Arc::new(HandshakeDefender::new(cfg.gateway.handshake_limit.clone()));
@@ -70,14 +71,13 @@ impl AppState {
         // 1) Compile tenant policy runtimes
         let mut tenant_policy = HashMap::new();
         for t in &cfg.tenants {
-            let runtime =
-                policy::TenantPolicyRuntime::new(t.id.clone(), t.limits.max_frame_bytes, &t.policy)
-                    .map_err(|e| {
-                        WsPrismError::BadRequest(format!(
-                            "tenant policy compile failed (tenant={}): {e}",
-                            t.id
-                        ))
-                    })?;
+            let runtime = policy::TenantPolicyRuntime::new(t.limits.max_frame_bytes, &t.policy)
+                .map_err(|e| {
+                    WsPrismError::BadRequest(format!(
+                        "tenant policy compile failed (tenant={}): {e}",
+                        t.id
+                    ))
+                })?;
 
             if runtime.origins().denies_all_browsers() {
                 tracing::warn!(
@@ -115,9 +115,10 @@ impl AppState {
         let backend = Backend::new()?;
         let mut tenant_auth = HashMap::new();
         for t in &cfg.tenants {
-            let chain = AuthChain::from_config(&t.auth, &tickets, &backend).map_err(|e| {
-                WsPrismError::BadRequest(format!("tenant {}: {}", t.id, e.client_message()))
-            })?;
+            let chain = AuthChain::from_config(&t.auth, &tickets, &backend, &ext.auth_plugins)
+                .map_err(|e| {
+                    WsPrismError::BadRequest(format!("tenant {}: {}", t.id, e.client_message()))
+                })?;
             if chain.is_dev_only() {
                 tracing::warn!(
                     tenant = %t.id,
@@ -135,6 +136,27 @@ impl AppState {
         dispatcher.register_text(Arc::new(RoomService::new()));
         dispatcher.register_text(Arc::new(ChatService::new()));
         dispatcher.register_hot(Arc::new(HotRelayService::new(1)));
+
+        // User services (GatewayBuilder): may not take a built-in or an
+        // already registered name — a silent override would be worse.
+        for svc in ext.text {
+            let name = svc.svc();
+            if name == "sys" || dispatcher.text_service_name(name).is_some() {
+                return Err(WsPrismError::BadRequest(format!(
+                    "text service `{name}` is a built-in or registered twice"
+                )));
+            }
+            dispatcher.register_text(svc);
+        }
+        for svc in ext.hot {
+            let id = svc.svc_id();
+            if dispatcher.registered_hot_svcs().contains(&id) {
+                return Err(WsPrismError::BadRequest(format!(
+                    "hot service id {id} is a built-in or registered twice"
+                )));
+            }
+            dispatcher.register_hot(svc);
+        }
 
         // RPC proxies (may not claim a built-in service name).
         let room_limits = cfg

@@ -96,10 +96,6 @@ impl HandshakeDefender {
         }
     }
 
-    pub fn enabled(&self) -> bool {
-        self.cfg.enabled
-    }
-
     /// Check handshake allowance. Returns Ok if allowed.
     /// On reject, returns retry-after seconds (min 1).
     pub fn check(&self, ip: IpAddr) -> Result<(), u64> {

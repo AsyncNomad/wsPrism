@@ -1,6 +1,6 @@
 # ADR 0009: 크레이트 분리와 공개 API 정책 (M2-9)
 
-- 상태: **채택 (2026-10-16)** — 사용자 검토: 결정 1~4 승인("진행"), 5 배포 의향 있음. 단계별 구현(§7): S1 ✅ S2 ✅ S3 ✅
+- 상태: **채택 (2026-10-16)** — 사용자 검토: 결정 1~4 승인("진행"), 5 배포 의향 있음. 단계별 구현(§7): S1 ✅ S2 ✅ S3 ✅ S4 ✅
 - 관련: [ADR 0008](0008-m2-lite-integration.md) §9 M2-9, [ADR 0005](0005-session-transport-seam.md)(세션↔전송 경계), [ADR 0004](0004-product-direction.md)(쉬운 커스텀), [ROADMAP](../ROADMAP.md)
 
 ## 배경 (조사한 사실)
@@ -75,7 +75,8 @@ async fn main() -> wsprism::Result<()> {
 }
 ```
 
-- `build()`는 지금 `AppState::new`가 하는 일(검증·컴파일·allowlist↔서비스 대조)을 **사용자 서비스까지 포함해서** 한다. allowlist가 등록되지 않은 서비스를 가리키면 지금처럼 기동이 실패한다.
+- `build()`는 지금 `AppState::new`가 하는 일(검증·컴파일·allowlist↔서비스 대조)을 **사용자 서비스까지 포함해서** 한다.
+  - **정정(S4 구현 중):** 초안에 "allowlist가 등록되지 않은 서비스를 가리키면 지금처럼 기동이 실패한다"고 썼는데 틀렸다. 이 검사는 Sprint 3.5부터 **경고만** 낸다(`FAIL_FAST_ON_MISMATCH = false`). 동작을 바꾸지 않는 단계라 그대로 두었다. **제안(미결):** 기본을 실패로 바꾸기 — 이제 사용자 서비스·RPC·플러그인이 있어 allowlist 오타를 조용히 넘기는 비용이 커졌다. 사용자 결정 필요.
 - **사용자 인증기 설정:** `- kind: plugin` + `name: corp_sso` + `options: {...}` 형태로 쓴다. 내장 `kind`는 계속 `deny_unknown_fields`로 엄격하게 검사한다. 그래서 `kind: jtw` 같은 오타는 여전히 기동 오류가 된다. `options`는 플러그인 팩토리에 넘기는 자유 형식 JSON 값이다. 등록되지 않은 `name`도 기동 오류다.
 - **내장 서비스 이름은 예약한다**(`room`, `chat`, `sys`, Hot svc 1). 사용자 서비스가 같은 이름을 쓰면 `build()`가 실패한다. 조용히 덮어쓰는 것보다 낫다.
 - **dogfooding:** 배포 바이너리 `main.rs`를 이 빌더만으로 다시 쓴다. 공개 API로 서버 하나를 끝까지 만들 수 없다면 공개 API가 부족하다는 뜻이다.
@@ -103,7 +104,8 @@ gateway의 나머지 전부: `app_state`, `transport::*`, `policy::*`, `obs`, `a
 - `internals` feature를 켜면 `#[doc(hidden)] pub mod __internal`이 fuzz·벤치가 쓰는 타입만 재수출한다. fuzz 크레이트와 `hotpath` 벤치는 `required-features`로 이 feature를 켠다.
 
 **강제 장치**
-- protocol·engine·gateway 모두 `#![warn(unreachable_pub)]`(CI에서 `-D warnings`라 사실상 오류)를 켠다. 안정 API 크레이트에는 `#![warn(missing_docs)]`도 켠다.
+- protocol·engine에 `#![warn(unreachable_pub)]`(CI에서 `-D warnings`라 사실상 오류)를 켰다. **gateway에는 켜지 않았다(S4 결정):** gateway는 공개 범위를 `lib.rs`의 모듈 가시성(`pub(crate) mod`)으로 막으므로 그 안의 `pub`은 밖으로 새지 않는다. 켜면 40여 파일의 `pub`을 `pub(crate)`로 바꿔야 하고, `internals` feature가 켜질 때만 닿는 항목 때문에 feature별로 경고가 엇갈린다 — 비용 대비 얻는 것이 없다. `#![warn(missing_docs)]`는 S5(문서화)에서.
+- 테스트·벤치가 `internals`를 보는 방법: 게이트웨이가 **자기 자신을 dev-dependency로** `features = ["internals"]`와 함께 건다(cargo가 같은 패키지로 통합). `[[test]] required-features`는 기본 `cargo test`에서 테스트가 조용히 빠지므로 기각.
 - 공개 enum과 커질 수 있는 공개 구조체에는 `#[non_exhaustive]`를 붙인다 — **단, 구현(S3) 중 기준을 좁혔다.** `#[non_exhaustive]`는 우리 다른 크레이트에서도 `match`의 빠짐없음 검사를 없앤다. 그래서 쓰는 쪽이 주로 *만들거나 표시하는* 타입에만 붙인다: `ClientCode`, `WsPrismError`(✅ S3), `GatewayConfig` 계열(S4, 역직렬화로만 생성). `ProtocolVersion`·`QoS`·`Payload`·`AuthError`처럼 **새 값이 생기면 모든 처리 지점이 바뀌어야 하는 타입에는 붙이지 않는다** — 컴파일러가 빠진 처리를 잡아 주는 편이 낫고, 그런 추가는 어차피 깨는 변경으로 다룬다. `ClientCode::Unavailable`을 추가한 일이 앞쪽 기준이 필요한 사례다.
 
 ### 5. 호환성·버전 정책
@@ -138,7 +140,7 @@ gateway의 나머지 전부: `app_state`, `transport::*`, `policy::*`, `obs`, `a
 | S1 ✅ | `wsprism-core` → `wsprism-protocol` 이름 변경, 종료 코드 매핑을 protocol로 이동 (지난 기록 문서·SVG 프로파일의 옛 이름은 역사 기록이라 그대로 둔다) |
 | S2 ✅ | `wsprism-engine` 생성: realtime·dispatch·services·permissions·sys 이동, `RoomLimits` 분리(테넌트별 `Arc` 공유 — 세션마다 하던 `TenantLimits` 복제·할당 제거), 이름 변경(`HotService`·`handle_hot`, `HotRelayService`). 엔진 의존성에 axum·hyper·reqwest·ring·jwt·YAML·rustls 없음(`cargo tree` 확인). **벤치: §6 측정 결과 참고 — 팬아웃 +8~12% 미해결** |
 | S3 ✅ | protocol·engine 공개 범위 정리: 엔진 모듈 비공개화 + 루트 재수출(안정) + `spi`(불안정), `RealtimeCtx`의 서버용 메서드 `#[doc(hidden)]`·SPI 표시, `trace_id` 필드→메서드, `unreachable_pub`. 게이트웨이 모듈 정리와 `internals` feature는 테스트가 빌더로 옮겨 가는 S4로 이동 |
-| S4 | `GatewayBuilder` + `kind: plugin` + 예약 이름 검사. `main.rs`와 테스트 헬퍼를 빌더로 전환 |
+| S4 ✅ | `GatewayBuilder`(`text_service`·`hot_service`·`auth_plugin`·`build`) + `Gateway`(`serve`·`serve_on`·`metrics_text`·`session_count`·`drain`) + `kind: plugin` + 예약·중복 이름 거부. `main.rs`는 빌더만 사용. 게이트웨이 모듈 12개 `pub(crate)`, 공개는 `Gateway`·`config`·`auth`뿐. `internals` feature(`__internal`: 테스트·벤치·fuzz용 재수출). 설정 타입 21개 `#[non_exhaustive]`(다른 크레이트에서만 제약 — 게이트웨이 내부 `match` 검사는 유지). 모듈을 숨기자 드러난 죽은 코드 삭제: `context` 모듈 전체, `server::serve`, `HandshakeDefender::enabled`, `TenantPolicyRuntime.tenant_id`, codec Ping/Pong 페이로드 |
 | S5 | 파사드 `wsprism`(prelude), `docs/API.md`(공개 목록과 등급), 호환성 정책 문서, 사용자 서비스 예제(`examples/custom-service`: 빌더 + Ext 서비스 하나 + 테스트) |
 | S6 | MSRV 확정 + CI 작업 (툴체인 다운로드 승인 후) |
 

@@ -15,7 +15,8 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use wsprism_gateway::{app_state::AppState, config, server};
+use wsprism_gateway::__internal::AppState;
+use wsprism_gateway::{config, Gateway as Built};
 
 pub type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
@@ -49,8 +50,8 @@ pub struct Gateway {
 /// hanging forever.
 pub async fn spawn(yaml: &str) -> Gateway {
     let cfg = config::load_from_str(yaml).expect("test config must parse");
-    let state = AppState::new(cfg).expect("app state");
-    let served = state.clone();
+    let built = Built::builder().config(cfg).build().expect("gateway");
+    let state = built.__state().clone();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     listener.set_nonblocking(true).expect("nonblocking");
     let addr = listener.local_addr().expect("local addr");
@@ -63,7 +64,8 @@ pub async fn spawn(yaml: &str) -> Gateway {
         rt.block_on(async move {
             let listener = tokio::net::TcpListener::from_std(listener).expect("listener");
             // Same server stack as the binary (socket options, drain).
-            server::serve(listener, served, std::future::pending())
+            built
+                .serve_on(listener, None, std::future::pending())
                 .await
                 .expect("serve");
         });
@@ -81,8 +83,8 @@ pub struct ApiGateway {
 /// Boot a gateway from YAML with the server API listener enabled.
 pub async fn spawn_with_api(yaml: &str) -> ApiGateway {
     let cfg = config::load_from_str(yaml).expect("test config must parse");
-    let state = AppState::new(cfg).expect("app state");
-    let served = state.clone();
+    let built = Built::builder().config(cfg).build().expect("gateway");
+    let state = built.__state().clone();
     let ws = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ws");
     let api = std::net::TcpListener::bind("127.0.0.1:0").expect("bind api");
     ws.set_nonblocking(true).expect("nonblocking");
@@ -100,7 +102,8 @@ pub async fn spawn_with_api(yaml: &str) -> ApiGateway {
         rt.block_on(async move {
             let ws = tokio::net::TcpListener::from_std(ws).expect("ws listener");
             let api = tokio::net::TcpListener::from_std(api).expect("api listener");
-            server::serve_with_api(ws, Some(api), served, std::future::pending())
+            built
+                .serve_on(ws, Some(api), std::future::pending())
                 .await
                 .expect("serve");
         });

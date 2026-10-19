@@ -14,7 +14,8 @@
 //!
 //! The gateway is designed for panic-free operation: upstream errors surface as
 //! structured `WsPrismError` responses instead of crashing the process.
-//! This crate is consumed by the binary (`main.rs`) and by integration tests.
+//! Public API: [`Gateway`] / [`GatewayBuilder`], [`config`] and [`auth`]
+//! (ADR 0009). The binary (`main.rs`) uses nothing else.
 //! Like `wsprism-protocol`, panics/`unwrap`/`expect` are denied in library code
 //! (enforced by `cargo clippy` in CI). The binary entrypoint is exempt.
 
@@ -22,17 +23,35 @@
 #![deny(clippy::expect_used)]
 #![deny(clippy::panic)]
 
-pub mod api;
-pub mod app_state;
+// Public API (ADR 0009 §4): the builder, the config file schema and the
+// authentication extension point. Everything else is internal.
 pub mod auth;
-pub mod backend;
 pub mod config;
-pub mod context;
-pub mod ident;
-pub mod obs;
-pub mod ops;
-pub mod policy;
-pub mod router;
-pub mod rpc;
-pub mod server;
-pub mod transport;
+mod gateway;
+
+pub use gateway::{AuthPluginFactory, Gateway, GatewayBuilder};
+
+pub(crate) mod api;
+pub(crate) mod app_state;
+pub(crate) mod backend;
+pub(crate) mod ident;
+pub(crate) mod obs;
+pub(crate) mod ops;
+pub(crate) mod policy;
+pub(crate) mod router;
+pub(crate) mod rpc;
+pub(crate) mod server;
+pub(crate) mod transport;
+
+/// Internals for this repository's tests, benchmarks and fuzz targets
+/// (`--features internals`). Not an API: changes without notice.
+#[cfg(feature = "internals")]
+#[doc(hidden)]
+pub mod __internal {
+    pub use crate::app_state::AppState;
+    pub use crate::obs::metrics::GatewayMetrics;
+    pub use crate::policy::origin::OriginPolicy;
+    pub use crate::policy::TenantPolicyRuntime;
+    pub use crate::transport::client_ip::TrustedProxies;
+    pub use crate::transport::subprotocol::{Negotiated, Offered, V1};
+}

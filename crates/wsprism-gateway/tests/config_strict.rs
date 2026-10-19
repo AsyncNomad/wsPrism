@@ -118,7 +118,9 @@ fn jwt_keys_are_loaded_and_checked_at_startup() {
     std::fs::write(&not_pem, "hello").unwrap();
     let build = |link: String| {
         let yaml = format!("version: 1\ntenants:\n  - id: a\n    auth: [{link}]\n");
-        wsprism_gateway::app_state::AppState::new(config::load_from_str(&yaml).unwrap())
+        wsprism_gateway::Gateway::builder()
+            .config(config::load_from_str(&yaml).unwrap())
+            .build()
     };
     let cases = [
         (

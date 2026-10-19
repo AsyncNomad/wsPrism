@@ -41,7 +41,7 @@ impl Session {
         self.signals.touch();
         match decoded {
             // tungstenite answers pings itself; replying again would double-pong.
-            Inbound::Ping(_) | Inbound::Pong(_) => Flow::Continue(()),
+            Inbound::Ping | Inbound::Pong => Flow::Continue(()),
             Inbound::Close => Flow::Break(Exit::Peer),
             // Replies produced while handling a request carry its seq.
             Inbound::Text { env, bytes_len } => {

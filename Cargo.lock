@@ -2671,6 +2671,7 @@ dependencies = [
  "tracing-subscriber",
  "tungstenite",
  "wsprism-engine",
+ "wsprism-gateway",
  "wsprism-protocol",
 ]
 

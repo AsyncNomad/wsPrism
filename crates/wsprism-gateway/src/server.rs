@@ -1,6 +1,6 @@
 //! Serving the gateway on a bound listener: socket options, connect-info and
-//! graceful drain. The binary and the integration tests both use this, so
-//! tests exercise the same server stack that ships.
+//! graceful drain. `Gateway::serve_on` (binary, embedders, tests) runs
+//! this, so tests exercise the same server stack that ships.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -12,16 +12,8 @@ use tokio::time::Instant;
 use crate::app_state::AppState;
 use crate::router;
 
-/// Serve until `shutdown` completes, then drain (see [`drain`]).
-pub async fn serve(
-    listener: TcpListener,
-    state: AppState,
-    shutdown: impl Future<Output = ()> + Send + 'static,
-) -> std::io::Result<()> {
-    serve_with_api(listener, None, state, shutdown).await
-}
-
-/// Like [`serve`], plus the server API (ADR 0008 §3) on `api` if given.
+/// Serve until `shutdown` completes, then drain (see [`drain`]); also the
+/// server API (ADR 0008 §3) on `api` if given.
 /// The API listener stops with the process; it is not drained.
 pub async fn serve_with_api(
     listener: TcpListener,

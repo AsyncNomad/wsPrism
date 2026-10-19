@@ -11,24 +11,33 @@ use tokio::sync::mpsc;
 use wsprism_engine::spi::{Connection, Member, SessionSignals};
 use wsprism_engine::spi::{OutFrame, RealtimeCore};
 use wsprism_engine::{Outgoing, Payload, QoS};
-use wsprism_gateway::config::schema::TenantPolicy;
-use wsprism_gateway::obs::metrics::GatewayMetrics;
-use wsprism_gateway::policy::TenantPolicyRuntime;
+use wsprism_gateway::__internal::GatewayMetrics;
+use wsprism_gateway::__internal::TenantPolicyRuntime;
+use wsprism_gateway::config;
 
 fn policy(c: &mut Criterion) {
     let rules: Vec<String> = (0..9)
         .map(|i| format!("svc{i}:*"))
         .chain(["chat:send".to_string()])
         .collect();
-    let cfg = TenantPolicy {
-        ext_allowlist: rules,
-        hot_allowlist: (0..9)
-            .map(|i| format!("{i}:*"))
-            .chain(["9:10".into()])
-            .collect(),
-        ..TenantPolicy::default()
+    let quote = |v: Vec<String>| {
+        v.iter()
+            .map(|r| format!("\"{r}\""))
+            .collect::<Vec<_>>()
+            .join(", ")
     };
-    let rt = TenantPolicyRuntime::new("t".into(), 4096, &cfg).expect("policy");
+    let hot: Vec<String> = (0..9)
+        .map(|i| format!("{i}:*"))
+        .chain(["9:10".into()])
+        .collect();
+    let yaml = format!(
+        "version: 1\ntenants:\n  - id: t\n    policy:\n      ext_allowlist: [{}]\n      hot_allowlist: [{}]\n",
+        quote(rules),
+        quote(hot)
+    );
+    let parsed = config::load_from_str(&yaml).expect("bench config");
+    let cfg = parsed.tenants[0].policy.clone();
+    let rt = TenantPolicyRuntime::new(4096, &cfg).expect("policy");
 
     let mut g = c.benchmark_group("policy");
     // Worst case for the linear allowlist scan: the matching rule is last.

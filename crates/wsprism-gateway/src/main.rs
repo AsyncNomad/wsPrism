@@ -1,16 +1,15 @@
 //! wsPrism gateway binary entrypoint.
 //!
-//! Bootstraps tracing, loads configuration, builds application state, and
-//! starts the WebSocket server.
+//! Bootstraps tracing, then builds and serves the gateway through the public
+//! API only (`Gateway::builder`, ADR 0009 §3) — the same path an embedder uses.
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::Parser;
 use tracing_subscriber::{fmt, EnvFilter};
 
-use wsprism_gateway::{app_state, config, server};
+use wsprism_gateway::Gateway;
 
 /// Optional global allocator (`--features mimalloc`), measured against the
 /// system allocator before it becomes a default (performance-architecture §9).
@@ -37,8 +36,11 @@ async fn main() -> ExitCode {
     fmt().with_env_filter(EnvFilter::from_default_env()).init();
     let cli = Cli::parse();
 
-    let state = match load(&cli) {
-        Ok(state) => state,
+    let gateway = match Gateway::builder()
+        .config_file(&cli.config)
+        .and_then(|b| b.build())
+    {
+        Ok(g) => g,
         Err(e) => {
             eprintln!("{}: {}", cli.config.display(), e.client_message());
             return ExitCode::FAILURE;
@@ -48,67 +50,12 @@ async fn main() -> ExitCode {
         println!("{}: OK", cli.config.display());
         return ExitCode::SUCCESS;
     }
-
-    let listen: SocketAddr = match state.cfg().gateway.listen.parse() {
-        Ok(addr) => addr,
+    tracing::info!(config = %cli.config.display(), "wsprism-gateway starting");
+    match gateway.serve().await {
+        Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("gateway.listen must be host:port: {e}");
-            return ExitCode::FAILURE;
+            eprintln!("{}", e.client_message());
+            ExitCode::FAILURE
         }
-    };
-    let listener = match tokio::net::TcpListener::bind(listen).await {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("failed to bind {listen}: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    tracing::info!(%listen, config = %cli.config.display(), "wsprism-gateway starting");
-
-    let api = match state.cfg().gateway.api.as_ref() {
-        None => None,
-        Some(api) => match tokio::net::TcpListener::bind(&api.listen).await {
-            Ok(l) => {
-                tracing::info!(listen = %api.listen, "server api listening");
-                Some(l)
-            }
-            Err(e) => {
-                eprintln!("failed to bind gateway.api.listen {}: {e}", api.listen);
-                return ExitCode::FAILURE;
-            }
-        },
-    };
-    if let Err(e) = server::serve_with_api(listener, api, state, shutdown_signal()).await {
-        eprintln!("server failed: {e}");
-        return ExitCode::FAILURE;
-    }
-    ExitCode::SUCCESS
-}
-
-/// Parse + validate the config and build the runtime (compiles policies).
-fn load(cli: &Cli) -> wsprism_protocol::Result<app_state::AppState> {
-    let path = cli.config.to_string_lossy();
-    let cfg = config::load_from_file(&path)?;
-    app_state::AppState::new(cfg)
-}
-
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
-    };
-
-    #[cfg(unix)]
-    let term = async {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-        let _ = sigterm.recv().await;
-    };
-
-    #[cfg(not(unix))]
-    let term = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = term => {},
     }
 }

@@ -7,4 +7,4 @@ pub mod allowlist;
 pub mod engine;
 pub mod origin;
 
-pub use engine::{PolicyDecision, TenantPolicyRuntime};
+pub use engine::TenantPolicyRuntime;

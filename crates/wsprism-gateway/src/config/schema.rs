@@ -7,6 +7,7 @@ use wsprism_protocol::error::{Result, WsPrismError};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct GatewayConfig {
     /// Schema version (must be 1).
     pub version: u32,
@@ -69,6 +70,7 @@ impl GatewayConfig {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct GatewaySection {
     /// Listener address (host:port).
     #[serde(default = "default_listen")]
@@ -125,6 +127,7 @@ pub struct GatewaySection {
 /// Socket options applied to every accepted TCP connection.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct SocketConfig {
     /// Disable Nagle's algorithm (TCP_NODELAY). Keep this on for a realtime
     /// gateway: with Nagle + delayed ACKs small frames can wait tens of ms.
@@ -144,6 +147,7 @@ fn default_true() -> bool {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct HandshakeConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -271,6 +275,7 @@ fn default_drain_grace_ms() -> u64 {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct TenantConfig {
     /// Tenant identifier (namespaces policy and runtime state).
     pub id: String,
@@ -298,6 +303,7 @@ pub struct TenantConfig {
 /// The server API listener.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ApiConfig {
     /// host:port, e.g. `127.0.0.1:8081`.
     pub listen: String,
@@ -306,6 +312,7 @@ pub struct ApiConfig {
 /// A tenant API key, stored as the SHA-256 of the key (lowercase hex).
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ApiKeyConfig {
     /// For logs only.
     pub name: String,
@@ -313,8 +320,9 @@ pub struct ApiKeyConfig {
 }
 
 /// One link of a tenant's authentication chain.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Clone, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[non_exhaustive]
 pub enum AuthConfig {
     /// `dev` -> `user:dev`, `dev:<id>` -> `user:<id>`. Development only.
     Dev,
@@ -325,12 +333,27 @@ pub enum AuthConfig {
     /// Ask a backend over HTTP (ADR 0008 §6). Accepts every token, so it
     /// belongs last in the chain.
     Proxy(ProxyAuthConfig),
+    /// An authenticator registered with `GatewayBuilder::auth_plugin`
+    /// (ADR 0009 §3).
+    Plugin(PluginAuthConfig),
+}
+
+/// `kind: plugin`: `name` selects the registered factory, `options` is
+/// passed to it as-is.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct PluginAuthConfig {
+    pub name: String,
+    #[serde(default)]
+    pub options: serde_json::Value,
 }
 
 /// `kind: proxy`: `POST url {tenant, token, client_ip}` ->
 /// `200 {user, permissions?, expires_at?}` / `401`·`403`.
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct ProxyAuthConfig {
     pub url: String,
     #[serde(default = "default_connect_timeout_ms")]
@@ -356,6 +379,7 @@ fn default_connect_in_flight() -> u32 {
 /// `{data}` / `{error: {code, msg}}` comes back as `sys.reply` / `sys.error`.
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct RpcConfig {
     pub url: String,
     /// `svc:type` / `svc:*` rules (built-in services excluded).
@@ -429,6 +453,7 @@ impl RpcConfig {
 /// `secret_env` for HS*, `public_key_file` (PEM) for the others.
 #[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct JwtConfig {
     pub algorithm: JwtAlgorithm,
     #[serde(default)]
@@ -460,6 +485,7 @@ fn default_jwt_leeway_s() -> u64 {
 }
 
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum JwtAlgorithm {
     HS256,
     HS384,
@@ -526,7 +552,7 @@ impl TenantConfig {
             match a {
                 AuthConfig::Jwt(j) => j.validate(),
                 AuthConfig::Proxy(p) => p.validate(),
-                AuthConfig::Dev | AuthConfig::Ticket => Ok(()),
+                AuthConfig::Dev | AuthConfig::Ticket | AuthConfig::Plugin(_) => Ok(()),
             }
             .map_err(in_tenant)?;
         }
@@ -545,6 +571,7 @@ impl TenantConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct TenantLimits {
     /// Maximum allowed frame size for this tenant (bytes).
     #[serde(default = "default_max_frame_bytes")]
@@ -596,6 +623,7 @@ fn default_max_frame_bytes() -> usize {
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum RateLimitScope {
     Tenant,
     Connection,
@@ -608,6 +636,7 @@ fn default_rate_limit_scope() -> RateLimitScope {
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum HotErrorMode {
     SysError,
     Silent,
@@ -619,6 +648,7 @@ fn default_hot_error_mode() -> HotErrorMode {
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SessionMode {
     Single,
     Multi,
@@ -626,6 +656,7 @@ pub enum SessionMode {
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum OnExceed {
     Deny,
     KickOldest,
@@ -633,6 +664,7 @@ pub enum OnExceed {
 
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct SessionPolicy {
     #[serde(default = "default_session_mode")]
     pub mode: SessionMode,
@@ -668,6 +700,7 @@ impl Default for SessionPolicy {
 /// Defaults are STRICT (deny-by-default).
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
+#[non_exhaustive]
 pub struct TenantPolicy {
     /// Tenant-level or connection-level inbound rate limit in requests per second.
     #[serde(default = "default_rate_limit_rps")]
@@ -722,6 +755,7 @@ pub struct TenantPolicy {
 /// A place a client can carry its ticket on the upgrade request.
 #[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum TicketSource {
     /// `Authorization: Bearer <token>` (native clients).
     Header,

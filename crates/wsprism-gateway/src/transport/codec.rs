@@ -23,10 +23,10 @@ pub enum Inbound {
         frame: hot::HotFrame,
         bytes_len: usize,
     },
-    /// WS ping payload.
-    Ping(Vec<u8>),
-    /// WS pong payload.
-    Pong(Vec<u8>),
+    /// WS ping (the WebSocket layer answers it).
+    Ping,
+    /// WS pong (keep-alive answer).
+    Pong,
     /// WS close control frame (no payload surfaced).
     Close,
 }
@@ -50,8 +50,8 @@ pub fn decode(msg: Message, protocol: ProtocolVersion) -> Result<Inbound> {
             };
             Ok(Inbound::Hot { frame, bytes_len })
         }
-        Message::Ping(v) => Ok(Inbound::Ping(v)),
-        Message::Pong(v) => Ok(Inbound::Pong(v)),
+        Message::Ping(_) => Ok(Inbound::Ping),
+        Message::Pong(_) => Ok(Inbound::Pong),
         Message::Close(_) => Ok(Inbound::Close),
     }
 }

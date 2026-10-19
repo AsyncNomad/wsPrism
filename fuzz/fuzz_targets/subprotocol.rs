@@ -3,7 +3,7 @@
 
 use axum::http::{header::SEC_WEBSOCKET_PROTOCOL, HeaderMap, HeaderValue};
 use libfuzzer_sys::fuzz_target;
-use wsprism_gateway::transport::subprotocol::{Negotiated, Offered, V1};
+use wsprism_gateway::__internal::{Negotiated, Offered, V1};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(value) = HeaderValue::from_bytes(data) else {

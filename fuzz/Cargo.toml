@@ -13,7 +13,7 @@ libfuzzer-sys = "0.4"
 bytes = "1"
 axum = "0.7"
 wsprism-protocol = { path = "../crates/wsprism-protocol" }
-wsprism-gateway = { path = "../crates/wsprism-gateway" }
+wsprism-gateway = { path = "../crates/wsprism-gateway", features = ["internals"] }
 
 # Fuzzing needs nightly; keep it out of the main (stable) workspace.
 [workspace]

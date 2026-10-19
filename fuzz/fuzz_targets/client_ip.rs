@@ -5,7 +5,7 @@ use std::net::IpAddr;
 
 use axum::http::{HeaderMap, HeaderValue};
 use libfuzzer_sys::fuzz_target;
-use wsprism_gateway::transport::client_ip::TrustedProxies;
+use wsprism_gateway::__internal::TrustedProxies;
 
 fuzz_target!(|data: &[u8]| {
     let Ok(value) = HeaderValue::from_bytes(data) else {

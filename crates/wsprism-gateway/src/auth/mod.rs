@@ -92,6 +92,7 @@ impl AuthChain {
         auth: &[AuthConfig],
         tickets: &Arc<TicketStore>,
         backend: &crate::backend::Backend,
+        plugins: &std::collections::HashMap<String, crate::gateway::AuthPluginFactory>,
     ) -> BuildResult<Self> {
         if auth.is_empty() {
             return Ok(Self::new(vec![Arc::new(DevAuthenticator)]));
@@ -104,6 +105,15 @@ impl AuthChain {
                     AuthConfig::Ticket => Arc::new(TicketAuthenticator::new(Arc::clone(tickets))),
                     AuthConfig::Jwt(j) => Arc::new(JwtAuthenticator::from_config(j)?),
                     AuthConfig::Proxy(p) => Arc::new(ProxyAuthenticator::from_config(p, backend)?),
+                    AuthConfig::Plugin(p) => {
+                        let factory = plugins.get(&p.name).ok_or_else(|| {
+                            wsprism_protocol::WsPrismError::BadRequest(format!(
+                                "auth plugin `{}` is not registered (GatewayBuilder::auth_plugin)",
+                                p.name
+                            ))
+                        })?;
+                        factory(&p.options)?
+                    }
                 })
             })
             .collect::<BuildResult<_>>()?;
@@ -192,7 +202,8 @@ mod tests {
         assert!(AuthChain::from_config(
             &[],
             &Arc::default(),
-            &crate::backend::Backend::new().unwrap()
+            &crate::backend::Backend::new().unwrap(),
+            &Default::default()
         )
         .unwrap()
         .is_dev_only());
