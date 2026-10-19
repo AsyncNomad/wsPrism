@@ -84,7 +84,7 @@ tenants:
   - id: acme
     auth:
       - kind: ticket     # one-time `wpt_...` tickets from POST /api/v1/tickets
-      - kind: dev        # development only: `dev` -> user dev, `dev:<id>` -> user <id>
+      - kind: dev        # development only: `dev` -> user dev, `dev:<id>` / `dev.<id>` -> user <id> (browsers: `dev.<id>`)
 ```
 
 Whatever the authenticator (built-in or plugin), the user id it returns must

@@ -25,6 +25,8 @@ async fn authed_user(ticket: &str) -> Result<String, String> {
 async fn named_dev_ticket_maps_to_its_own_user() {
     assert_eq!(authed_user("dev").await.as_deref(), Ok("dev"));
     assert_eq!(authed_user("dev:alice").await.as_deref(), Ok("alice"));
+    // Subprotocol-safe form (`:` is not an HTTP token character).
+    assert_eq!(authed_user("dev.alice").await.as_deref(), Ok("alice"));
 }
 
 #[tokio::test]
@@ -32,5 +34,25 @@ async fn malformed_dev_tickets_are_rejected() {
     for t in ["dev:", "dev:a::b", "dev:has.dot", "devx"] {
         let r = authed_user(t).await;
         assert!(r.as_ref().is_err_and(|e| e.contains("401")), "{t:?}: {r:?}");
+    }
+}
+
+/// Browsers can only carry a ticket in the subprotocol, where `:` is not
+/// allowed: `dev.<id>` works there.
+#[tokio::test]
+async fn dev_ticket_via_subprotocol() {
+    let gw = spawn(BASE_YAML).await;
+    let (mut ws, _) = try_connect_with(
+        &ws_url(gw.addr, "t", None),
+        &[(
+            "sec-websocket-protocol",
+            "wsprism.v2.json, wsprism.auth.dev.alice",
+        )],
+    )
+    .await
+    .expect("connect");
+    match next_event(&mut ws).await {
+        Event::Json(v) => assert_eq!(v["data"]["user"], "alice", "{v}"),
+        other => panic!("{other:?}"),
     }
 }

@@ -3,10 +3,6 @@
 - [Design Philosophy](intro/philosophy.md)
 - [Getting Started](intro/getting_started.md)
 
-# User Guide
+# Reference
 - [Configuration](guide/configuration.md)
-
-# Architecture
-- [Overview](architecture/overview.md)
-- [Dual Lane Protocol](architecture/dual_lane.md)
-- [Policy Engine](architecture/policy.md)
+- [Architecture and Decisions](architecture/overview.md)
