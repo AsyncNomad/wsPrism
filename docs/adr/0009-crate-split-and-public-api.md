@@ -1,6 +1,6 @@
 # ADR 0009: 크레이트 분리와 공개 API 정책 (M2-9)
 
-- 상태: **채택 (2026-10-16)** — 사용자 검토: 결정 1~4 승인("진행"), 5 배포 의향 있음. 단계별 구현(§7): S1 ✅ S2 ✅ S3 ✅ S4 ✅ S5 ✅
+- 상태: **채택 (2026-10-16)** — 사용자 검토: 결정 1~4 승인("진행"), 5 배포 의향 있음. 단계별 구현(§7): S1~S6 ✅
 - 관련: [ADR 0008](0008-m2-lite-integration.md) §9 M2-9, [ADR 0005](0005-session-transport-seam.md)(세션↔전송 경계), [ADR 0004](0004-product-direction.md)(쉬운 커스텀), [ROADMAP](../ROADMAP.md)
 
 ## 배경 (조사한 사실)
@@ -142,7 +142,7 @@ gateway의 나머지 전부: `app_state`, `transport::*`, `policy::*`, `obs`, `a
 | S3 ✅ | protocol·engine 공개 범위 정리: 엔진 모듈 비공개화 + 루트 재수출(안정) + `spi`(불안정), `RealtimeCtx`의 서버용 메서드 `#[doc(hidden)]`·SPI 표시, `trace_id` 필드→메서드, `unreachable_pub`. 게이트웨이 모듈 정리와 `internals` feature는 테스트가 빌더로 옮겨 가는 S4로 이동 |
 | S4 ✅ | `GatewayBuilder`(`text_service`·`hot_service`·`auth_plugin`·`build`) + `Gateway`(`serve`·`serve_on`·`metrics_text`·`session_count`·`drain`) + `kind: plugin` + 예약·중복 이름 거부. `main.rs`는 빌더만 사용. 게이트웨이 모듈 12개 `pub(crate)`, 공개는 `Gateway`·`config`·`auth`뿐. `internals` feature(`__internal`: 테스트·벤치·fuzz용 재수출). 설정 타입 21개 `#[non_exhaustive]`(다른 크레이트에서만 제약 — 게이트웨이 내부 `match` 검사는 유지). 모듈을 숨기자 드러난 죽은 코드 삭제: `context` 모듈 전체, `server::serve`, `HandshakeDefender::enabled`, `TenantPolicyRuntime.tenant_id`, codec Ping/Pong 페이로드 |
 | S5 ✅ | 파사드 `wsprism`(안정 API 재수출 + `prelude`, `async_trait`·`serde_json` 재수출 — 응답 타입이 `serde_json::Value`라 버전을 맞추기 위해), `docs/API.md`(등급·확장 방법·호환성 정책), 예제 `crates/wsprism/examples/room_counter.rs`(cargo example — 별도 `examples/custom-service` 대신 파사드 크레이트의 예제로: `cargo build`가 늘 컴파일해 썩지 않는다), 파사드만 쓰는 E2E 테스트(`crates/wsprism/tests/custom_service.rs`), 엔진 `missing_docs`(64개 문서화) |
-| S6 | MSRV 확정 + CI 작업 (툴체인 다운로드 승인 후) |
+| S6 ✅ | MSRV **1.95** (2026-04-14 릴리스, 당시 stable 1.99에서 6개월 전). 1.95로 워크스페이스 전체 `check --all-targets` 통과 확인, `rust-version` 워크스페이스 상속, CI `msrv` 작업. `resolver = "3"`(MSRV 인식: `cargo update`가 rust-version에 맞는 버전을 우선 — 의존성 갱신이 MSRV를 몰래 올리지 않게; lock 변화 없음 확인). 툴체인 다운로드 사용자 승인(2026-10-19) |
 
 ## 기각한 대안
 

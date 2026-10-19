@@ -36,6 +36,16 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+  # Minimum supported Rust version (workspace rust-version; ADR 0009 §5-4).
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95
+      - uses: Swatinem/rust-cache@v2
+      - name: Check on the MSRV
+        run: cargo check --workspace --all-targets --locked
+
   # JS SDK against a real gateway process (sdk/js/run-tests.sh).
   # Node: every non-EOL LTS line the SDK supports (engines: >=22).
   sdk-js:

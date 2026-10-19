@@ -80,7 +80,13 @@ old one.
 - Server API `/api/v1/*`, and the connect and RPC proxy request/response shapes ([CONFIG.md](CONFIG.md))
 - Config file `version: 1`. Unknown fields are rejected, so new fields always come with a default.
 
+## Minimum supported Rust version
+
+**1.95** (`rust-version` in the workspace; a CI job checks it). Policy: a
+stable release at least 6 months old. Raising it is not a breaking change in
+0.x, but it is listed in the changelog. Dependency updates use Cargo's
+MSRV-aware resolver (`resolver = "3"`), so they don't raise it silently.
+
 ## Not decided yet
 
-- **MSRV** (minimum supported Rust version): to be pinned with a CI job before the first release (ADR 0009 §5-4).
 - **Semver checks in CI** (`cargo-semver-checks`) start with the first crates.io release.

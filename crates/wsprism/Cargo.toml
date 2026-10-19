@@ -2,6 +2,7 @@
 name = "wsprism"
 version = "0.1.0"
 edition = "2021"
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "wsPrism realtime gateway: build a gateway with your own services and authenticators (the crate to depend on)"
