@@ -3,7 +3,6 @@
 //! Parses allowlists, enforces size/rate limits, and exposes connection-level
 //! limiters as needed by the transport layer.
 
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use wsprism_protocol::error::ClientCode;
@@ -204,25 +203,49 @@ impl ConnRateLimiter {
     }
 }
 
-/// Minimal token-bucket limiter (tenant-level, shared).
+/// Tenant-wide limiter shared by every session of the tenant: lock-free
+/// GCRA (one atomic "theoretical arrival time"), equivalent to a token
+/// bucket of capacity `burst` refilled at `rps`. Replaces a mutex every
+/// message of the tenant went through.
 struct RateLimiter {
-    inner: Arc<Mutex<TokenBucket>>,
+    /// Nanoseconds since `epoch` at which the bucket would be full again.
+    tat: std::sync::atomic::AtomicU64,
+    epoch: Instant,
+    interval_ns: u64,
+    tolerance_ns: u64,
 }
 
 impl RateLimiter {
     fn new(rps: u32, burst: u32) -> Self {
+        let interval_ns = 1_000_000_000 / u64::from(rps.max(1));
         Self {
-            inner: Arc::new(Mutex::new(TokenBucket::new(rps, burst))),
+            tat: std::sync::atomic::AtomicU64::new(0),
+            epoch: Instant::now(),
+            interval_ns,
+            // A full bucket admits `burst` at once.
+            tolerance_ns: interval_ns * u64::from(burst.max(1)),
         }
     }
 
     fn allow(&self) -> bool {
-        // Poisoned mutex means logic bug; treat as "deny" instead of panic.
-        // (enterprise: never bring down gateway)
-        if let Ok(mut g) = self.inner.lock() {
-            g.allow()
-        } else {
-            false
+        self.allow_at(self.epoch.elapsed().as_nanos() as u64)
+    }
+
+    fn allow_at(&self, now: u64) -> bool {
+        use std::sync::atomic::Ordering;
+        let mut tat = self.tat.load(Ordering::Relaxed);
+        loop {
+            let next = tat.max(now) + self.interval_ns;
+            if next - now > self.tolerance_ns {
+                return false;
+            }
+            match self
+                .tat
+                .compare_exchange_weak(tat, next, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return true,
+                Err(actual) => tat = actual,
+            }
         }
     }
 }
@@ -285,8 +308,40 @@ impl TokenBucket {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tenant_gcra_admits_the_burst_then_the_rate() {
+        let l = RateLimiter::new(10, 3); // 100 ms per token, burst 3
+        let admitted = (0..10).filter(|_| l.allow_at(0)).count();
+        assert_eq!(admitted, 3, "burst");
+        assert!(
+            !l.allow_at(50_000_000),
+            "half an interval later: still empty"
+        );
+        assert!(l.allow_at(100_000_000), "one interval later: one token");
+        assert!(!l.allow_at(100_000_000));
+        // Long idle refills to the burst, not beyond.
+        let later = 10_000_000_000;
+        assert_eq!((0..10).filter(|_| l.allow_at(later)).count(), 3);
+    }
+
+    #[test]
+    fn tenant_gcra_is_exact_under_contention() {
+        let l = std::sync::Arc::new(RateLimiter::new(1, 1000));
+        let admitted: usize = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8)
+                .map(|_| {
+                    let l = std::sync::Arc::clone(&l);
+                    s.spawn(move || (0..500).filter(|_| l.allow_at(0)).count())
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).sum()
+        });
+        assert_eq!(admitted, 1000);
+    }
 
     fn drained(rps: u32, burst: u32) -> (TokenBucket, Instant) {
         let mut b = TokenBucket::new(rps, burst);
