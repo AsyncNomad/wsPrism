@@ -426,6 +426,7 @@ impl RealtimeCtx {
     /// Join `room`, enforcing the tenant's room limits. Returns the room id
     /// and this membership's id (protocol v2 `chan` / `sender`).
     pub fn join_room(&mut self, room: &str) -> Result<Joined> {
+        crate::limits::validate_room_name(room)?;
         if !self.permissions.can_subscribe(room) {
             return Err(WsPrismError::NotAllowed(
                 "not allowed to join that room".into(),

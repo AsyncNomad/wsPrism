@@ -25,9 +25,6 @@ use wsprism_engine::spi::{close_code, CloseSpec, HotOut};
 use wsprism_engine::spi::{CloseRequest, RealtimeCore};
 use wsprism_engine::{Outgoing, Payload, QoS};
 
-/// Longest room name accepted from the API.
-const MAX_ROOM_LEN: usize = 256;
-
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/publish", post(publish))
@@ -85,7 +82,9 @@ fn bad_request(msg: &str) -> Response {
 
 /// The error response for an unacceptable room name, if it is one.
 fn room_error(room: &str) -> Option<Response> {
-    (room.is_empty() || room.len() > MAX_ROOM_LEN).then(|| bad_request("room must be 1-256 bytes"))
+    wsprism_engine::validate_room_name(room)
+        .err()
+        .map(|e| bad_request(e.client_message()))
 }
 
 #[derive(Deserialize)]

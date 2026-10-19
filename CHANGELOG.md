@@ -27,6 +27,7 @@ the Rust API may break in 0.x minor releases, always listed here.
 - RPC proxy: allowlisted Ext requests answered by your backend over HTTP,
   without blocking the session.
 - Startup fails when an allowlist names a service that does not exist.
+- Room names are limited to 1-128 bytes without control characters; `max_rooms_per_user` defaults to 64.
 
 ### Rust API
 - `wsprism` facade with `Gateway::builder()`: add your own `TextService` /

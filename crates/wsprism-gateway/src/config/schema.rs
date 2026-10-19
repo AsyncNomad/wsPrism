@@ -590,7 +590,8 @@ pub struct TenantLimits {
     #[serde(default)]
     pub max_users_per_room: u64,
     /// Max unique rooms a single user can join. 0 = unlimited.
-    #[serde(default)]
+    /// Default 64; `0` = unlimited (each joined room costs memory).
+    #[serde(default = "default_max_rooms_per_user")]
     pub max_rooms_per_user: u64,
 }
 
@@ -612,9 +613,13 @@ impl Default for TenantLimits {
             max_sessions_total: 0,
             max_rooms_total: 0,
             max_users_per_room: 0,
-            max_rooms_per_user: 0,
+            max_rooms_per_user: default_max_rooms_per_user(),
         }
     }
+}
+
+fn default_max_rooms_per_user() -> u64 {
+    64
 }
 
 fn default_max_frame_bytes() -> usize {

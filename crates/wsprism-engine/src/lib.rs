@@ -27,7 +27,7 @@ pub mod services;
 mod sys;
 
 pub use dispatch::{HotService, TextService};
-pub use limits::RoomLimits;
+pub use limits::{validate_room_name, RoomLimits, MAX_ROOM_NAME_LEN};
 pub use permissions::{Permissions, RoomPattern};
 pub use realtime::core::{DeferredReply, Joined, RealtimeCtx};
 pub use realtime::types::{Outgoing, Payload, QoS};

@@ -33,6 +33,15 @@ roadmap milestone M6.
 
 ---
 
+## Rooms
+
+Room names are 1-128 bytes of UTF-8 without control characters (WebSocket
+clients and the server API alike). `limits.max_rooms_per_user` defaults to
+**64** (`0` = unlimited): every joined room costs memory in several indices,
+so an unbounded default would let one client grow it without limit.
+
+---
+
 ## Allowlists must name existing services
 
 Every `svc` in `policy.ext_allowlist` must be a built-in service (`room`,
