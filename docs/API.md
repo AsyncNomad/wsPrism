@@ -41,7 +41,9 @@ Your binary also needs `tokio` (with `macros`, `rt-multi-thread`).
 - **Services** implement `TextService` (`svc()` + `handle(ctx, envelope)`) or
   `HotService` (`svc_id()` + `handle_hot(ctx, frame)`). Return `Err` to send the
   client a `sys.error`. Use the `RealtimeCtx` to reply, publish to rooms,
-  join or leave rooms, or `defer_reply` to answer later from another task.
+  join or leave rooms. From another task (a timer, a backend call), answer
+  with `defer_reply` and send with `publisher()`; the context itself is not
+  `Clone`, because room membership only changes on the session's own task.
 - **Names:** `room`, `chat`, `sys` and Hot id `1` are built in. Registering
   one of them, or the same name twice, fails `build()`.
 - **Allowlists still apply:** a tenant must list your `svc:type` in

@@ -50,8 +50,8 @@ pub use serde_json;
 pub use wsprism_gateway::{auth, config, AuthPluginFactory, Gateway, GatewayBuilder};
 
 pub use wsprism_engine::{
-    services, DeferredReply, HotService, Joined, Outgoing, Payload, Permissions, QoS, RealtimeCtx,
-    RoomLimits, RoomPattern, TextService,
+    services, DeferredReply, HotService, Joined, Outgoing, Payload, Permissions, Publisher, QoS,
+    RealtimeCtx, RoomLimits, RoomPattern, TextService,
 };
 
 pub use wsprism_protocol::error::ClientCode;

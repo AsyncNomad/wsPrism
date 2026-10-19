@@ -245,13 +245,57 @@ impl Drop for DeferredReply {
     }
 }
 
+fn check_publish(permissions: &Permissions, room: &str) -> Result<()> {
+    if permissions.can_publish(room) {
+        Ok(())
+    } else {
+        Err(WsPrismError::NotAllowed(
+            "not allowed to publish to that room".into(),
+        ))
+    }
+}
+
+/// Sends on behalf of one session from any task (see
+/// [`RealtimeCtx::publisher`]). Cheap to clone.
+#[derive(Clone)]
+pub struct Publisher {
+    core: Arc<RealtimeCore>,
+    tenant: Arc<str>,
+    user_key: Arc<str>,
+    permissions: Arc<Permissions>,
+}
+
+impl Publisher {
+    /// Publish to `room`, dropped for recipients whose queue is full. Requires publish permission.
+    pub fn publish_room_lossy(&self, room: &str, out: Outgoing) -> Result<usize> {
+        check_publish(&self.permissions, room)?;
+        self.core
+            .publish_room_lossy(&RealtimeCore::room_key(&self.tenant, room), out)
+    }
+
+    /// Publish to `room`; a recipient whose queue is full is closed as a slow consumer. Requires publish permission.
+    pub fn publish_room_reliable(&self, room: &str, out: Outgoing) -> Result<usize> {
+        check_publish(&self.permissions, room)?;
+        self.core
+            .publish_room_reliable(&RealtimeCore::room_key(&self.tenant, room), out)
+    }
+
+    /// Send to every session of this user.
+    pub fn send_to_user(&self, out: Outgoing) -> Result<()> {
+        self.core.send_to_user(&self.user_key, out)
+    }
+}
+
 /// A session's view of the realtime core, handed to services.
 ///
 /// One context lives for the whole session (owned by the session task) and
 /// is lent to services as `&mut RealtimeCtx`, so services can update
 /// session-scoped state such as the active room without locks, and nothing
-/// is re-allocated per message. Clone it to use it from a spawned task.
-#[derive(Clone)]
+/// is re-allocated per message.
+///
+/// Not `Clone`: room membership must only change on the session's own task
+/// (presence relies on it). From a spawned task, answer with
+/// [`RealtimeCtx::defer_reply`] and send with [`RealtimeCtx::publisher`].
 pub struct RealtimeCtx {
     tenant: Arc<str>,
     user: Arc<str>,
@@ -411,16 +455,22 @@ impl RealtimeCtx {
             })
     }
 
+    /// A handle for sending from another task (a timer, a backend call):
+    /// room publishes and sends to this user, with the same permission
+    /// checks, but no membership changes.
+    pub fn publisher(&self) -> Publisher {
+        Publisher {
+            core: Arc::clone(&self.core),
+            tenant: Arc::clone(&self.tenant),
+            user_key: Arc::clone(&self.user_key),
+            permissions: Arc::new(self.permissions.clone()),
+        }
+    }
+
     /// Every publish through the context is checked against the user's
     /// publish permission, whichever service does it.
     fn check_publish(&self, room: &str) -> Result<()> {
-        if self.permissions.can_publish(room) {
-            Ok(())
-        } else {
-            Err(WsPrismError::NotAllowed(
-                "not allowed to publish to that room".into(),
-            ))
-        }
+        check_publish(&self.permissions, room)
     }
 
     /// Join `room`, enforcing the tenant's room limits. Returns the room id
@@ -504,5 +554,64 @@ impl RealtimeCtx {
         self.check_publish(room)?;
         let rk = self.room_key(room);
         self.core.publish_room_reliable(&rk, out).map(|_| ())
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use crate::realtime::core::SessionSignals;
+    use tokio::sync::mpsc;
+
+    fn ctx(
+        core: &Arc<RealtimeCore>,
+        permissions: Permissions,
+    ) -> (RealtimeCtx, mpsc::Receiver<OutFrame>) {
+        let (tx, rx) = mpsc::channel(8);
+        let conn = Connection {
+            tx,
+            signals: SessionSignals::new(),
+        };
+        let id = CtxIdentity {
+            tenant: "t".into(),
+            user: "u".into(),
+            session_id: "s".into(),
+            session_key: "t::u::s#1".into(),
+            trace_id: "tr".into(),
+            protocol: ProtocolVersion::V2,
+            permissions,
+        };
+        (
+            RealtimeCtx::new(id, Arc::default(), conn, Arc::clone(core)),
+            rx,
+        )
+    }
+
+    fn text(s: &str) -> Outgoing {
+        Outgoing {
+            qos: QoS::Reliable,
+            payload: Payload::TextJson(serde_json::json!(s)),
+        }
+    }
+
+    #[tokio::test]
+    async fn publisher_sends_from_another_task_with_the_same_permission_checks() {
+        let core = Arc::new(RealtimeCore::new());
+        let (mut c, mut rx) = ctx(&core, Permissions::restricted(&["*"], &["open"]));
+        c.join_room("open").unwrap();
+        c.join_room("closed").unwrap();
+        let p = c.publisher();
+        let n = tokio::spawn(async move {
+            assert!(
+                p.publish_room_reliable("closed", text("x")).is_err(),
+                "no publish permission"
+            );
+            p.publish_room_reliable("open", text("hi")).unwrap()
+        })
+        .await
+        .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(rx.recv().await, Some(OutFrame::text("\"hi\"".into())));
     }
 }
