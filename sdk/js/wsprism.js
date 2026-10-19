@@ -148,8 +148,8 @@ export class WsPrismClient {
     this.pending = new Map(); // seq -> {resolve, reject, timer}
     this.rooms = new Map(); // room -> {chan, memberId} (null until joined)
     this.chanRoom = new Map(); // chan -> room
-    this.lastSeen = new Map(); // `${chan}:${sender}:${key}` -> seq
-    this.stateSeq = new Map(); // `${room}:${key}` -> next seq to send
+    this.lastSeen = new Map(); // `${chan}:${sender}:${svc}:${key}` -> seq (the server's slot key)
+    this.stateSeq = new Map(); // `${room}:${svc}:${key}` -> next seq to send
     this.attempt = 0;
     this.stopped = false;
   }
@@ -259,7 +259,7 @@ export class WsPrismClient {
     const f = decodeHot(data);
     if (!f) return;
     if (f.seq !== undefined) {
-      const k = `${f.chan}:${f.sender ?? 0}:${f.key ?? "-"}`;
+      const k = `${f.chan}:${f.sender ?? 0}:${f.svc}:${f.key ?? "-"}`;
       const last = this.lastSeen.get(k);
       if (last !== undefined && !seqNewer(f.seq, last)) return; // stale or duplicate
       this.lastSeen.set(k, f.seq);
@@ -363,8 +363,17 @@ export class WsPrismClient {
   async leave(room) {
     const info = this.rooms.get(room);
     this.rooms.delete(room);
-    if (info) this.chanRoom.delete(info.chan);
+    if (info) {
+      this.chanRoom.delete(info.chan);
+      this.forgetChan(info.chan);
+    }
     await this.request("room", "leave", { room });
+  }
+
+  /** Drop stale-frame bookkeeping for a room id (left, or rejoined under a new id). */
+  forgetChan(chan) {
+    const prefix = `${chan}:`;
+    for (const k of this.lastSeen.keys()) if (k.startsWith(prefix)) this.lastSeen.delete(k);
   }
 
   /** Backend RPC (`tenants[].rpc`): resolves with the reply's `data`. */
@@ -381,7 +390,7 @@ export class WsPrismClient {
     const info = this.rooms.get(room);
     if (!info || info.chan === undefined) throw new WsPrismError("NOT_JOINED", `not joined: ${room}`);
     if (!this.ws || this.state !== "open") throw new WsPrismError("NOT_CONNECTED", "not connected");
-    const k = `${room}:${key}`;
+    const k = `${room}:${svc}:${key}`;
     const seq = this.stateSeq.get(k) ?? 1;
     this.stateSeq.set(k, (seq + 1) >>> 0);
     this.ws.send(encodeHot({ chan: info.chan, svc, op, key, seq, payload }));

@@ -32,7 +32,7 @@ client.sendState("match:42", { svc: 1, op: 1, key: 0, payload: new Uint8Array([1
 - **Credentials** go in the `Sec-WebSocket-Protocol` header (`wsprism.auth.<ticket>`), never in the URL. Tickets must be HTTP token characters (one-time `wpt_` tickets and JWTs are).
 - **Requests** (`request`, `join`, `leave`, `rpc`) get a `seq` and resolve with the matching `reply_to`. Gateway or backend errors reject with `WsPrismError` (`err.code`). `send` doesn't wait; its errors arrive as `error` events.
 - **Reconnects** follow the close-code ranges: 40xx stop (a backend disconnect, a replaced session, policy...). The exception is `4001 auth_expired`, which reconnects at once with a fresh `getTicket()`. 41xx reconnect after exponential backoff with jitter (1 s to 30 s). 42xx reconnect at once. Network failures, rejected handshakes and a failing `getTicket()` back off (a `TICKET_FAILED` error event is emitted). Joined rooms are re-joined after a reconnect (`rejoined` event); room `chan` and `memberId` may change.
-- **State** (Hot lane): frames older than the last `seq` seen for the same `(room, sender, key)` are dropped (u32 wraparound aware). `sendState` numbers frames per key.
+- **State** (Hot lane): frames older than the last `seq` seen for the same `(room, sender, svc, key)` (the gateway's own conflation key) are dropped (u32 wraparound aware). `sendState` numbers frames per key.
 
 There is no in-band token refresh: when a token expires the gateway closes the connection with 4001, and the client reconnects with a new token.
 

@@ -308,3 +308,25 @@ test("a failing getTicket during reconnect is retried with backoff", async () =>
   assert.ok(errors.some((e) => e.code === "TICKET_FAILED"), "the failure is reported");
   a.close();
 });
+
+test("stale-frame dropping is per (room, sender, svc, key)", () => {
+  const c = new WsPrismClient({ url: "ws://x", tenant: "t", getTicket: () => "", WebSocket: class {} });
+  const got = [];
+  c.on("state", (s) => got.push(`${s.svc}:${s.seq}`));
+  // A server frame = client layout + sender before the payload.
+  const server = (svc, seq) => {
+    const f = encodeHot({ chan: 9, svc, op: 1, key: 0, seq, payload: new Uint8Array([1]) });
+    const out = new Uint8Array(f.length + 4);
+    out.set(f.subarray(0, 16));
+    out[1] |= 0x04;
+    new DataView(out.buffer).setUint32(16, 3, true);
+    out.set(f.subarray(16), 20);
+    return out;
+  };
+  c.onBinary(server(1, 5));
+  c.onBinary(server(2, 1)); // other svc, same key: its own sequence
+  c.onBinary(server(1, 4)); // stale for svc 1
+  assert.deepEqual(got, ["1:5", "2:1"]);
+  c.forgetChan(9);
+  assert.equal(c.lastSeen.size, 0);
+});
