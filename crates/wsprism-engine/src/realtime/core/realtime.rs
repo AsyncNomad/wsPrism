@@ -332,10 +332,22 @@ pub struct RealtimeCtx {
     protocol: ProtocolVersion,
     /// What this user may do with rooms (ADR 0008 §2).
     permissions: Permissions,
-    /// Rooms this session has joined, with their ids (small; linear scan).
-    joined: Vec<(Arc<str>, Joined)>,
+    /// Rooms this session has joined (small; linear scan), with what the
+    /// per-message paths need precomputed.
+    joined: Vec<JoinedRoom>,
     hot_echo_to_sender: bool,
     core: Arc<RealtimeCore>,
+}
+
+/// A joined room as the session keeps it: the internal key and the publish
+/// permission are computed once at join, so publishing into a joined room
+/// (every Hot frame, every chat message) allocates nothing and scans no
+/// patterns.
+struct JoinedRoom {
+    name: Arc<str>,
+    key: Arc<str>,
+    ids: Joined,
+    can_publish: bool,
 }
 
 /// Who a session is, fixed for its lifetime (input to [`RealtimeCtx::new`]).
@@ -426,8 +438,12 @@ impl RealtimeCtx {
         self.active_room = room.map(Arc::from);
     }
 
-    fn room_key(&self, room: &str) -> String {
-        RealtimeCore::room_key(self.tenant(), room)
+    /// The internal key of `room`: cached for joined rooms, built otherwise.
+    fn room_key(&self, room: &str) -> std::borrow::Cow<'_, str> {
+        match self.joined.iter().find(|j| &*j.name == room) {
+            Some(j) => std::borrow::Cow::Borrowed(&j.key),
+            None => std::borrow::Cow::Owned(RealtimeCore::room_key(self.tenant(), room)),
+        }
     }
 
     /// `seq` of the request currently being handled, if the client sent one.
@@ -494,7 +510,13 @@ impl RealtimeCtx {
     /// Every publish through the context is checked against the user's
     /// publish permission, whichever service does it.
     fn check_publish(&self, room: &str) -> Result<()> {
-        check_publish(&self.permissions, room)
+        match self.joined.iter().find(|j| &*j.name == room) {
+            Some(j) if j.can_publish => Ok(()),
+            Some(_) => Err(WsPrismError::NotAllowed(
+                "not allowed to publish to that room".into(),
+            )),
+            None => check_publish(&self.permissions, room),
+        }
     }
 
     /// Join `room`, enforcing the tenant's room limits. Returns the room id
@@ -506,7 +528,7 @@ impl RealtimeCtx {
                 "not allowed to join that room".into(),
             ));
         }
-        let rk = self.room_key(room);
+        let rk = self.room_key(room).into_owned();
         let member = Member {
             key: Arc::clone(&self.session_key),
             conn: self.conn.clone(),
@@ -519,8 +541,13 @@ impl RealtimeCtx {
             member,
             &self.limits,
         )?;
-        if !self.joined.iter().any(|(r, _)| &**r == room) {
-            self.joined.push((Arc::from(room), joined));
+        if !self.joined.iter().any(|j| &*j.name == room) {
+            self.joined.push(JoinedRoom {
+                name: Arc::from(room),
+                key: Arc::from(rk),
+                ids: joined,
+                can_publish: self.permissions.can_publish(room),
+            });
         }
         Ok(joined)
     }
@@ -532,13 +559,13 @@ impl RealtimeCtx {
     #[doc(hidden)]
     pub fn hot_target(&self, frame: &HotFrame) -> Option<(&str, Joined)> {
         let found = match frame.chan {
-            Some(chan) => self.joined.iter().find(|(_, j)| j.room_id == chan),
+            Some(chan) => self.joined.iter().find(|j| j.ids.room_id == chan),
             None => {
                 let active = self.active_room()?;
-                self.joined.iter().find(|(r, _)| &**r == active)
+                self.joined.iter().find(|j| &*j.name == active)
             }
         };
-        found.map(|(r, j)| (&**r, *j))
+        found.map(|j| (&*j.name, j.ids))
     }
 
     /// True if this session has joined `room`.
@@ -549,12 +576,12 @@ impl RealtimeCtx {
 
     /// Leave `room` (no-op if not joined).
     pub fn leave_room(&mut self, room: &str) {
-        if let Some((_, j)) = self.joined.iter().find(|(r, _)| &**r == room) {
+        if let Some(j) = self.joined.iter().find(|j| &*j.name == room) {
             // Nothing from the room may reach the client after its sys.left.
-            self.conn.signals.hot.purge_room(j.room_id);
+            self.conn.signals.hot.purge_room(j.ids.room_id);
         }
-        self.joined.retain(|(r, _)| &**r != room);
-        let rk = self.room_key(room);
+        let rk = self.room_key(room).into_owned();
+        self.joined.retain(|j| &*j.name != room);
         self.core
             .presence
             .leave(self.tenant(), &rk, self.user_key(), self.session_key());
