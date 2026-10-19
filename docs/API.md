@@ -84,6 +84,22 @@ old one.
 - Server API `/api/v1/*`, and the connect and RPC proxy request/response shapes ([CONFIG.md](CONFIG.md))
 - Config file `version: 1`. Unknown fields are rejected, so new fields always come with a default.
 
+## Performance note for embedders
+
+Cargo uses the build profile of the **top-level** workspace, so wsPrism's own
+release profile does not reach a binary that depends on it. For the same
+fan-out performance as the official binary, set in your `Cargo.toml`:
+
+```toml
+[profile.release]
+codegen-units = 1
+```
+
+Without it the room fan-out micro-benchmark is about 10% slower (how LLVM
+inlines tokio's channel send into the fan-out loop depends on codegen-unit
+partitioning). End to end the difference is about 0.1%, since fan-out is
+roughly 1% of a delivery's cost.
+
 ## Minimum supported Rust version
 
 **1.95** (`rust-version` in the workspace; a CI job checks it). Policy: a

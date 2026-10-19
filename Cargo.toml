@@ -48,6 +48,16 @@ async-trait = "0.1"
 ipnet = "2"
 
 # CPU profiling builds (bench/profile-gateway.sh): release codegen plus symbols.
+# One codegen unit for release builds (ADR 0009 §6): with the default 16,
+# LLVM's inlining of tokio's mpsc send path into the fan-out loop depends on
+# how units are partitioned, and the fan-out micro-benchmark is 9-10% slower
+# (#[inline] on our functions does not help - the decision is inside tokio).
+# Applies to binaries built from this workspace; embedders set it in their
+# own profile (docs/API.md). End-to-end effect is ~0.1% (fan-out is ~1% of a
+# delivery's cost).
+[profile.release]
+codegen-units = 1
+
 [profile.profiling]
 inherits = "release"
 debug = "line-tables-only"
