@@ -148,6 +148,7 @@ async fn refresh_cannot_change_the_user_and_bad_tokens_keep_the_session() {
     let (mut ws, _) = connect(&gw, "j", &jwt("alice", 60, None)).await;
     send_json(&mut ws, refresh(&jwt("mallory", 60, None), 1)).await;
     assert_eq!(reply_for(&mut ws, 1).await["data"]["code"], "AUTH_FAILED");
+    tokio::time::sleep(Duration::from_millis(1100)).await; // refresh rate limit
     send_json(&mut ws, refresh("not-a-token", 2)).await;
     assert_eq!(reply_for(&mut ws, 2).await["data"]["code"], "AUTH_FAILED");
     send_json(&mut ws, json!({"svc":"sys","type":"refresh","seq":3})).await;
@@ -225,4 +226,21 @@ async fn slow_authentication_does_not_block_the_session_and_one_refresh_at_a_tim
         Some(&1),
         "the slow refresh finishes last: {order:?}"
     );
+}
+
+#[tokio::test]
+async fn refresh_attempts_are_rate_limited() {
+    let gw = gateway().await;
+    let (mut ws, _) = connect(&gw, "j", &jwt("alice", 60, None)).await;
+    send_json(&mut ws, refresh(&jwt("alice", 60, None), 1)).await;
+    assert_eq!(reply_for(&mut ws, 1).await["type"], "refreshed");
+    send_json(&mut ws, refresh(&jwt("alice", 60, None), 2)).await;
+    assert_eq!(
+        reply_for(&mut ws, 2).await["data"]["code"],
+        "RATE_LIMITED",
+        "within 1 s"
+    );
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    send_json(&mut ws, refresh(&jwt("alice", 60, None), 3)).await;
+    assert_eq!(reply_for(&mut ws, 3).await["type"], "refreshed");
 }

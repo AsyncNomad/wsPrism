@@ -28,6 +28,7 @@ pub(crate) struct JwksCache {
     alg: Algorithm,
     refresh: Duration,
     min_refetch: Duration,
+    max_stale: Duration,
     /// `None` until a fetch succeeded once.
     keys: RwLock<Option<KeySet>>,
     epoch: Instant,
@@ -44,6 +45,7 @@ impl JwksCache {
         alg: Algorithm,
         refresh: Duration,
         min_refetch: Duration,
+        max_stale: Duration,
     ) -> Result<Self> {
         Ok(Self {
             backend: backend.clone(),
@@ -51,6 +53,7 @@ impl JwksCache {
             alg,
             refresh,
             min_refetch,
+            max_stale,
             keys: RwLock::new(None),
             epoch: Instant::now(),
             last_attempt_ms: AtomicU64::new(0),
@@ -64,8 +67,26 @@ impl JwksCache {
         self.epoch.elapsed().as_millis() as u64 + 1
     }
 
+    /// The key set, unless it is older than `max_stale` (then the keys are
+    /// no longer trusted: a revoked key must not outlive a JWKS outage).
     fn current(&self) -> Option<KeySet> {
-        self.keys.read().unwrap_or_else(|p| p.into_inner()).clone()
+        let keys = self
+            .keys
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()?;
+        let age = self
+            .now_ms()
+            .saturating_sub(self.last_success_ms.load(Ordering::Relaxed));
+        if age > self.max_stale.as_millis() as u64 {
+            tracing::warn!(
+                url = %self.endpoint.url(),
+                age_s = age / 1000,
+                "jwks: keys older than jwks_max_stale_s and no refresh succeeded; refusing tokens"
+            );
+            return None;
+        }
+        Some(keys)
     }
 
     /// Claim the right to fetch now if the last attempt is old enough.
@@ -88,7 +109,7 @@ impl JwksCache {
             self.fetch().await;
         }
         let Some(keys) = self.current() else {
-            return Err(AuthError::Unavailable("jwks not loaded yet"));
+            return Err(AuthError::Unavailable("jwks not loaded (or too stale)"));
         };
         self.refresh_if_stale();
         if let Some(k) = keys.get(kid) {

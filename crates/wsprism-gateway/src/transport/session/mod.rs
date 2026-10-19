@@ -151,6 +151,8 @@ struct Session {
     refresh_tx: Option<mpsc::Sender<refresh::RefreshOutcome>>,
     /// A refresh is being authenticated (one at a time).
     refresh_pending: bool,
+    /// When the last refresh attempt started (rate limit).
+    last_refresh: Option<std::time::Instant>,
     /// Unregisters the session when dropped.
     _cleanup: SessionCleanup,
 }

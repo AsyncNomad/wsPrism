@@ -177,7 +177,9 @@ connection. It must be for the **same user** (else `AUTH_FAILED`). The new
 token's room permissions replace the old ones at once: joined rooms it no
 longer allows are left (`sys.left`). On failure (`AUTH_FAILED`, or
 `UNAVAILABLE` when the auth backend is down) the session continues until the
-old expiry, then closes with 4001. One refresh at a time (`RATE_LIMITED`).
+old expiry, then closes with 4001 (no grace period, even while a refresh is
+in flight). A new token with an *earlier* expiry is accepted as is. One
+refresh at a time and at most one per second per connection (`RATE_LIMITED`).
 `sys.refresh` is not subject to the tenant allowlist; the connection rate
 limit applies.
 

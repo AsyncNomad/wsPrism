@@ -24,6 +24,8 @@ export const PROTOCOL = "wsprism.v2.json";
 const AUTH_PREFIX = "wsprism.auth.";
 
 const HOT_KIND = 0x01;
+/** The gateway accepts at most one sys.refresh per second per connection. */
+const MIN_REFRESH_GAP_MS = 1100;
 const F_KEY = 0x01;
 const F_SEQ = 0x02;
 const F_SENDER = 0x04;
@@ -426,15 +428,18 @@ export class WsPrismClient {
   }
 
   /**
-   * Renew the credential before it expires (ADR 0012): at 80% of its
-   * lifetime, get a fresh one from getTicket() and send sys.refresh. If that
+   * Renew the credential before it expires (ADR 0012): at a random point
+   * between 70% and 90% of its lifetime (so clients that connected together
+   * don't all hit the token backend at once), get a fresh one from getTicket() and send sys.refresh. If that
    * fails it retries; at expiry the gateway closes with 4001 and the client
    * reconnects with a new credential anyway.
    */
   scheduleRefresh(expiresInS) {
     clearTimeout(this.refreshTimer);
     if (this.opts.refresh === false || typeof expiresInS !== "number") return;
-    const delayMs = Math.max(500, expiresInS * 800);
+    const share = 0.7 + Math.random() * 0.2;
+    // The gateway allows one refresh per second per connection.
+    const delayMs = Math.max(MIN_REFRESH_GAP_MS, expiresInS * 1000 * share);
     this.refreshTimer = setTimeout(() => this.refreshNow(), delayMs);
   }
 
@@ -449,7 +454,9 @@ export class WsPrismClient {
       this.emit("error", new WsPrismError("REFRESH_FAILED", e?.message ?? String(e)));
       if (this.state === "open") {
         clearTimeout(this.refreshTimer);
-        this.refreshTimer = setTimeout(() => this.refreshNow(), 5000);
+        // Rate limited: retry as soon as allowed; other failures back off.
+        const retryMs = e?.code === "RATE_LIMITED" ? MIN_REFRESH_GAP_MS : 5000;
+        this.refreshTimer = setTimeout(() => this.refreshNow(), retryMs);
       }
     }
   }

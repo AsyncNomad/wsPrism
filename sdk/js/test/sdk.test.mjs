@@ -352,7 +352,7 @@ test("presence events and the join snapshot", async () => {
 });
 
 
-test("expiring credentials are renewed in-band, without reconnecting", async () => {
+test("expiring credentials are renewed in-band, without reconnecting", async (t) => {
   let issued = 0;
   const a = new WsPrismClient({
     url: gw.url,
@@ -362,6 +362,7 @@ test("expiring credentials are renewed in-band, without reconnecting", async () 
       return jwt("kai", 2); // every token lives 2 s
     },
   });
+  t.after(() => a.close()); // even if an assertion fails (else its timers keep node alive)
   let closes = 0;
   a.on("close", () => (closes += 1));
   const refreshed = next(a, "refreshed", () => true, 4000);

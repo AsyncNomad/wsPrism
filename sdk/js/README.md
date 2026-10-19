@@ -36,7 +36,7 @@ client.sendState("match:42", { svc: 1, op: 1, key: 0, payload: new Uint8Array([1
 
 - **Presence** (tenants with `policy.presence_events`): `join()` resolves with `members` (who was already there), and `presence` events report `{type: "joined" | "left", room, user, memberId}` — `memberId` is the `sender` of that member's state frames, so a client can drop its avatar.
 
-- **Token refresh**: when the gateway reports `expires_in_s` (JWT, connect proxy), the client renews the credential at 80% of its lifetime with a fresh `getTicket()` and `sys.refresh` — no reconnect (`refreshed` event; `REFRESH_FAILED` errors are retried). If renewal keeps failing, the gateway closes with 4001 at expiry and the client reconnects with a new credential. `refresh: false` turns renewal off.
+- **Token refresh**: when the gateway reports `expires_in_s` (JWT, connect proxy), the client renews the credential at a random point between 70% and 90% of its lifetime (spreading the load on your token backend) with a fresh `getTicket()` and `sys.refresh` — no reconnect (`refreshed` event; `REFRESH_FAILED` errors are retried). If renewal keeps failing, the gateway closes with 4001 at expiry and the client reconnects with a new credential. `refresh: false` turns renewal off.
 
 ## Tests
 

@@ -517,6 +517,11 @@ pub struct JwtConfig {
     /// never loaded): 1-3600 s, default 30.
     #[serde(default = "default_jwks_min_refetch_s")]
     pub jwks_min_refetch_s: u64,
+    /// Stop trusting the last fetched keys once they are older than this
+    /// and no refresh succeeds (a key the IdP revoked must not stay valid
+    /// through a JWKS outage): 1-604800 s, default 86400.
+    #[serde(default = "default_jwks_max_stale_s")]
+    pub jwks_max_stale_s: u64,
     /// If set, only tokens whose header `kid` equals it are this link's
     /// (others pass to the next link) — chain two links to rotate keys.
     #[serde(default)]
@@ -569,6 +574,10 @@ fn default_jwks_min_refetch_s() -> u64 {
     30
 }
 
+fn default_jwks_max_stale_s() -> u64 {
+    86_400
+}
+
 /// `https://...`, or `http://` to a loopback host (tests, sidecars).
 fn jwks_url_allowed(url: &str) -> bool {
     if url.starts_with("https://") && url.len() > "https://".len() {
@@ -613,6 +622,11 @@ impl JwtConfig {
                 return Err(WsPrismError::BadRequest(format!(
                     "jwt jwks_url must be https (http only to loopback): {url}"
                 )));
+            }
+            if !(1..=604_800).contains(&self.jwks_max_stale_s) {
+                return Err(WsPrismError::BadRequest(
+                    "jwt jwks_max_stale_s must be 1-604800".into(),
+                ));
             }
             if !(1..=3_600).contains(&self.jwks_min_refetch_s) {
                 return Err(WsPrismError::BadRequest(

@@ -85,8 +85,12 @@ async fn jwks_server(initial: Option<Value>) -> (SocketAddr, Jwks) {
 }
 
 fn yaml(addr: SocketAddr, min_refetch_s: u64) -> String {
+    yaml_stale(addr, min_refetch_s, 86_400)
+}
+
+fn yaml_stale(addr: SocketAddr, min_refetch_s: u64, max_stale_s: u64) -> String {
     format!(
-        "version: 1\ntenants:\n  - id: t\n    auth:\n      - {{ kind: jwt, algorithm: EdDSA, jwks_url: \"http://{addr}/jwks\", jwks_min_refetch_s: {min_refetch_s} }}\n"
+        "version: 1\ntenants:\n  - id: t\n    auth:\n      - {{ kind: jwt, algorithm: EdDSA, jwks_url: \"http://{addr}/jwks\", jwks_min_refetch_s: {min_refetch_s}, jwks_max_stale_s: {max_stale_s} }}\n"
     )
 }
 
@@ -207,4 +211,20 @@ fn jwks_config_is_validated() {
     }
     let ok = "version: 1\ntenants:\n  - id: t\n    auth: [{ kind: jwt, algorithm: RS256, jwks_url: \"https://idp.example.com/.well-known/jwks.json\" }]\n";
     wsprism_gateway::config::load_from_str(ok).expect("https jwks");
+}
+
+/// Keys older than jwks_max_stale_s are not trusted while the JWKS endpoint
+/// is down: a revoked key must not stay valid through an outage.
+#[tokio::test]
+async fn stale_keys_stop_being_trusted() {
+    let k1 = key("k1");
+    let (addr, server) = jwks_server(Some(json!({"keys": [k1.jwk.clone()]}))).await;
+    let gw = spawn(&yaml_stale(addr, 1, 1)).await;
+    connect_with(&gw, &token(&k1, "k1", "alice"))
+        .await
+        .expect("fresh keys");
+    *server.set.lock().unwrap() = None; // the IdP's JWKS endpoint goes down
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let r = connect_with(&gw, &token(&k1, "k1", "alice")).await;
+    assert!(matches!(&r, Err(e) if e.contains("503")), "{r:?}");
 }

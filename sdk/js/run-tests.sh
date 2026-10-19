@@ -6,4 +6,6 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$here/../.."
 node="$("$here/find-node.sh")"
 (cd "$root" && cargo build -q -p wsprism-gateway --locked)
-exec "$node" --test "$here"/test/*.test.mjs
+# --test-force-exit: a client left open by a failing test must not keep the
+# runner alive (its reconnect timers would hang CI).
+exec "$node" --test --test-force-exit "$here"/test/*.test.mjs

@@ -55,6 +55,7 @@ jobs:
   # Node: every non-EOL LTS line the SDK supports (engines: >=22).
   sdk-js:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:

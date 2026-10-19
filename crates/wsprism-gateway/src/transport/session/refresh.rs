@@ -15,6 +15,11 @@ use wsprism_protocol::protocol::text::Envelope;
 use super::{Flow, Session};
 use crate::auth::{AuthError, AuthRequest, Identity};
 
+/// Least time between two refresh attempts of one session: each attempt may
+/// call the tenant's auth backend (connect proxy), so a client must not be
+/// able to drive it at the connection's message rate.
+const REFRESH_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// A finished refresh: the request's `seq` and the chain's verdict.
 pub(crate) struct RefreshOutcome {
     seq: Option<u64>,
@@ -45,6 +50,14 @@ impl Session {
         if self.refresh_pending {
             return self.reply_code(ClientCode::RateLimited, "a refresh is already in progress");
         }
+        let now = std::time::Instant::now();
+        if self
+            .last_refresh
+            .is_some_and(|t| now.duration_since(t) < REFRESH_MIN_INTERVAL)
+        {
+            return self.reply_code(ClientCode::RateLimited, "refresh at most once per second");
+        }
+        self.last_refresh = Some(now);
         let Some(tx) = self.refresh_tx.clone() else {
             return Flow::Continue(());
         };

@@ -267,6 +267,7 @@ impl Session {
             client_ip,
             refresh_tx: None,
             refresh_pending: false,
+            last_refresh: None,
             _cleanup: cleanup,
         })))
     }

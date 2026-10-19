@@ -150,6 +150,7 @@ impl JwtAuthenticator {
                 alg,
                 Duration::from_secs(cfg.jwks_refresh_s),
                 Duration::from_secs(cfg.jwks_min_refetch_s),
+                Duration::from_secs(cfg.jwks_max_stale_s),
             )?))
         } else {
             Keys::Static(load_public_key(cfg)?)
