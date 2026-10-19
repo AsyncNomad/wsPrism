@@ -133,7 +133,7 @@ impl AppState {
 
         // 2) Create core components
         let realtime = Arc::new(RealtimeCore::new());
-        let dispatcher = Dispatcher::new();
+        let mut dispatcher = Dispatcher::new();
 
         // 3) Register built-in services (Sprint 3)
         dispatcher.register_text(Arc::new(RoomService::new()));
