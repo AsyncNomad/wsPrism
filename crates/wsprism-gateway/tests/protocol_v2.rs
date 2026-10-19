@@ -341,3 +341,26 @@ tenants:
     assert!(got <= 8, "paced to ~1 per 100 ms tick: got {got}");
     drain.abort();
 }
+
+/// `hot_echo_to_sender: false`: a publisher's state goes to the others only
+/// (review P2).
+#[tokio::test]
+async fn hot_state_can_skip_the_sender() {
+    let gw = spawn(&HOT_YAML.replace(
+        "      hot_allowlist: [\"1:*\"]",
+        "      hot_allowlist: [\"1:*\"]\n      hot_echo_to_sender: false",
+    ))
+    .await;
+    let (mut a, _) = connect_as(&gw, "a", V2).await;
+    let (mut b, _) = connect_as(&gw, "b", V2).await;
+    let chan = join_v(&mut a, "r", false).await["chan"].as_u64().unwrap() as u32;
+    join_v(&mut b, "r", false).await;
+    a.send(Message::Binary(hot_v2(0x01, chan, Some(0), None, b"pos")))
+        .await
+        .unwrap();
+    assert!(next_binary(&mut b, 1000).await.is_some(), "others get it");
+    assert!(
+        next_binary(&mut a, 300).await.is_none(),
+        "the sender does not"
+    );
+}

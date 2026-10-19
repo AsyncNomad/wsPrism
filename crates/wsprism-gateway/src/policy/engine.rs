@@ -44,6 +44,7 @@ pub struct TenantPolicyRuntime {
     // Hot lane behavior
     hot_error_mode: HotErrorMode,
     hot_requires_active_room: bool,
+    hot_echo_to_sender: bool,
     hot_tick: Option<std::time::Duration>,
 
     origins: OriginPolicy,
@@ -74,6 +75,7 @@ impl TenantPolicyRuntime {
             sessions: policy.sessions.clone(),
             hot_error_mode: policy.hot_error_mode,
             hot_requires_active_room: policy.hot_requires_active_room,
+            hot_echo_to_sender: policy.hot_echo_to_sender,
             hot_tick: (policy.hot_tick_hz > 0)
                 .then(|| std::time::Duration::from_secs_f64(1.0 / f64::from(policy.hot_tick_hz))),
             origins: OriginPolicy::compile(&policy.allowed_origins)?,
@@ -89,6 +91,9 @@ impl TenantPolicyRuntime {
     }
     pub fn hot_requires_active_room(&self) -> bool {
         self.hot_requires_active_room
+    }
+    pub fn hot_echo_to_sender(&self) -> bool {
+        self.hot_echo_to_sender
     }
     /// Pacing period for sending a session's Hot slot (`None` = immediate).
     pub fn hot_tick(&self) -> Option<std::time::Duration> {

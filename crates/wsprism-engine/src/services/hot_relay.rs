@@ -63,6 +63,18 @@ impl HotService for HotRelayService {
                     .map(|k| (joined.room_id, joined.member_id, frame.svc_id, k)),
             })),
         };
-        ctx.publish_room_lossy(room, out)
+        if ctx.hot_echo_to_sender() {
+            ctx.publish_room_lossy(room, out)
+        } else {
+            // The publisher already has its own state: skip it (~1/N of a
+            // room's state traffic).
+            ctx.publish_room_others(
+                room,
+                Outgoing {
+                    qos: QoS::Lossy,
+                    ..out
+                },
+            )
+        }
     }
 }

@@ -197,6 +197,25 @@ impl RealtimeCore {
         Ok(n)
     }
 
+    /// Like [`RealtimeCore::publish_room`], but skipping the session
+    /// `except` (e.g. the publisher of a state update).
+    pub fn publish_room_except(
+        &self,
+        room_key: &str,
+        out: Outgoing,
+        except: &str,
+    ) -> Result<usize> {
+        let frame = OutFrame::from_payload(&out.payload)?;
+        let mut n = 0;
+        self.presence.for_each_member(room_key, |m| {
+            if &*m.key != except {
+                self.deliver(&m.key, &m.conn, frame.clone(), &out.qos);
+                n += 1;
+            }
+        });
+        Ok(n)
+    }
+
     /// Publish to a room with `QoS::Lossy`, whatever `out.qos` says.
     pub fn publish_room_lossy(&self, room_key: &str, out: Outgoing) -> Result<usize> {
         self.publish_room(
@@ -315,6 +334,7 @@ pub struct RealtimeCtx {
     permissions: Permissions,
     /// Rooms this session has joined, with their ids (small; linear scan).
     joined: Vec<(Arc<str>, Joined)>,
+    hot_echo_to_sender: bool,
     core: Arc<RealtimeCore>,
 }
 
@@ -334,6 +354,9 @@ pub struct CtxIdentity {
     pub protocol: ProtocolVersion,
     /// Room permissions from the authenticator.
     pub permissions: Permissions,
+    /// Whether Hot state a session publishes is also sent back to it
+    /// (tenant policy `hot_echo_to_sender`).
+    pub hot_echo_to_sender: bool,
 }
 
 impl RealtimeCtx {
@@ -361,6 +384,7 @@ impl RealtimeCtx {
             protocol: id.protocol,
             permissions: id.permissions,
             joined: Vec::new(),
+            hot_echo_to_sender: id.hot_echo_to_sender,
             core,
         }
     }
@@ -559,6 +583,21 @@ impl RealtimeCtx {
         let rk = self.room_key(room);
         self.core.publish_room_reliable(&rk, out).map(|_| ())
     }
+
+    /// Publish to everyone in `room` except this session (QoS as given in
+    /// `out`). Requires publish permission.
+    pub fn publish_room_others(&self, room: &str, out: Outgoing) -> Result<()> {
+        self.check_publish(room)?;
+        let rk = self.room_key(room);
+        self.core
+            .publish_room_except(&rk, out, self.session_key())
+            .map(|_| ())
+    }
+
+    /// Tenant policy: should Hot state a session publishes come back to it?
+    pub fn hot_echo_to_sender(&self) -> bool {
+        self.hot_echo_to_sender
+    }
 }
 
 #[cfg(test)]
@@ -585,6 +624,7 @@ mod tests {
             trace_id: "tr".into(),
             protocol: ProtocolVersion::V2,
             permissions,
+            hot_echo_to_sender: true,
         };
         (
             RealtimeCtx::new(id, Arc::default(), conn, Arc::clone(core)),

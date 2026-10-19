@@ -203,6 +203,7 @@ impl Session {
                 trace_id: id.trace_id.into(),
                 protocol: id.protocol,
                 permissions: id.permissions,
+                hot_echo_to_sender: policy.hot_echo_to_sender(),
             },
             app.room_limits(&t_cfg.id),
             conn,

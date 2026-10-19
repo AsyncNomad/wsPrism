@@ -782,6 +782,12 @@ pub struct TenantPolicy {
     #[serde(default = "default_hot_requires_active_room")]
     pub hot_requires_active_room: bool,
 
+    /// Send a session's own Hot state back to it through the room relay.
+    /// Default true (compatible); state-sync tenants usually want false, which
+    /// saves ~1/N of a room's Hot traffic.
+    #[serde(default = "default_true")]
+    pub hot_echo_to_sender: bool,
+
     /// Send each session's pending keyed Hot state at most this many times
     /// per second (0 = as soon as it arrives). Fewer flushes under heavy
     /// update rates, at the cost of up to one tick of extra latency.
@@ -832,6 +838,7 @@ impl Default for TenantPolicy {
             sessions: SessionPolicy::default(),
             hot_error_mode: default_hot_error_mode(),
             hot_requires_active_room: default_hot_requires_active_room(),
+            hot_echo_to_sender: true,
             hot_tick_hz: 0,
             allowed_origins: Vec::new(),
             ticket_sources: default_ticket_sources(),

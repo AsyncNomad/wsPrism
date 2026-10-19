@@ -61,6 +61,12 @@ most once per tick, at a per-session phase within the period. Fewer flushes
 when updates arrive faster than the tick, at the cost of up to one tick of
 extra latency. Unkeyed frames are not paced.
 
+
+**`policy.hot_echo_to_sender`** (default `true`): whether a session's own Hot
+state comes back to it through the room relay. State-sync tenants usually set
+`false`: each client already has its own state, and it saves about 1/N of a
+room's Hot traffic. Services can do the same with `ctx.publish_room_others`.
+
 ---
 
 ## Authentication (`tenants[].auth`, ADR 0008)

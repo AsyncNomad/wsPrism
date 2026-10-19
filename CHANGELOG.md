@@ -35,6 +35,8 @@ the Rust API may break in 0.x minor releases, always listed here.
   authenticator's users are now `dev` / `<id>` (no `user:` prefix).
 - The handshake rate limiter is on by default; IPv6 clients are limited per /64
   (`handshake_limit.ipv6_prefix_len`).
+- `policy.hot_echo_to_sender: false` relays Hot state to everyone but the sender;
+  services get `RealtimeCtx::publish_room_others`.
 - Room names are limited to 1-128 bytes without control characters; `max_rooms_per_user` defaults to 64.
 
 ### Rust API
