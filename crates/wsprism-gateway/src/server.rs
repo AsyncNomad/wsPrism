@@ -55,10 +55,18 @@ async fn sweeper(state: AppState) {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tick.tick().await;
-        state.realtime().sweep(idle_ms, ping_ms);
-        state
-            .tickets()
-            .sweep(tokio::time::Instant::now().into_std());
+        // A pass visits every session (O(n) under shard read locks): run it on
+        // the blocking pool so a million sessions don't stall an async worker
+        // for tens of milliseconds every second. (Yielding mid-pass would hold
+        // a shard lock across an await instead.)
+        let (realtime, tickets) = (state.realtime(), state.tickets());
+        let pass = tokio::task::spawn_blocking(move || {
+            realtime.sweep(idle_ms, ping_ms);
+            tickets.sweep(std::time::Instant::now());
+        });
+        if pass.await.is_err() {
+            tracing::error!("sweeper pass panicked");
+        }
     }
 }
 
