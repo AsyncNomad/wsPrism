@@ -13,6 +13,7 @@ tenants:
   - id: bench
     limits:
       max_frame_bytes: 65536
+      max_rooms_per_user: 0              # unlimited (the default 64 would cap a shared bench user)
     policy:
       rate_limit_rps: 100000
       rate_limit_burst: 100000
