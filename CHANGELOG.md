@@ -24,6 +24,8 @@ the Rust API may break in 0.x minor releases, always listed here.
   plugins. Per-user room permissions (subscribe / publish).
 - JWT keys from the issuer's JWKS URL (`jwks_url`), picked by `kid`, refreshed
   in the background and refetched on rotation.
+- In-band token refresh (`sys.refresh`): renew an expiring credential without
+  reconnecting; the SDK does it automatically at 80% of the lifetime.
 - Server API on a separate listener (`/api/v1/publish`, `/disconnect`,
   `/tickets`, `/rooms/{room}/presence`) with SHA-256-hashed API keys.
 - `/metrics` is served on the internal listener (`gateway.api.listen`), not

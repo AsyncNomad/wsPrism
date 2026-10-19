@@ -96,6 +96,7 @@ pub async fn ws_upgrade(
                 user_id,
                 permissions,
                 expires_at,
+                client_ip: ip,
                 sid,
                 trace_id,
             };

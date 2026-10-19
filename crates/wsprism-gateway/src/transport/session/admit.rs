@@ -210,10 +210,18 @@ impl Session {
         // The queue is empty and only this task consumes it, so this cannot be full.
         out_tx
             .try_send(OutFrame::text(
-                sys::authed(&id.tenant, &id.user_id, &id.sid, &id.trace_id).to_string(),
+                sys::authed(
+                    &id.tenant,
+                    &id.user_id,
+                    &id.sid,
+                    super::refresh::expires_in_s(id.expires_at),
+                    &id.trace_id,
+                )
+                .to_string(),
             ))
             .map_err(|_| WsPrismError::Internal("outbound queue unavailable".into()))?;
 
+        let client_ip = id.client_ip;
         let gw = &app.cfg().gateway;
         let session_key_for_phase = session_key.clone();
         let ctx = RealtimeCtx::new(
@@ -253,6 +261,12 @@ impl Session {
             hot_tick,
             hot_tick_phase_ms: tick_phase_ms(&session_key_for_phase, hot_tick),
             hot_op_counter: 0,
+            auth: app
+                .auth(&t_cfg.id)
+                .ok_or_else(|| WsPrismError::BadRequest("unknown tenant".into()))?,
+            client_ip,
+            refresh_tx: None,
+            refresh_pending: false,
             _cleanup: cleanup,
         })))
     }

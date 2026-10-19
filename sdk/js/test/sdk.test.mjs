@@ -266,6 +266,7 @@ test("an expired token (4001) reconnects at once with a fresh one and rejoins", 
   const a = new WsPrismClient({
     url: gw.url,
     tenant: "j",
+    refresh: false, // this test exercises the reconnect safety net
     getTicket: () => {
       issued += 1;
       return jwt("gina", issued === 1 ? 2 : 600);
@@ -293,6 +294,7 @@ test("a failing getTicket during reconnect is retried with backoff", async () =>
     url: gw.url,
     tenant: "j",
     reconnect: { minDelayMs: 200, maxDelayMs: 400 },
+    refresh: false, // reconnect path, not in-band renewal
     getTicket: () => {
       calls += 1;
       if (calls === 2) throw new Error("auth server down");
@@ -346,5 +348,30 @@ test("presence events and the join snapshot", async () => {
   const left = next(a, "presence", (p) => p.type === "left");
   b.close();
   assert.equal((await left).memberId, jb.memberId);
+  a.close();
+});
+
+
+test("expiring credentials are renewed in-band, without reconnecting", async () => {
+  let issued = 0;
+  const a = new WsPrismClient({
+    url: gw.url,
+    tenant: "j",
+    getTicket: () => {
+      issued += 1;
+      return jwt("kai", 2); // every token lives 2 s
+    },
+  });
+  let closes = 0;
+  a.on("close", () => (closes += 1));
+  const refreshed = next(a, "refreshed", () => true, 4000);
+  await a.connect();
+  await a.join("hall");
+  const r = await refreshed;
+  assert.ok(r.expires_in_s <= 2);
+  await sleep(2500); // past the first token's expiry
+  assert.equal(closes, 0, "no 4001, no reconnect");
+  assert.ok(issued >= 2, "fresh credential fetched for renewal");
+  assert.equal((await a.request("room", "join", { room: "hall" })).type, "joined");
   a.close();
 });

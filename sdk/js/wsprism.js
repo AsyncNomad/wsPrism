@@ -129,6 +129,7 @@ export class WsPrismClient {
    * @param {number} [opts.requestTimeoutMs=10000]
    * @param {{minDelayMs?: number, maxDelayMs?: number, enabled?: boolean}} [opts.reconnect]
    * @param {typeof WebSocket} [opts.WebSocket]  implementation (default: global)
+   * @param {boolean} [opts.refresh=true]  renew expiring credentials in-band (sys.refresh)
    */
   constructor(opts) {
     if (!opts?.url || !opts?.tenant || typeof opts.getTicket !== "function") {
@@ -152,9 +153,10 @@ export class WsPrismClient {
     this.stateSeq = new Map(); // `${room}:${svc}:${key}` -> next seq to send
     this.attempt = 0;
     this.stopped = false;
+    this.refreshTimer = null;
   }
 
-  /** Subscribe to "open" | "close" | "message" | "state" | "presence" | "error" | "reconnecting" | "rejoined". */
+  /** Subscribe to "open" | "close" | "message" | "state" | "presence" | "refreshed" | "error" | "reconnecting" | "rejoined". */
   on(event, fn) {
     if (!this.listeners.has(event)) this.listeners.set(event, new Set());
     this.listeners.get(event).add(fn);
@@ -210,6 +212,7 @@ export class WsPrismClient {
             this.attempt = 0;
             this.user = msg.data?.user ?? null;
             this.emit("open", msg.data);
+            this.scheduleRefresh(msg.data?.expires_in_s);
             resolve(msg.data);
             this.rejoin();
             return;
@@ -281,6 +284,7 @@ export class WsPrismClient {
 
   onClose(code, reason, wasOpen) {
     this.ws = null;
+    clearTimeout(this.refreshTimer);
     for (const [, p] of this.pending) {
       clearTimeout(p.timer);
       p.reject(new WsPrismError("DISCONNECTED", `connection closed (${code})`));
@@ -421,9 +425,39 @@ export class WsPrismClient {
     this.ws.send(encodeHot({ chan: info.chan, svc, op, key, seq, payload }));
   }
 
+  /**
+   * Renew the credential before it expires (ADR 0012): at 80% of its
+   * lifetime, get a fresh one from getTicket() and send sys.refresh. If that
+   * fails it retries; at expiry the gateway closes with 4001 and the client
+   * reconnects with a new credential anyway.
+   */
+  scheduleRefresh(expiresInS) {
+    clearTimeout(this.refreshTimer);
+    if (this.opts.refresh === false || typeof expiresInS !== "number") return;
+    const delayMs = Math.max(500, expiresInS * 800);
+    this.refreshTimer = setTimeout(() => this.refreshNow(), delayMs);
+  }
+
+  async refreshNow() {
+    if (this.state !== "open") return;
+    try {
+      const token = await this.opts.getTicket();
+      const r = await this.request("sys", "refresh", { data: { token } });
+      this.emit("refreshed", r.data ?? {});
+      this.scheduleRefresh(r.data?.expires_in_s);
+    } catch (e) {
+      this.emit("error", new WsPrismError("REFRESH_FAILED", e?.message ?? String(e)));
+      if (this.state === "open") {
+        clearTimeout(this.refreshTimer);
+        this.refreshTimer = setTimeout(() => this.refreshNow(), 5000);
+      }
+    }
+  }
+
   /** Close for good (no reconnect). */
   close() {
     this.stopped = true;
+    clearTimeout(this.refreshTimer);
     this.rooms.clear();
     if (this.ws) this.ws.close(1000, "client");
     this.state = "closed";

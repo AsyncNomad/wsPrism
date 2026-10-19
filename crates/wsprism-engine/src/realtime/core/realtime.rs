@@ -756,6 +756,25 @@ impl RealtimeCtx {
             .map(|_| ())
     }
 
+    /// Replace the session's room permissions (in-band token refresh, ADR
+    /// 0012). Returns the joined rooms the new permissions no longer allow
+    /// subscribing to; the caller leaves them.
+    /// SPI (unstable): for the session runtime, not services.
+    #[doc(hidden)]
+    pub fn set_permissions(&mut self, permissions: Permissions) -> Vec<String> {
+        for j in &mut self.joined {
+            j.can_publish = permissions.can_publish(&j.name);
+        }
+        let lost = self
+            .joined
+            .iter()
+            .filter(|j| !permissions.can_subscribe(&j.name))
+            .map(|j| j.name.to_string())
+            .collect();
+        self.permissions = permissions;
+        lost
+    }
+
     /// Tenant policy: should Hot state a session publishes come back to it?
     pub fn hot_echo_to_sender(&self) -> bool {
         self.hot_echo_to_sender

@@ -115,6 +115,11 @@ impl Session {
         if !self.take_token("ext") {
             return Flow::Continue(());
         }
+        // The gateway's own control message: not subject to the tenant
+        // allowlist (rate limited like everything else above).
+        if env.svc == "sys" && env.msg_type == "refresh" {
+            return self.start_refresh(env);
+        }
         let decision = self.policy.check_text(bytes_len, &env.svc, &env.msg_type);
         if !self.enforce("ext", decision, true)? {
             return Flow::Continue(());

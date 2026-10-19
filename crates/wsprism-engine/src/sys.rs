@@ -17,8 +17,30 @@ pub fn reply_to(mut msg: Value, seq: Option<u64>) -> Value {
 }
 
 /// `sys.authed`: the greeting after admission.
-pub fn authed(tenant: &str, user: &str, sid: &str, trace_id: &str) -> Value {
-    json!({ "v": 1, "svc": "sys", "type": "authed", "data": { "tenant": tenant, "user": user, "sid": sid }, "trace_id": trace_id })
+/// `expires_in_s`: seconds until the credential expires, if it does
+/// (clients schedule `sys.refresh` from it, ADR 0012).
+pub fn authed(
+    tenant: &str,
+    user: &str,
+    sid: &str,
+    expires_in_s: Option<u64>,
+    trace_id: &str,
+) -> Value {
+    let mut v = json!({ "v": 1, "svc": "sys", "type": "authed", "data": { "tenant": tenant, "user": user, "sid": sid }, "trace_id": trace_id });
+    if let Some(s) = expires_in_s {
+        v["data"]["expires_in_s"] = json!(s);
+    }
+    v
+}
+
+/// `sys.refreshed`: the session's credential was replaced (ADR 0012).
+pub fn refreshed(expires_in_s: Option<u64>, trace_id: &str) -> Value {
+    let mut v =
+        json!({ "v": 1, "svc": "sys", "type": "refreshed", "data": {}, "trace_id": trace_id });
+    if let Some(s) = expires_in_s {
+        v["data"]["expires_in_s"] = json!(s);
+    }
+    v
 }
 
 /// `sys.error` with a catalogued code (see `ClientCode` and PROTOCOL.md).

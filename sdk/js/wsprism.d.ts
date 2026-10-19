@@ -3,7 +3,7 @@
 export const PROTOCOL: "wsprism.v2.json";
 
 export class WsPrismError extends Error {
-  /** Gateway / backend code (`NOT_ALLOWED`, `UNAVAILABLE`, ...) or a client-side one (`TIMEOUT`, `DISCONNECTED`, `NOT_CONNECTED`, `NOT_JOINED`, `CONNECT_FAILED`, `TICKET_FAILED`). */
+  /** Gateway / backend code (`NOT_ALLOWED`, `UNAVAILABLE`, ...) or a client-side one (`TIMEOUT`, `DISCONNECTED`, `NOT_CONNECTED`, `NOT_JOINED`, `CONNECT_FAILED`, `TICKET_FAILED`, `REFRESH_FAILED`). */
   readonly code: string;
   constructor(code: string, message?: string);
 }
@@ -92,6 +92,8 @@ export interface ClientOptions {
   reconnect?: { enabled?: boolean; minDelayMs?: number; maxDelayMs?: number };
   /** WebSocket implementation (default: `globalThis.WebSocket`). */
   WebSocket?: typeof WebSocket;
+  /** Renew expiring credentials in-band with `sys.refresh` (default true). */
+  refresh?: boolean;
 }
 
 export interface Events {
@@ -99,6 +101,8 @@ export interface Events {
   close: CloseInfo;
   message: Message;
   state: State;
+  /** The credential was renewed in-band (`expires_in_s` if it expires). */
+  refreshed: { expires_in_s?: number };
   /** Someone joined or left a room (tenants with `presence_events`). */
   presence: Presence;
   error: WsPrismError | Error;

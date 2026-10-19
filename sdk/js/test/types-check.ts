@@ -29,6 +29,11 @@ client.on("state", (s: State) => {
   const room: string | undefined = s.room;
   void bytes, room;
 });
+client.on("refreshed", (r) => {
+  const s: number | undefined = r.expires_in_s;
+  void s;
+});
+new WsPrismClient({ url: "ws://x", tenant: "t", getTicket: () => "t", refresh: false });
 client.on("presence", (p) => {
   const kind: "joined" | "left" = p.type;
   const sender: number = p.memberId;

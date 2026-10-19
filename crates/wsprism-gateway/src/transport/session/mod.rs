@@ -14,6 +14,7 @@ mod admit;
 mod close;
 mod inbound;
 mod io;
+mod refresh;
 mod ws_io;
 
 use std::future::Future;
@@ -62,6 +63,8 @@ pub(crate) struct SessionIdentity {
     pub permissions: Permissions,
     /// Credential expiry: the session is closed then (`auth_expired`).
     pub expires_at: Option<std::time::SystemTime>,
+    /// Client address (for re-authentication on `sys.refresh`).
+    pub client_ip: std::net::IpAddr,
     /// Client-facing session id (client-provided or generated; not unique).
     pub sid: String,
     pub trace_id: String,
@@ -141,6 +144,13 @@ struct Session {
     conn_limiter: Option<ConnRateLimiter>,
     /// Hot Lane latency sampling counter (1/1024).
     hot_op_counter: u64,
+    /// The tenant's authentication chain (in-band refresh, ADR 0012).
+    auth: Arc<crate::auth::AuthChain>,
+    client_ip: std::net::IpAddr,
+    /// Where refresh tasks report back (set by the event loop).
+    refresh_tx: Option<mpsc::Sender<refresh::RefreshOutcome>>,
+    /// A refresh is being authenticated (one at a time).
+    refresh_pending: bool,
     /// Unregisters the session when dropped.
     _cleanup: SessionCleanup,
 }
@@ -160,8 +170,13 @@ impl Session {
             .hot_tick
             .map(|_| Box::pin(tokio::time::sleep(Duration::ZERO)));
         let mut hot_due = false;
+        // Refresh tasks report here (ADR 0012); local so the select below
+        // borrows it, not `self`.
+        let (refresh_tx, mut refresh_rx) = mpsc::channel(1);
+        self.refresh_tx = Some(refresh_tx);
         loop {
             let flow = tokio::select! {
+                Some(outcome) = refresh_rx.recv() => self.apply_refresh(outcome),
                 // C8: kick / replace / drain requests from other tasks.
                 // C8: kick / replace / drain / slow consumer / idle requests.
                 req = signals.closed() => Flow::Break(Exit::Close(self.close_spec(req))),

@@ -161,6 +161,26 @@ Gateway periodically pings; client must pong. Idle connections are closed.
 
 ---
 
+### Token refresh (ADR 0012)
+
+When the credential expires (JWT `exp`, connect-proxy `expires_at`),
+`sys.authed` carries `"expires_in_s"`. Before then, send a fresh token
+in-band instead of reconnecting:
+
+```json
+{"v":1,"svc":"sys","type":"refresh","seq":7,"data":{"token":"<new token>"}}
+{"v":1,"svc":"sys","type":"refreshed","reply_to":7,"data":{"expires_in_s":900}}
+```
+
+The token goes through the tenant's authentication chain like a new
+connection. It must be for the **same user** (else `AUTH_FAILED`). The new
+token's room permissions replace the old ones at once: joined rooms it no
+longer allows are left (`sys.left`). On failure (`AUTH_FAILED`, or
+`UNAVAILABLE` when the auth backend is down) the session continues until the
+old expiry, then closes with 4001. One refresh at a time (`RATE_LIMITED`).
+`sys.refresh` is not subject to the tenant allowlist; the connection rate
+limit applies.
+
 ### Presence events (ADR 0010)
 
 Tenants with `policy.presence_events: true` tell room members about
