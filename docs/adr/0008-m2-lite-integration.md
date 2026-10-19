@@ -28,7 +28,7 @@ pub struct Identity {
 - 테넌트 설정 `auth: [ ... ]`은 **순서 있는 체인**이다. 각 인증기는 자기 형식이 아닌 토큰을 `NotMine`으로 넘긴다(1회용 티켓은 `wpt_` 접두사로 구별).
 - 구현: `dev`(지금 스텁: `dev`, `dev:<id>`), `ticket`(§4), `jwt`(§5), `proxy`(§6).
 - **기본값**: `auth`를 쓰지 않은 테넌트는 `[dev]` — 지금 설정과 테스트가 그대로 동작한다. 대신 기동 시와 `--check-config`에서 **경고**를 낸다("tenant X uses the dev authenticator; set tenants[].auth for production"). 기본값을 거부로 바꾸는 것은 M2 마지막에 다시 판단한다.
-- admission의 인증 단계는 비동기가 된다(`admit`이 `async`). 순서(레이트리밋 → 드레이닝 → 테넌트 → 프로토콜 → Origin → **인증** → 용량)는 그대로.
+- admission의 인증 단계는 비동기가 된다(`admit`이 `async`). 순서(레이트리밋 → 드레이닝 → 테넌트 → 프로토콜 → Origin → **인증** → 용량)는 그대로. (2026-10-19 리뷰 M6: **용량을 인증 앞으로** 옮겼다 — 가득 찬 테넌트에서 JWT 검증·백엔드 호출을 낭비하고 1회용 티켓을 태우지 않도록.)
 
 ### 2. 권한: 구독과 발행 분리 (ADR 0006 §5)
 

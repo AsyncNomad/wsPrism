@@ -118,8 +118,11 @@ async fn check_all(
     let offered = Offered::parse(req.headers);
     let subprotocol = negotiate_protocol(&offered)?;
     origin_allowed(&policy, req)?;
-    let identity = authenticate(app, tenant, &policy, req, &offered, client_ip).await?;
+    // Capacity before authentication: when the tenant is full, don't spend
+    // a JWT verification or a backend call, and don't burn a one-time
+    // ticket, on a connection that is refused anyway.
     tenant_capacity(app, tenant)?;
+    let identity = authenticate(app, tenant, &policy, req, &offered, client_ip).await?;
     Ok(Admitted {
         identity,
         subprotocol,

@@ -154,3 +154,37 @@ async fn ticket_permissions_limit_subscribe_and_publish() {
         other => panic!("expected NOT_ALLOWED for publish, got {other:?}"),
     }
 }
+
+/// A full tenant refuses before authenticating, so a one-time ticket is not
+/// burned by a 503 (review M6).
+#[tokio::test]
+async fn capacity_refusal_does_not_consume_the_ticket() {
+    let yaml = yaml().replacen(
+        "    auth: [{ kind: ticket }]",
+        "    limits: { max_sessions_total: 1 }\n    auth: [{ kind: ticket }]",
+        1,
+    );
+    let gw = spawn_with_api(&yaml).await;
+    let t1 = issue(&gw, "key-a", json!({"user":"u1"})).await.1["ticket"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let t2 = issue(&gw, "key-a", json!({"user":"u2"})).await.1["ticket"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let first = connect_ticket(&gw, "a", &t1)
+        .await
+        .expect("fills the tenant");
+    let refused = connect_ticket(&gw, "a", &t2).await;
+    assert!(
+        matches!(&refused, Err(e) if e.contains("503")),
+        "{:?}",
+        refused.map(|_| ())
+    );
+    drop(first);
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    connect_ticket(&gw, "a", &t2)
+        .await
+        .expect("the same ticket still works");
+}
