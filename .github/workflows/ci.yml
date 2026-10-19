@@ -33,6 +33,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # Libraries alone: dev-dependency features (`internals`) unify into the
+      # all-targets build above and can hide dead code.
+      - name: Clippy (libraries only)
+        run: cargo clippy --workspace --lib --locked -- -D warnings
+
       - name: Test
         run: cargo test --workspace --locked
 

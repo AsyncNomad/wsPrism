@@ -8,6 +8,7 @@
 //! new implementations; admission and sessions don't change.
 
 mod dev;
+mod jwks;
 mod jwt;
 mod proxy;
 mod ticket;
@@ -103,7 +104,7 @@ impl AuthChain {
                 Ok(match a {
                     AuthConfig::Dev => Arc::new(DevAuthenticator),
                     AuthConfig::Ticket => Arc::new(TicketAuthenticator::new(Arc::clone(tickets))),
-                    AuthConfig::Jwt(j) => Arc::new(JwtAuthenticator::from_config(j)?),
+                    AuthConfig::Jwt(j) => Arc::new(JwtAuthenticator::from_config(j, backend)?),
                     AuthConfig::Proxy(p) => Arc::new(ProxyAuthenticator::from_config(p, backend)?),
                     AuthConfig::Plugin(p) => {
                         let factory = plugins.get(&p.name).ok_or_else(|| {

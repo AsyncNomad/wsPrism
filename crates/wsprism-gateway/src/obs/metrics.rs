@@ -172,12 +172,6 @@ impl HistogramVec {
         Histogram(series(&self.map, labels))
     }
 
-    /// Observe a duration (looks the series up; prefer a cached [`Histogram`]
-    /// on hot paths).
-    pub fn observe(&self, labels: &[(&str, &str)], duration: Duration) {
-        self.handle(labels).observe(duration);
-    }
-
     /// Render in Prometheus text exposition format (unit: microseconds).
     fn render(&self, name: &str, out: &mut String) {
         let _ = writeln!(out, "# TYPE {} histogram", name);

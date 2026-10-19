@@ -82,6 +82,21 @@ impl Backend {
         Ok(Self { client })
     }
 
+    /// GET the endpoint; the status and (bounded) body, within its timeout.
+    pub async fn get(&self, ep: &Endpoint) -> std::result::Result<(u16, Bytes), CallError> {
+        let mut req = self.client.get(ep.url.clone());
+        if let Some(b) = &ep.bearer {
+            req = req.header(AUTHORIZATION, b.clone());
+        }
+        let call = async {
+            let resp = req.send().await.map_err(|_| CallError::Transport)?;
+            read_bounded(resp).await
+        };
+        tokio::time::timeout(ep.timeout, call)
+            .await
+            .unwrap_or(Err(CallError::Timeout))
+    }
+
     /// POST `body` as JSON; the status and (bounded) body, all within the
     /// endpoint's timeout.
     pub async fn post_json(
@@ -99,25 +114,30 @@ impl Backend {
             req = req.header(AUTHORIZATION, b.clone());
         }
         let call = async {
-            let mut resp = req.send().await.map_err(|_| CallError::Transport)?;
-            let status = resp.status().as_u16();
-            if resp
-                .content_length()
-                .is_some_and(|n| n > MAX_RESPONSE_BYTES as u64)
-            {
-                return Err(CallError::TooLarge);
-            }
-            let mut buf = BytesMut::new();
-            while let Some(chunk) = resp.chunk().await.map_err(|_| CallError::Transport)? {
-                if buf.len() + chunk.len() > MAX_RESPONSE_BYTES {
-                    return Err(CallError::TooLarge);
-                }
-                buf.extend_from_slice(&chunk);
-            }
-            Ok((status, buf.freeze()))
+            let resp = req.send().await.map_err(|_| CallError::Transport)?;
+            read_bounded(resp).await
         };
         tokio::time::timeout(ep.timeout, call)
             .await
             .unwrap_or(Err(CallError::Timeout))
     }
+}
+
+/// Status and body, at most [`MAX_RESPONSE_BYTES`].
+async fn read_bounded(mut resp: reqwest::Response) -> std::result::Result<(u16, Bytes), CallError> {
+    let status = resp.status().as_u16();
+    if resp
+        .content_length()
+        .is_some_and(|n| n > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(CallError::TooLarge);
+    }
+    let mut buf = BytesMut::new();
+    while let Some(chunk) = resp.chunk().await.map_err(|_| CallError::Transport)? {
+        if buf.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err(CallError::TooLarge);
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    Ok((status, buf.freeze()))
 }

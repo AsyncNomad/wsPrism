@@ -9,8 +9,10 @@
 //! A token is "not mine" (next link) when it isn't a JWS compact token, or
 //! its header names another algorithm or `kid` than this link's — so links
 //! with different keys can be chained (key rotation, several issuers).
-//! Static keys only; JWKS URLs come with the HTTP client (M2-6).
+//! Keys come from a PEM file, an HMAC secret, or the issuer's JWKS URL
+//! (picked by `kid`, cached and refreshed — see `jwks`, ADR 0012).
 
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -18,14 +20,22 @@ use jsonwebtoken::errors::ErrorKind;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation};
 use serde::Deserialize;
 
+use super::jwks::JwksCache;
 use super::{AuthError, AuthRequest, Authenticator, Identity, Permissions, TICKET_PREFIX};
+use crate::backend::Backend;
 use crate::config::schema::{JwtAlgorithm, JwtConfig};
 use wsprism_protocol::error::{Result, WsPrismError};
+
+/// Where verification keys come from.
+enum Keys {
+    Static(DecodingKey),
+    Jwks(Arc<JwksCache>),
+}
 
 pub struct JwtAuthenticator {
     alg: Algorithm,
     kid: Option<String>,
-    key: DecodingKey,
+    keys: Keys,
     validation: Validation,
     leeway: Duration,
     require_tenant: bool,
@@ -128,13 +138,21 @@ fn load_public_key(cfg: &JwtConfig) -> Result<DecodingKey> {
 impl JwtAuthenticator {
     /// Build from config, loading the key (startup / `--check-config` fail
     /// on a missing or malformed key).
-    pub fn from_config(cfg: &JwtConfig) -> Result<Self> {
+    pub fn from_config(cfg: &JwtConfig, backend: &Backend) -> Result<Self> {
         cfg.validate()?;
         let alg = algorithm(cfg.algorithm);
-        let key = if cfg.algorithm.is_hmac() {
-            DecodingKey::from_secret(&load_secret(cfg)?)
+        let keys = if cfg.algorithm.is_hmac() {
+            Keys::Static(DecodingKey::from_secret(&load_secret(cfg)?))
+        } else if let Some(url) = &cfg.jwks_url {
+            Keys::Jwks(Arc::new(JwksCache::new(
+                backend,
+                url,
+                alg,
+                Duration::from_secs(cfg.jwks_refresh_s),
+                Duration::from_secs(cfg.jwks_min_refetch_s),
+            )?))
         } else {
-            load_public_key(cfg)?
+            Keys::Static(load_public_key(cfg)?)
         };
         let mut validation = Validation::new(alg);
         validation.leeway = cfg.leeway_s;
@@ -158,7 +176,7 @@ impl JwtAuthenticator {
         Ok(Self {
             alg,
             kid: cfg.kid.clone(),
-            key,
+            keys,
             validation,
             leeway: Duration::from_secs(cfg.leeway_s),
             require_tenant: cfg.require_tenant,
@@ -197,7 +215,18 @@ impl Authenticator for JwtAuthenticator {
         if header.alg != self.alg || (self.kid.is_some() && header.kid != self.kid) {
             return Err(AuthError::NotMine);
         }
-        let claims = jsonwebtoken::decode::<Claims>(token, &self.key, &self.validation)
+        let jwks_key;
+        let key = match &self.keys {
+            Keys::Static(k) => k,
+            Keys::Jwks(cache) => {
+                // Without a kid the token can't be matched to a JWKS key:
+                // probably another issuer's — let the next link try.
+                let kid = header.kid.as_deref().ok_or(AuthError::NotMine)?;
+                jwks_key = cache.key_for(kid).await?;
+                &*jwks_key
+            }
+        };
+        let claims = jsonwebtoken::decode::<Claims>(token, key, &self.validation)
             .map_err(|e| AuthError::Rejected(reason(e.kind())))?
             .claims;
         if !crate::ident::is_safe_id(&claims.sub) {

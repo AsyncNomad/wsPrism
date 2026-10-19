@@ -142,6 +142,25 @@ issuer's own claims:
  "wsprism": {"tenant": "acme", "subscribe": ["match:*"], "publish": ["match:42"]}}
 ```
 
+**JWKS** (IdPs such as Auth0, Cognito, Keycloak, Okta): instead of a key
+file, give the issuer's JWKS URL — keys are picked by the token's `kid`:
+
+```yaml
+      - kind: jwt
+        algorithm: RS256                      # pinned as always; JWKS keys of another alg are ignored
+        jwks_url: "https://idp.example.com/.well-known/jwks.json"   # https (http only to loopback)
+        jwks_refresh_s: 300                   # refresh when older (60-86400, default 300)
+        jwks_min_refetch_s: 30                # unknown kid -> refetch at most this often (default 30)
+        issuer: "https://idp.example.com/"
+```
+
+Keys are fetched on first use and refreshed in the background; an unknown
+`kid` (the IdP just rotated) triggers one immediate refetch, rate-limited so
+random `kid`s cannot hammer the IdP. A failed refresh keeps the last good
+keys. Until keys have been loaded once, connections get 503 + `Retry-After`
+(not 401). Only signing keys whose type fits the pinned algorithm are used;
+symmetric (`oct`) keys from a URL never are.
+
 A `wsprism.tenant` naming another tenant is always rejected. HMAC secrets
 must be at least as long as the hash (32 / 48 / 64 bytes); a trailing
 newline in `secret_file` is ignored. Keys are loaded at startup, so

@@ -22,6 +22,8 @@ the Rust API may break in 0.x minor releases, always listed here.
   pinned algorithm, `kid` rotation, tenant binding, permission claims,
   session closed on expiry), connect proxy to your backend, and custom
   plugins. Per-user room permissions (subscribe / publish).
+- JWT keys from the issuer's JWKS URL (`jwks_url`), picked by `kid`, refreshed
+  in the background and refetched on rotation.
 - Server API on a separate listener (`/api/v1/publish`, `/disconnect`,
   `/tickets`, `/rooms/{room}/presence`) with SHA-256-hashed API keys.
 - `/metrics` is served on the internal listener (`gateway.api.listen`), not

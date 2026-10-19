@@ -506,6 +506,17 @@ pub struct JwtConfig {
     pub secret_env: Option<String>,
     #[serde(default)]
     pub public_key_file: Option<String>,
+    /// JWKS URL of the issuer (asymmetric algorithms only); keys are picked
+    /// by the token's `kid` (ADR 0012). `https`, or `http` to loopback.
+    #[serde(default)]
+    pub jwks_url: Option<String>,
+    /// Refresh the JWKS when older than this (60-86400 s, default 300).
+    #[serde(default = "default_jwks_refresh_s")]
+    pub jwks_refresh_s: u64,
+    /// Least time between request-triggered refetches (unknown `kid`, keys
+    /// never loaded): 1-3600 s, default 30.
+    #[serde(default = "default_jwks_min_refetch_s")]
+    pub jwks_min_refetch_s: u64,
     /// If set, only tokens whose header `kid` equals it are this link's
     /// (others pass to the next link) — chain two links to rotate keys.
     #[serde(default)]
@@ -550,13 +561,41 @@ impl JwtAlgorithm {
     }
 }
 
+fn default_jwks_refresh_s() -> u64 {
+    300
+}
+
+fn default_jwks_min_refetch_s() -> u64 {
+    30
+}
+
+/// `https://...`, or `http://` to a loopback host (tests, sidecars).
+fn jwks_url_allowed(url: &str) -> bool {
+    if url.starts_with("https://") && url.len() > "https://".len() {
+        return true;
+    }
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let host = rest.split(['/', '?']).next().unwrap_or("");
+    let host = host.rsplit_once(':').map_or(host, |(h, p)| {
+        if p.bytes().all(|b| b.is_ascii_digit()) {
+            h
+        } else {
+            host
+        }
+    });
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]")
+}
+
 impl JwtConfig {
     pub fn validate(&self) -> Result<()> {
         let secret = self.secret_file.is_some() as u8 + self.secret_env.is_some() as u8;
+        let public = self.public_key_file.is_some() as u8 + self.jwks_url.is_some() as u8;
         let ok = if self.algorithm.is_hmac() {
-            secret == 1 && self.public_key_file.is_none()
+            secret == 1 && public == 0
         } else {
-            secret == 0 && self.public_key_file.is_some()
+            secret == 0 && public == 1
         };
         if !ok {
             return Err(WsPrismError::BadRequest(format!(
@@ -565,9 +604,26 @@ impl JwtConfig {
                 if self.algorithm.is_hmac() {
                     "secret_file / secret_env"
                 } else {
-                    "public_key_file"
+                    "public_key_file / jwks_url"
                 }
             )));
+        }
+        if let Some(url) = &self.jwks_url {
+            if !jwks_url_allowed(url) {
+                return Err(WsPrismError::BadRequest(format!(
+                    "jwt jwks_url must be https (http only to loopback): {url}"
+                )));
+            }
+            if !(1..=3_600).contains(&self.jwks_min_refetch_s) {
+                return Err(WsPrismError::BadRequest(
+                    "jwt jwks_min_refetch_s must be 1-3600".into(),
+                ));
+            }
+            if !(60..=86_400).contains(&self.jwks_refresh_s) {
+                return Err(WsPrismError::BadRequest(
+                    "jwt jwks_refresh_s must be 60-86400".into(),
+                ));
+            }
         }
         if self.leeway_s > 300 {
             return Err(WsPrismError::BadRequest(
