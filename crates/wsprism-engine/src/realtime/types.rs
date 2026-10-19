@@ -39,9 +39,9 @@ pub struct HotOut {
     pub v1: Bytes,
     /// v2 recipients: the full v2 frame with `chan` and `sender`.
     pub v2: Bytes,
-    /// `(sender, svc, key)` for keyed frames: delivered through the
-    /// recipient's Hot slot (latest value wins) instead of its queue.
-    pub slot_key: Option<(u32, u8, u32)>,
+    /// `(room id, sender, svc, key)` for keyed frames: delivered through
+    /// the recipient's Hot slot (latest value wins) instead of its queue.
+    pub slot_key: Option<(u32, u32, u8, u32)>,
 }
 
 /// Application-level outgoing message.

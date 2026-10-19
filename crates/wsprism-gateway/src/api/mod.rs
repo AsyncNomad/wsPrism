@@ -164,7 +164,7 @@ async fn publish(
                 payload: Payload::Hot(Arc::new(HotOut {
                     v1: payload,
                     v2,
-                    slot_key: hot.key.map(|k| (0, hot.svc, k)),
+                    slot_key: hot.key.map(|k| (chan, 0, hot.svc, k)),
                 })),
             }
         }

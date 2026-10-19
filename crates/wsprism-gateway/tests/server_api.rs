@@ -200,3 +200,61 @@ async fn metrics_are_served_on_the_internal_listener_only() {
     let (status, _) = http_raw(public.addr, "GET", "/metrics", None, None).await;
     assert_eq!(status, 200);
 }
+
+/// Server publishes come from sender 0 in every room: keyed state for the
+/// same key in two rooms must not overwrite each other in a recipient's
+/// slot (review D3).
+#[tokio::test]
+async fn server_state_in_two_rooms_does_not_collide() {
+    let yaml = yaml().replace(
+        r#"policy: { ext_allowlist: ["room:*"], hot_allowlist: ["1:*"] }"#,
+        r#"policy: { ext_allowlist: ["room:*"], hot_allowlist: ["1:*"], hot_tick_hz: 5 }"#,
+    );
+    assert!(yaml.contains("hot_tick_hz: 5"), "{yaml}");
+    let gw = spawn_with_api(&yaml).await;
+    let (mut ws, _) = try_connect_with(
+        &ws_url(gw.addr, "a", None),
+        &[AUTH, ("sec-websocket-protocol", "wsprism.v2.json")],
+    )
+    .await
+    .expect("connect");
+    let mut chans = Vec::new();
+    for room in ["ra", "rb"] {
+        send_json(
+            &mut ws,
+            json!({"v":1,"svc":"room","type":"join","room":room}),
+        )
+        .await;
+        loop {
+            if let Event::Json(v) = next_event(&mut ws).await {
+                if v["type"] == "joined" {
+                    chans.push(v["chan"].as_u64().unwrap() as u32);
+                    break;
+                }
+            }
+        }
+    }
+    // Both publishes land within one 200 ms tick.
+    for room in ["ra", "rb"] {
+        let (status, _) = http(
+            gw.api,
+            "POST",
+            "/api/v1/publish",
+            Some(KEY_A),
+            Some(json!({"room": room, "hot": {"svc": 1, "op": 1, "key": 0, "data_b64": "AQ=="}})),
+        )
+        .await;
+        assert_eq!(status, 200);
+    }
+    let mut got = Vec::new();
+    while got.len() < 2 {
+        match next_event(&mut ws).await {
+            Event::Binary(b) => got.push(u32::from_le_bytes([b[2], b[3], b[4], b[5]])),
+            Event::Json(_) => continue,
+            other => panic!("expected both rooms' state, got {other:?} after {got:?}"),
+        }
+    }
+    got.sort();
+    chans.sort();
+    assert_eq!(got, chans);
+}

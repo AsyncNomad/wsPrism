@@ -4,8 +4,9 @@
 //! Keyed Hot frames are state: only the newest value for a key matters. A
 //! FIFO queue would deliver every stale value a slow reader missed; the slot
 //! overwrites instead, so a reader that falls behind gets the current state
-//! as soon as it catches up. The key includes the sender: two players both
-//! using `key = 0` ("my position") must not overwrite each other.
+//! as soon as it catches up. The key includes the room and the sender: two
+//! players both using `key = 0` ("my position") must not overwrite each
+//! other, and neither may the server's state (sender 0) in two rooms.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,8 +16,8 @@ use tokio::sync::Notify;
 
 use crate::realtime::types::HotOut;
 
-/// `(sender member id, svc id, key)`.
-pub type SlotKey = (u32, u8, u32);
+/// `(room id, sender member id, svc id, key)`.
+pub type SlotKey = (u32, u32, u8, u32);
 
 /// Most distinct keys a session's slot holds (room members x keys). A new
 /// key beyond it is dropped; overwriting an existing key is always allowed.
@@ -85,6 +86,12 @@ impl HotSlot {
         self.ready.notified().await;
     }
 
+    /// Drop pending frames of a room the session just left, so nothing
+    /// from it is sent after the leave.
+    pub fn purge_room(&self, room_id: u32) {
+        self.lock().retain(|k, _| k.0 != room_id);
+    }
+
     /// Move every pending frame into `out` (session side). Clears the
     /// schedule flag first, so a `put` racing with the drain either lands in
     /// this drain or wakes the session again — never neither.
@@ -119,8 +126,8 @@ mod tests {
     #[test]
     fn latest_value_per_key_wins() {
         let s = HotSlot::new(8);
-        assert_eq!(s.put((1, 1, 0), frame(b"a1")), Put::Inserted);
-        assert_eq!(s.put((1, 1, 0), frame(b"a2")), Put::Overwritten);
+        assert_eq!(s.put((1, 1, 1, 0), frame(b"a1")), Put::Inserted);
+        assert_eq!(s.put((1, 1, 1, 0), frame(b"a2")), Put::Overwritten);
         assert_eq!(drained(&s), vec![Bytes::from_static(b"a2")]);
         assert!(drained(&s).is_empty(), "drain empties the slot");
     }
@@ -128,8 +135,8 @@ mod tests {
     #[test]
     fn same_key_from_different_senders_does_not_collide() {
         let s = HotSlot::new(8);
-        s.put((1, 1, 0), frame(b"p1"));
-        s.put((2, 1, 0), frame(b"p2"));
+        s.put((1, 1, 1, 0), frame(b"p1"));
+        s.put((1, 2, 1, 0), frame(b"p2"));
         assert_eq!(
             drained(&s),
             vec![Bytes::from_static(b"p1"), Bytes::from_static(b"p2")]
@@ -139,27 +146,36 @@ mod tests {
     #[test]
     fn new_keys_beyond_capacity_are_dropped_but_overwrites_are_not() {
         let s = HotSlot::new(2);
-        s.put((1, 1, 0), frame(b"a"));
-        s.put((1, 1, 1), frame(b"b"));
-        assert_eq!(s.put((1, 1, 2), frame(b"c")), Put::Full);
-        assert_eq!(s.put((1, 1, 1), frame(b"b2")), Put::Overwritten);
+        s.put((1, 1, 1, 0), frame(b"a"));
+        s.put((1, 1, 1, 1), frame(b"b"));
+        assert_eq!(s.put((1, 1, 1, 2), frame(b"c")), Put::Full);
+        assert_eq!(s.put((1, 1, 1, 1), frame(b"b2")), Put::Overwritten);
         assert_eq!(
             drained(&s),
             vec![Bytes::from_static(b"a"), Bytes::from_static(b"b2")]
         );
     }
 
+    #[test]
+    fn rooms_are_separate_and_purge_drops_one_room() {
+        let s = HotSlot::new(8);
+        s.put((1, 0, 1, 0), frame(b"room1"));
+        s.put((2, 0, 1, 0), frame(b"room2"));
+        s.purge_room(1);
+        assert_eq!(drained(&s), vec![Bytes::from_static(b"room2")]);
+    }
+
     #[tokio::test]
     async fn a_put_wakes_the_session_once_until_it_drains() {
         let s = HotSlot::new(8);
-        s.put((1, 1, 0), frame(b"x"));
-        s.put((1, 1, 1), frame(b"y")); // no second wake needed
+        s.put((1, 1, 1, 0), frame(b"x"));
+        s.put((1, 1, 1, 1), frame(b"y")); // no second wake needed
         tokio::time::timeout(std::time::Duration::from_millis(100), s.ready())
             .await
             .expect("first put wakes the session");
         assert_eq!(drained(&s).len(), 2);
         // After a drain, the next put wakes it again.
-        s.put((1, 1, 0), frame(b"z"));
+        s.put((1, 1, 1, 0), frame(b"z"));
         tokio::time::timeout(std::time::Duration::from_millis(100), s.ready())
             .await
             .expect("put after drain wakes again");

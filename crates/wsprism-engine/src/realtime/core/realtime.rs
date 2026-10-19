@@ -525,6 +525,10 @@ impl RealtimeCtx {
 
     /// Leave `room` (no-op if not joined).
     pub fn leave_room(&mut self, room: &str) {
+        if let Some((_, j)) = self.joined.iter().find(|(r, _)| &**r == room) {
+            // Nothing from the room may reach the client after its sys.left.
+            self.conn.signals.hot.purge_room(j.room_id);
+        }
         self.joined.retain(|(r, _)| &**r != room);
         let rk = self.room_key(room);
         self.core
@@ -593,6 +597,30 @@ mod tests {
             qos: QoS::Reliable,
             payload: Payload::TextJson(serde_json::json!(s)),
         }
+    }
+
+    #[tokio::test]
+    async fn leaving_a_room_drops_its_pending_state() {
+        let core = Arc::new(RealtimeCore::new());
+        let (mut c, _rx) = ctx(&core, Permissions::default());
+        let j = c.join_room("arena").unwrap();
+        let hot = Arc::new(crate::realtime::types::HotOut {
+            v1: bytes::Bytes::from_static(b"x"),
+            v2: bytes::Bytes::from_static(b"x"),
+            slot_key: Some((j.room_id, 7, 1, 0)),
+        });
+        c.publish_room_lossy(
+            "arena",
+            Outgoing {
+                qos: QoS::Lossy,
+                payload: Payload::Hot(hot),
+            },
+        )
+        .unwrap();
+        c.leave_room("arena");
+        let mut out = Vec::new();
+        c.conn.signals.hot.drain_into(&mut out);
+        assert!(out.is_empty(), "no state from a left room");
     }
 
     #[tokio::test]
