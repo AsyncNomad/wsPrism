@@ -567,6 +567,17 @@ pub struct TenantLimits {
     pub max_rooms_per_user: u64,
 }
 
+impl TenantLimits {
+    /// The part of the limits the engine enforces on room joins.
+    pub fn room_limits(&self) -> wsprism_engine::RoomLimits {
+        wsprism_engine::RoomLimits {
+            max_rooms_total: self.max_rooms_total,
+            max_users_per_room: self.max_users_per_room,
+            max_rooms_per_user: self.max_rooms_per_user,
+        }
+    }
+}
+
 impl Default for TenantLimits {
     fn default() -> Self {
         Self {

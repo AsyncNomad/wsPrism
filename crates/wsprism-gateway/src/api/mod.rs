@@ -20,9 +20,9 @@ use wsprism_protocol::protocol::hot::{encode_hot_frame_v2, HotOutV2};
 
 use crate::app_state::AppState;
 use crate::auth::{Identity, IssueError, Permissions, DEFAULT_TICKET_TTL, MAX_TICKET_TTL};
-use crate::realtime::core::{CloseRequest, RealtimeCore};
-use crate::realtime::{close_code, CloseSpec, HotOut, Outgoing, Payload, QoS};
-use crate::sys;
+use wsprism_engine::realtime::core::{CloseRequest, RealtimeCore};
+use wsprism_engine::realtime::{close_code, CloseSpec, HotOut, Outgoing, Payload, QoS};
+use wsprism_engine::sys;
 
 /// Longest room name accepted from the API.
 const MAX_ROOM_LEN: usize = 256;

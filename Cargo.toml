@@ -25,6 +25,7 @@ bytes = "1"
 
 # internal crates
 wsprism-protocol = { path = "crates/wsprism-protocol", version = "0.1.0" }
+wsprism-engine = { path = "crates/wsprism-engine", version = "0.1.0" }
 wsprism-gateway = { path = "crates/wsprism-gateway", version = "0.1.0" }
 
 axum = { version = "0.7", features = ["ws"] }

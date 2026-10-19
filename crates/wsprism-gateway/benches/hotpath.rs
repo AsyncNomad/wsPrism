@@ -8,11 +8,11 @@ use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use tokio::sync::mpsc;
 
-use wsprism_gateway::config::schema::{TenantLimits, TenantPolicy};
+use wsprism_engine::realtime::core::{Connection, Member, SessionSignals};
+use wsprism_engine::realtime::{OutFrame, Outgoing, Payload, QoS, RealtimeCore};
+use wsprism_gateway::config::schema::TenantPolicy;
 use wsprism_gateway::obs::metrics::GatewayMetrics;
 use wsprism_gateway::policy::TenantPolicyRuntime;
-use wsprism_gateway::realtime::core::{Connection, Member, SessionSignals};
-use wsprism_gateway::realtime::{OutFrame, Outgoing, Payload, QoS, RealtimeCore};
 
 fn policy(c: &mut Criterion) {
     let rules: Vec<String> = (0..9)
@@ -57,7 +57,7 @@ fn metrics(c: &mut Criterion) {
 /// A room of `members` sessions; returns the core and the receivers to drain.
 fn room(members: usize) -> (Arc<RealtimeCore>, Vec<mpsc::Receiver<OutFrame>>) {
     let core = Arc::new(RealtimeCore::new());
-    let limits = TenantLimits::default();
+    let limits = wsprism_engine::RoomLimits::default();
     let mut rxs = Vec::with_capacity(members);
     for i in 0..members {
         let (tx, rx) = mpsc::channel(BATCH * 2);

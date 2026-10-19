@@ -5,12 +5,12 @@
 //! intentionally lock-free; small temporary overshoots are possible under high
 //! contention to preserve throughput.
 
-use crate::config::schema::TenantLimits;
 use crate::realtime::core::{
     now_ms, CloseRequest, Connection, Joined, Member, Presence, Put, SessionRegistry,
 };
 use crate::realtime::types::{close_code, CloseSpec, OutFrame, Outgoing, Payload, QoS};
 use crate::sys;
+use crate::RoomLimits;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -19,7 +19,7 @@ use wsprism_protocol::error::{Result, WsPrismError};
 use wsprism_protocol::protocol::hot::HotFrame;
 use wsprism_protocol::protocol::ProtocolVersion;
 
-use crate::auth::Permissions;
+use crate::permissions::Permissions;
 
 static DROP_COUNT: AtomicU64 = AtomicU64::new(0);
 static SLOT_OVERWRITE_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -258,7 +258,7 @@ pub struct RealtimeCtx {
     active_room: Option<Arc<str>>,
     /// `seq` of the request being handled, for reply correlation.
     request_seq: Option<u64>,
-    limits: Arc<TenantLimits>,
+    limits: Arc<RoomLimits>,
     /// This session's own delivery handles (room membership, replies).
     conn: Connection,
     /// Wire protocol of this session (reply shapes, Hot routing).
@@ -287,7 +287,7 @@ impl RealtimeCtx {
     /// Construct the context for one session.
     pub fn new(
         id: CtxIdentity,
-        limits: Arc<TenantLimits>,
+        limits: Arc<RoomLimits>,
         conn: Connection,
         core: Arc<RealtimeCore>,
     ) -> Self {
@@ -343,11 +343,11 @@ impl RealtimeCtx {
     }
 
     /// Set by the session around each inbound request.
-    pub(crate) fn begin_request(&mut self, seq: Option<u64>) {
+    pub fn begin_request(&mut self, seq: Option<u64>) {
         self.request_seq = seq;
     }
 
-    pub(crate) fn end_request(&mut self) {
+    pub fn end_request(&mut self) {
         self.request_seq = None;
     }
 

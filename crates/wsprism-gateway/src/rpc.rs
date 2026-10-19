@@ -21,9 +21,9 @@ use wsprism_protocol::protocol::text::Envelope;
 use crate::backend::{Backend, Endpoint};
 use crate::config::schema::RpcConfig;
 use crate::policy::allowlist::{compile_ext_rules, is_ext_allowed, ExtRule};
-use crate::realtime::core::DeferredReply;
-use crate::realtime::RealtimeCtx;
-use crate::sys;
+use wsprism_engine::realtime::core::DeferredReply;
+use wsprism_engine::realtime::RealtimeCtx;
+use wsprism_engine::sys;
 
 /// Longest backend error message forwarded to a client.
 const MAX_ERROR_MSG: usize = 512;

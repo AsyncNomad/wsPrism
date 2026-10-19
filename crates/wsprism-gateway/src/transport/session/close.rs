@@ -5,8 +5,8 @@ use tokio::sync::mpsc;
 use tokio::time::{timeout, Duration, Instant};
 
 use super::io::{SessionRx, SessionTx};
-use crate::realtime::{close_code, CloseSpec, OutFrame};
 use crate::transport::subprotocol::ProtocolVersion;
+use wsprism_engine::realtime::{close_code, CloseSpec, OutFrame};
 use wsprism_protocol::protocol::close::wire_close_code;
 
 /// Reason of the oversized-message close (S2; v2 maps it to 4009).

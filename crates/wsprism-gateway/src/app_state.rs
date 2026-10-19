@@ -11,15 +11,16 @@ use wsprism_protocol::error::{Result, WsPrismError};
 
 use crate::auth::{AuthChain, TicketStore};
 use crate::backend::Backend;
-use crate::dispatch::Dispatcher;
 use crate::obs::metrics::GatewayMetrics;
-use crate::realtime::RealtimeCore;
 use crate::rpc::RpcProxy;
-use crate::services::{ChatService, EchoBinaryService, RoomService};
 use crate::{
     config::{GatewayConfig, TenantConfig},
     policy,
 };
+use wsprism_engine::dispatch::Dispatcher;
+use wsprism_engine::realtime::RealtimeCore;
+use wsprism_engine::services::{ChatService, HotRelayService, RoomService};
+use wsprism_engine::RoomLimits;
 // Sprint 5
 use crate::transport::client_ip::TrustedProxies;
 use crate::transport::handshake::HandshakeDefender;
@@ -49,6 +50,8 @@ struct AppStateInner {
     tickets: Arc<TicketStore>,
     /// Per-tenant RPC proxy (`tenants[].rpc`, ADR 0008 §6).
     tenant_rpc: HashMap<String, Arc<RpcProxy>>,
+    /// Per-tenant room limits, shared by every session of the tenant.
+    room_limits: HashMap<String, Arc<RoomLimits>>,
     tenant_policy: HashMap<String, Arc<policy::TenantPolicyRuntime>>,
     /// tenant id -> index into `cfg.tenants` (O(1) lookup per upgrade).
     tenant_index: HashMap<String, usize>,
@@ -131,9 +134,14 @@ impl AppState {
         // 3) Register built-in services (Sprint 3)
         dispatcher.register_text(Arc::new(RoomService::new()));
         dispatcher.register_text(Arc::new(ChatService::new()));
-        dispatcher.register_hot(Arc::new(EchoBinaryService::new(1)));
+        dispatcher.register_hot(Arc::new(HotRelayService::new(1)));
 
         // RPC proxies (may not claim a built-in service name).
+        let room_limits = cfg
+            .tenants
+            .iter()
+            .map(|t| (t.id.clone(), Arc::new(t.limits.room_limits())))
+            .collect();
         let mut tenant_rpc = HashMap::new();
         for t in &cfg.tenants {
             if let Some(rpc) = &t.rpc {
@@ -204,6 +212,7 @@ impl AppState {
                 api_keys,
                 tickets,
                 tenant_rpc,
+                room_limits,
                 tenant_index: cfg
                     .tenants
                     .iter()
@@ -241,6 +250,15 @@ impl AppState {
     }
 
     /// The tenant's RPC proxy, if it has one.
+    /// The tenant's room limits (unlimited for an unknown tenant).
+    pub fn room_limits(&self, tenant_id: &str) -> Arc<RoomLimits> {
+        self.inner
+            .room_limits
+            .get(tenant_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
     pub fn rpc(&self, tenant_id: &str) -> Option<Arc<RpcProxy>> {
         self.inner.tenant_rpc.get(tenant_id).cloned()
     }
@@ -289,19 +307,19 @@ impl AppState {
         vec![
             (
                 "wsprism_egress_drop_total",
-                crate::realtime::core::egress_drop_count(),
+                wsprism_engine::realtime::core::egress_drop_count(),
             ),
             (
                 "wsprism_egress_slow_consumer_closes_total",
-                crate::realtime::core::egress_slow_consumer_count(),
+                wsprism_engine::realtime::core::egress_slow_consumer_count(),
             ),
             (
                 "wsprism_hot_slot_overwritten_total",
-                crate::realtime::core::hot_slot_overwrite_count(),
+                wsprism_engine::realtime::core::hot_slot_overwrite_count(),
             ),
             (
                 "wsprism_hot_slot_full_drops_total",
-                crate::realtime::core::hot_slot_full_count(),
+                wsprism_engine::realtime::core::hot_slot_full_count(),
             ),
         ]
     }

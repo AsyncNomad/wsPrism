@@ -5,29 +5,29 @@ use std::sync::Arc;
 use wsprism_protocol::error::{Result, WsPrismError};
 use wsprism_protocol::protocol::hot::{encode_hot_frame_v2, HotFrame, HotOutV2};
 
-use crate::dispatch::BinaryService;
+use crate::dispatch::HotService;
 use crate::realtime::{HotOut, Outgoing, Payload, QoS, RealtimeCtx};
 
 /// Relays Hot frames to the room they target (v2: `chan`, v1: the active
 /// room), stamping the publisher's member id for v2 recipients. v1 sessions
 /// without an active room get their payload echoed back.
-pub struct EchoBinaryService {
+pub struct HotRelayService {
     svc_id: u8,
 }
 
-impl EchoBinaryService {
+impl HotRelayService {
     pub fn new(svc_id: u8) -> Self {
         Self { svc_id }
     }
 }
 
 #[async_trait]
-impl BinaryService for EchoBinaryService {
+impl HotService for HotRelayService {
     fn svc_id(&self) -> u8 {
         self.svc_id
     }
 
-    async fn handle_binary(&self, ctx: &mut RealtimeCtx, frame: HotFrame) -> Result<()> {
+    async fn handle_hot(&self, ctx: &mut RealtimeCtx, frame: HotFrame) -> Result<()> {
         let Some((room, joined)) = ctx.hot_target(&frame) else {
             if frame.chan.is_some() {
                 // v2 frames must name a joined room (the session loop already

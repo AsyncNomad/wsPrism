@@ -16,18 +16,18 @@ pub trait TextService: Send + Sync {
     async fn handle(&self, ctx: &mut RealtimeCtx, env: Envelope) -> Result<()>;
 }
 
-/// Binary services (Hot Lane). **Native only** (no WASM/script).
+/// Hot lane services (binary frames). **Native only** (no WASM/script).
 #[async_trait]
-pub trait BinaryService: Send + Sync {
+pub trait HotService: Send + Sync {
     fn svc_id(&self) -> u8;
-    async fn handle_binary(&self, ctx: &mut RealtimeCtx, frame: HotFrame) -> Result<()>;
+    async fn handle_hot(&self, ctx: &mut RealtimeCtx, frame: HotFrame) -> Result<()>;
 }
 
 /// Registry and dispatcher for Text (Ext lane) and Binary (Hot lane) services.
 #[derive(Default)]
 pub struct Dispatcher {
     text: DashMap<&'static str, Arc<dyn TextService>>,
-    hot: DashMap<u8, Arc<dyn BinaryService>>,
+    hot: DashMap<u8, Arc<dyn HotService>>,
 }
 
 impl Dispatcher {
@@ -42,7 +42,7 @@ impl Dispatcher {
         self.text.insert(svc.svc(), svc);
     }
 
-    pub fn register_hot(&self, svc: Arc<dyn BinaryService>) {
+    pub fn register_hot(&self, svc: Arc<dyn HotService>) {
         self.hot.insert(svc.svc_id(), svc);
     }
 
@@ -79,6 +79,6 @@ impl Dispatcher {
             .ok_or_else(|| WsPrismError::BadRequest(format!("unknown hot svc_id: {sid}")))?
             .value()
             .clone();
-        handler.handle_binary(ctx, frame).await
+        handler.handle_hot(ctx, frame).await
     }
 }

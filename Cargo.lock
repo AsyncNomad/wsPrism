@@ -2631,6 +2631,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "wsprism-engine"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "dashmap",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "wsprism-protocol",
+]
+
+[[package]]
 name = "wsprism-gateway"
 version = "0.1.0"
 dependencies = [
@@ -2656,6 +2670,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tungstenite",
+ "wsprism-engine",
  "wsprism-protocol",
 ]
 

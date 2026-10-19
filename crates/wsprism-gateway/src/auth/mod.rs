@@ -9,7 +9,6 @@
 
 mod dev;
 mod jwt;
-mod permissions;
 mod proxy;
 mod ticket;
 
@@ -25,11 +24,11 @@ type BuildResult<T> = wsprism_protocol::error::Result<T>;
 
 pub use dev::DevAuthenticator;
 pub use jwt::{expiry_deadline_ms, JwtAuthenticator};
-pub use permissions::{Permissions, RoomPattern};
 pub use proxy::ProxyAuthenticator;
 pub use ticket::{
     IssueError, TicketAuthenticator, TicketStore, DEFAULT_TICKET_TTL, MAX_TICKET_TTL, TICKET_PREFIX,
 };
+pub use wsprism_engine::permissions::{Permissions, RoomPattern};
 
 /// What an authenticator gets to see of a connection attempt.
 #[derive(Debug, Clone, Copy)]

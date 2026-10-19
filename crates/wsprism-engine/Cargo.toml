@@ -1,0 +1,17 @@
+[package]
+name = "wsprism-engine"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+description = "wsPrism realtime engine: rooms, delivery classes, Hot-lane state, services (no transport, config format or HTTP)"
+
+[dependencies]
+wsprism-protocol = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+dashmap = { workspace = true }
+async-trait = { workspace = true }

@@ -1,4 +1,4 @@
-use crate::config::schema::TenantLimits;
+use crate::RoomLimits;
 use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use std::collections::HashSet;
@@ -138,7 +138,7 @@ impl Presence {
         room_key: &str,
         user_key: &str,
         member: Member,
-        limits: &TenantLimits,
+        limits: &RoomLimits,
     ) -> Result<Joined> {
         // O(1) check first; the member scan only runs for a repeated join.
         if self.is_member(room_key, &member.key) {
@@ -348,8 +348,8 @@ mod tests {
 
     const ITERS: usize = 40_000;
 
-    fn limits() -> TenantLimits {
-        TenantLimits::default()
+    fn limits() -> RoomLimits {
+        RoomLimits::default()
     }
 
     fn member(session_key: &str) -> Member {
@@ -431,9 +431,9 @@ mod tests {
     #[test]
     fn tenant_room_cap_is_never_exceeded() {
         let p = Presence::new();
-        let lim = TenantLimits {
+        let lim = RoomLimits {
             max_rooms_total: 5,
-            ..TenantLimits::default()
+            ..RoomLimits::default()
         };
         std::thread::scope(|s| {
             for i in 0..8 {

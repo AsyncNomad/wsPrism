@@ -5,4 +5,4 @@
 
 pub mod dispatcher;
 
-pub use dispatcher::{BinaryService, Dispatcher, TextService};
+pub use dispatcher::{Dispatcher, HotService, TextService};

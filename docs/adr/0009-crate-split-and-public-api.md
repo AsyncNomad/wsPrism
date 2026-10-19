@@ -1,6 +1,6 @@
 # ADR 0009: 크레이트 분리와 공개 API 정책 (M2-9)
 
-- 상태: **채택 (2026-10-16)** — 사용자 검토: 결정 1~4 승인("진행"), 5 배포 의향 있음. 단계별 구현(§7): S1 ✅
+- 상태: **채택 (2026-10-16)** — 사용자 검토: 결정 1~4 승인("진행"), 5 배포 의향 있음. 단계별 구현(§7): S1 ✅ S2 ✅
 - 관련: [ADR 0008](0008-m2-lite-integration.md) §9 M2-9, [ADR 0005](0005-session-transport-seam.md)(세션↔전송 경계), [ADR 0004](0004-product-direction.md)(쉬운 커스텀), [ROADMAP](../ROADMAP.md)
 
 ## 배경 (조사한 사실)
@@ -124,6 +124,11 @@ gateway의 나머지 전부: `app_state`, `transport::*`, `policy::*`, `obs`, `a
 
 - 크레이트 경계를 넘는, 제네릭이 아닌 작은 함수는 LTO가 없으면 인라인되지 않을 수 있다. 전달 경로(`deliver`, `HotSlot::put`, 서명·카운터)가 경계를 넘는다.
 - **통과 기준:** 분리 전후로 `hotpath` criterion을 같은 세션에서 번갈아 측정해, 노이즈 범위 안이어야 한다. 넘으면 해당 함수에 `#[inline]`을 붙이고 다시 측정한다.
+- **S2 측정 결과 (2026-10-16~19):**
+  - `hotpath`를 분리 전 커밋(worktree)과 같은 세션에서 번갈아 3회씩 측정했다. policy·metrics는 변화 없음. **`publish_room` 팬아웃은 +8~12%**(10명 363→399 ns, 100명 3.32→3.74 µs, 1000명 36.0→38.9 µs, 수신자당 약 3 ns)로 일관되게 회귀했다.
+  - 원인(perf): 우리 코드가 아니라 **tokio `mpsc` 송신 경로(제네릭)의 인라인 결정이 codegen unit 분할에 따라 달라졌다.** 분리 전에는 한 심볼에 합쳐져 있던 `chan::Tx` 송신이, 분리 후에는 `list::Tx::push`가 따로 떨어지고 `deliver` 비중이 1.96%→6.63%로 커졌다.
+  - `deliver`에 `#[inline]` → 효과 없음(되돌림). `codegen-units = 1`(양쪽) → 팬아웃 차이 1~3%로 사라짐. 그러나 release에 cgu=1을 넣으면 끊기기 전 2회 측정에서 policy·metrics가 7~10% 느려지는 신호가 있었고, 측정 중 다른 프로세스(Dart LSP 11 GB)로 메모리가 꽉 차 있었다(빌드 OOM 1회) → 근거가 엇갈려 **빌드 프로필은 바꾸지 않았다.**
+  - **결정: 회귀를 기록하고 성능 단계로 넘긴다.** 이것은 크레이트 구조가 아니라 빌드 설정(cgu·LTO·PGO)의 문제이고, cgu=1로 해소되는 것을 확인했다. 성능 단계에서 cgu·`lto`를 깨끗한 환경에서 전체 벤치 + 실부하(`run-ab-gateway.sh`)로 정한다. 그 전까지 S3 이후 단계의 벤치 기준선은 S2 이후 값으로 한다.
 - release 프로필에 `lto = "thin"`을 넣을지는 이번에 정하지 않는다. 성능 작업 단계(사용자 결정: "성능은 나중에")에서 측정과 함께 정한다. 이번 단계에서는 "바뀌지 않았음"만 증명한다.
 
 ### 7. 작업 단계 (단계마다 커밋, 동작 변화 없음, 전체 게이트)
@@ -131,7 +136,7 @@ gateway의 나머지 전부: `app_state`, `transport::*`, `policy::*`, `obs`, `a
 | 단계 | 내용 |
 |---|---|
 | S1 ✅ | `wsprism-core` → `wsprism-protocol` 이름 변경, 종료 코드 매핑을 protocol로 이동 (지난 기록 문서·SVG 프로파일의 옛 이름은 역사 기록이라 그대로 둔다) |
-| S2 | `wsprism-engine` 생성: realtime·dispatch·services·permissions·sys 이동, `RoomLimits` 분리, 이름 변경(`HotService`, `HotRelayService`). 분리 전후 벤치 비교 |
+| S2 ✅ | `wsprism-engine` 생성: realtime·dispatch·services·permissions·sys 이동, `RoomLimits` 분리(테넌트별 `Arc` 공유 — 세션마다 하던 `TenantLimits` 복제·할당 제거), 이름 변경(`HotService`·`handle_hot`, `HotRelayService`). 엔진 의존성에 axum·hyper·reqwest·ring·jwt·YAML·rustls 없음(`cargo tree` 확인). **벤치: §6 측정 결과 참고 — 팬아웃 +8~12% 미해결** |
 | S3 | 공개 범위 정리: `unreachable_pub`, `non_exhaustive`, `spi`, `internals` feature, fuzz·벤치 경로 정리 |
 | S4 | `GatewayBuilder` + `kind: plugin` + 예약 이름 검사. `main.rs`와 테스트 헬퍼를 빌더로 전환 |
 | S5 | 파사드 `wsprism`(prelude), `docs/API.md`(공개 목록과 등급), 호환성 정책 문서, 사용자 서비스 예제(`examples/custom-service`: 빌더 + Ext 서비스 하나 + 테스트) |

@@ -11,9 +11,9 @@ use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 
 use super::io::{RecvError, SessionRx, SessionTx};
-use crate::realtime::OutFrame;
 use crate::transport::codec::{decode, Inbound};
 use crate::transport::subprotocol::ProtocolVersion;
+use wsprism_engine::realtime::OutFrame;
 
 /// How long to keep the socket open after sending close 1009 (see S2).
 const CLOSE_LINGER: Duration = Duration::from_millis(500);

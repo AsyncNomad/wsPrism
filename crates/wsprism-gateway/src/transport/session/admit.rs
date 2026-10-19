@@ -11,9 +11,11 @@ use super::{Session, SessionIdentity};
 use crate::app_state::AppState;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::OnExceed;
-use crate::realtime::core::{now_ms, CloseRequest, Connection, CtxIdentity, SessionSignals};
-use crate::realtime::{close_code, CloseSpec, OutFrame, RealtimeCore, RealtimeCtx};
-use crate::sys;
+use wsprism_engine::realtime::core::{
+    now_ms, CloseRequest, Connection, CtxIdentity, SessionSignals,
+};
+use wsprism_engine::realtime::{close_code, CloseSpec, OutFrame, RealtimeCore, RealtimeCtx};
+use wsprism_engine::sys;
 
 /// Per-connection counter making internal session keys unique (S4).
 static NEXT_CONN: AtomicU64 = AtomicU64::new(1);
@@ -203,7 +205,7 @@ impl Session {
                 protocol: id.protocol,
                 permissions: id.permissions,
             },
-            Arc::new(t_cfg.limits.clone()),
+            app.room_limits(&t_cfg.id),
             conn,
             core,
         );

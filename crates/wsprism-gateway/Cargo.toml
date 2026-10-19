@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 wsprism-protocol = { workspace = true }
+wsprism-engine = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_norway = { workspace = true }

@@ -11,9 +11,9 @@ use super::close::Exit;
 use super::io::RecvError;
 use super::{Flow, Session};
 use crate::policy::engine::{HotErrorMode, PolicyDecision};
-use crate::realtime::{close_code, CloseSpec};
-use crate::sys;
 use crate::transport::codec::Inbound;
+use wsprism_engine::realtime::{close_code, CloseSpec};
+use wsprism_engine::sys;
 
 impl Session {
     pub(super) async fn on_incoming(
