@@ -78,7 +78,8 @@ gateway:
   # Rejected clients receive HTTP 429 Too Many Requests with a `Retry-After` header.
   
   handshake_limit:
-    # Master switch for the defender.
+    # Master switch for the defender (on by default; turn off only for load
+    # tests from a single address).
     enabled: true
 
     # Global Limit (Token Bucket):
@@ -93,9 +94,14 @@ gateway:
     per_ip_rps: 10
     per_ip_burst: 20
 
+    # IPv6 clients count per prefix of this length (a subscriber usually holds
+    # a whole /64, so per-address limits would be trivial to sidestep). 32-128.
+    ipv6_prefix_len: 64
+
     # Memory Safety:
-    # Max number of unique IP addresses to track in memory.
-    # If exceeded, old entries are probabilistically evicted to prevent OOM.
+    # Max number of unique IP addresses to track in memory. At the cap, entries
+    # whose bucket has fully refilled are evicted; addresses that still don't
+    # fit are limited by the global bucket only.
     max_ip_entries: 50000
 
 

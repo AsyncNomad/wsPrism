@@ -107,6 +107,7 @@ impl HandshakeDefender {
         //    shard lock is ever held while touching the map again. (Do not move
         //    them into an `if let` scrutinee: in edition 2021 its temporaries
         //    live through the `else` branch.)
+        let ip = self.bucket_key(ip);
         let tracked = self.per_ip.get_mut(&ip).map(|mut b| b.try_take(1));
         let per_ip = match tracked {
             Some(r) => r,
@@ -132,6 +133,19 @@ impl HandshakeDefender {
             .try_take(1)?;
 
         Ok(())
+    }
+
+    /// The per-IP bucket an address counts against: IPv4 as is, IPv6 by
+    /// its `ipv6_prefix_len` prefix.
+    fn bucket_key(&self, ip: IpAddr) -> IpAddr {
+        match ip {
+            IpAddr::V4(_) => ip,
+            IpAddr::V6(v6) => {
+                let bits = u32::from(self.cfg.ipv6_prefix_len.clamp(32, 128));
+                let mask = u128::MAX.checked_shl(128 - bits).unwrap_or(0);
+                IpAddr::V6((u128::from(v6) & mask).into())
+            }
+        }
     }
 
     /// Sweep at most once per `SWEEP_INTERVAL` across all callers.
@@ -183,6 +197,7 @@ mod tests {
             per_ip_burst,
             per_ip_rps: 1,
             max_ip_entries,
+            ipv6_prefix_len: 64,
         }
     }
 
@@ -230,6 +245,19 @@ mod tests {
         let admitted = (0..10).filter(|_| d.check(ip(3)).is_ok()).count();
         assert_eq!(admitted, 3);
         assert_eq!(d.per_ip.len(), 2);
+    }
+
+    #[test]
+    fn ipv6_addresses_share_their_64_prefix_bucket() {
+        let d = HandshakeDefender::new(cfg(100, 2, 1000));
+        let v6 = |s: &str| s.parse::<IpAddr>().unwrap();
+        assert!(d.check(v6("2001:db8:1:2::1")).is_ok());
+        assert!(d.check(v6("2001:db8:1:2::ffff")).is_ok());
+        assert!(
+            d.check(v6("2001:db8:1:2:aaaa::9")).is_err(),
+            "same /64: bucket exhausted"
+        );
+        assert!(d.check(v6("2001:db8:1:3::1")).is_ok(), "another /64");
     }
 
     #[test]

@@ -155,7 +155,9 @@ fn default_true() -> bool {
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct HandshakeConfig {
-    #[serde(default)]
+    /// On by default (per-IP and global handshake rate limits). Turn off
+    /// only for load tests from a single address.
+    #[serde(default = "default_true")]
     pub enabled: bool,
 
     /// Global limiter: burst capacity.
@@ -175,17 +177,28 @@ pub struct HandshakeConfig {
     /// Clean up per-ip map opportunistically when it grows too big.
     #[serde(default = "default_hs_max_entries")]
     pub max_ip_entries: usize,
+
+    /// IPv6 clients are limited per prefix of this length (default /64: one
+    /// subscriber usually holds a whole /64, so per-address limits are easy
+    /// to sidestep). 32..=128.
+    #[serde(default = "default_hs_ipv6_prefix")]
+    pub ipv6_prefix_len: u8,
+}
+
+fn default_hs_ipv6_prefix() -> u8 {
+    64
 }
 
 impl Default for HandshakeConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             global_burst: 200,
             global_rps: 100,
             per_ip_burst: 50,
             per_ip_rps: 10,
             max_ip_entries: 50_000,
+            ipv6_prefix_len: default_hs_ipv6_prefix(),
         }
     }
 }
@@ -227,6 +240,11 @@ impl Default for GatewaySection {
 
 impl GatewaySection {
     pub fn validate(&self) -> Result<()> {
+        if !(32..=128).contains(&self.handshake_limit.ipv6_prefix_len) {
+            return Err(WsPrismError::BadRequest(
+                "gateway.handshake_limit.ipv6_prefix_len must be 32-128".into(),
+            ));
+        }
         if !(5000..=120000).contains(&self.ping_interval_ms) {
             return Err(WsPrismError::BadRequest(
                 "gateway.ping_interval_ms must be between 5000 and 120000".into(),
