@@ -144,7 +144,7 @@ impl SessionSignals {
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
-    use crate::realtime::close_code;
+    use crate::realtime::types::close_code;
 
     #[tokio::test]
     async fn first_close_request_wins_and_is_not_lost_without_a_waiter() {

@@ -8,8 +8,9 @@ use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use tokio::sync::mpsc;
 
-use wsprism_engine::realtime::core::{Connection, Member, SessionSignals};
-use wsprism_engine::realtime::{OutFrame, Outgoing, Payload, QoS, RealtimeCore};
+use wsprism_engine::spi::{Connection, Member, SessionSignals};
+use wsprism_engine::spi::{OutFrame, RealtimeCore};
+use wsprism_engine::{Outgoing, Payload, QoS};
 use wsprism_gateway::config::schema::TenantPolicy;
 use wsprism_gateway::obs::metrics::GatewayMetrics;
 use wsprism_gateway::policy::TenantPolicyRuntime;

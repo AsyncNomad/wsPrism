@@ -32,10 +32,11 @@ use crate::policy::engine::ConnRateLimiter;
 use crate::policy::TenantPolicyRuntime;
 use crate::rpc::RpcProxy;
 use crate::transport::subprotocol::ProtocolVersion;
-use wsprism_engine::dispatch::Dispatcher;
-use wsprism_engine::realtime::core::{now_ms, CloseRequest, SessionSignals};
-use wsprism_engine::realtime::{close_code, CloseSpec, HotOut, OutFrame, RealtimeCtx};
-use wsprism_engine::sys;
+use wsprism_engine::spi::sys;
+use wsprism_engine::spi::Dispatcher;
+use wsprism_engine::spi::{close_code, CloseSpec, HotOut, OutFrame};
+use wsprism_engine::spi::{now_ms, CloseRequest, SessionSignals};
+use wsprism_engine::RealtimeCtx;
 
 use admit::{Admission, SessionCleanup};
 use close::Exit;
@@ -326,6 +327,6 @@ impl Session {
     }
 
     fn trace_id(&self) -> &str {
-        &self.ctx.trace_id
+        self.ctx.trace_id()
     }
 }

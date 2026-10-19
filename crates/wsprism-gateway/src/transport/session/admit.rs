@@ -11,11 +11,10 @@ use super::{Session, SessionIdentity};
 use crate::app_state::AppState;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::OnExceed;
-use wsprism_engine::realtime::core::{
-    now_ms, CloseRequest, Connection, CtxIdentity, SessionSignals,
-};
-use wsprism_engine::realtime::{close_code, CloseSpec, OutFrame, RealtimeCore, RealtimeCtx};
-use wsprism_engine::sys;
+use wsprism_engine::spi::sys;
+use wsprism_engine::spi::{close_code, CloseSpec, OutFrame, RealtimeCore};
+use wsprism_engine::spi::{now_ms, CloseRequest, Connection, CtxIdentity, SessionSignals};
+use wsprism_engine::RealtimeCtx;
 
 /// Per-connection counter making internal session keys unique (S4).
 static NEXT_CONN: AtomicU64 = AtomicU64::new(1);

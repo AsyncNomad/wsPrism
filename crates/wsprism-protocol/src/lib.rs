@@ -14,6 +14,7 @@
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
 #![deny(clippy::panic)]
+#![warn(unreachable_pub)]
 
 pub mod error;
 pub mod protocol;

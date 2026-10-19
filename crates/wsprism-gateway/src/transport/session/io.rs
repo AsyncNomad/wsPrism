@@ -19,7 +19,7 @@ use std::time::Duration;
 use wsprism_protocol::error::WsPrismError;
 
 use crate::transport::codec::Inbound;
-use wsprism_engine::realtime::OutFrame;
+use wsprism_engine::spi::OutFrame;
 
 /// Why reading the next inbound message failed.
 #[derive(Debug)]

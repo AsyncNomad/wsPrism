@@ -1,6 +1,6 @@
 # ADR 0009: 크레이트 분리와 공개 API 정책 (M2-9)
 
-- 상태: **채택 (2026-10-16)** — 사용자 검토: 결정 1~4 승인("진행"), 5 배포 의향 있음. 단계별 구현(§7): S1 ✅ S2 ✅
+- 상태: **채택 (2026-10-16)** — 사용자 검토: 결정 1~4 승인("진행"), 5 배포 의향 있음. 단계별 구현(§7): S1 ✅ S2 ✅ S3 ✅
 - 관련: [ADR 0008](0008-m2-lite-integration.md) §9 M2-9, [ADR 0005](0005-session-transport-seam.md)(세션↔전송 경계), [ADR 0004](0004-product-direction.md)(쉬운 커스텀), [ROADMAP](../ROADMAP.md)
 
 ## 배경 (조사한 사실)
@@ -91,7 +91,7 @@ async fn main() -> wsprism::Result<()> {
 | engine | `TextService`, **`HotService`**(← `BinaryService`), `RealtimeCtx`(아래 메서드만), `Outgoing`, `Payload`, `QoS`, `DeferredReply`, `Permissions`, `RoomPattern`, `RoomLimits`, 내장 `RoomService`·`ChatService`·**`HotRelayService`**(← `EchoBinaryService`) |
 | gateway | `Gateway`, `GatewayBuilder`, `GatewayConfig`와 `load_from_file`·`load_from_str`, `Authenticator`, `AuthRequest`, `AuthError`, `Identity`, `AuthPluginFactory` |
 
-`RealtimeCtx`에서 공개하는 메서드는 `tenant`, `user`, `session_id`, `protocol`, `active_room`, `is_in_room`, `request_seq`, `trace_id`, `reply`, `send_to_session`, `publish_room_reliable`, `publish_room_lossy`, `join_room`, `leave_room`, `defer_reply`다. 지금 `pub`인 필드 `trace_id`는 메서드로 바꾸고, `session_key`·`user_key`(내부 키 형식)는 숨긴다.
+`RealtimeCtx`에서 공개하는 메서드는 `tenant`, `user`, `session_id`, `protocol`, `active_room`, `is_in_room`, `request_seq`, `trace_id`, `reply`, `send_to_session`, `send_to_user`, `publish_room_reliable`, `publish_room_lossy`, `join_room`(→ `Joined`, 안정 API에 추가), `leave_room`, `defer_reply`다. 서버용(`new`, `begin_request`, `end_request`, `hot_target`, `set_active_room`, `user_key`, `session_key`)은 `#[doc(hidden)]` + "SPI" 표시. 지금 `pub`인 필드 `trace_id`는 메서드로 바꾸고, `session_key`·`user_key`(내부 키 형식)는 숨긴다.
 
 **4-2. 불안정 SPI** (`wsprism_engine::spi`. gateway와 앞으로의 다른 전송이 쓰는 "서버 제작자용" 경계. 문서 첫 줄에 "semver 대상 아님"을 명시하고, 파사드에서는 재수출하지 않는다)
 
@@ -104,7 +104,7 @@ gateway의 나머지 전부: `app_state`, `transport::*`, `policy::*`, `obs`, `a
 
 **강제 장치**
 - protocol·engine·gateway 모두 `#![warn(unreachable_pub)]`(CI에서 `-D warnings`라 사실상 오류)를 켠다. 안정 API 크레이트에는 `#![warn(missing_docs)]`도 켠다.
-- 공개 enum과 커질 수 있는 공개 구조체에는 `#[non_exhaustive]`를 붙인다: `ClientCode`, `WsPrismError`, `QoS`, `Payload`, `ProtocolVersion`, `AuthError`, `GatewayConfig` 계열(설정 구조체는 역직렬화로만 만들어진다). 이번 세션에서 `ClientCode::Unavailable`을 추가한 것이 바로 이것이 필요한 사례다.
+- 공개 enum과 커질 수 있는 공개 구조체에는 `#[non_exhaustive]`를 붙인다 — **단, 구현(S3) 중 기준을 좁혔다.** `#[non_exhaustive]`는 우리 다른 크레이트에서도 `match`의 빠짐없음 검사를 없앤다. 그래서 쓰는 쪽이 주로 *만들거나 표시하는* 타입에만 붙인다: `ClientCode`, `WsPrismError`(✅ S3), `GatewayConfig` 계열(S4, 역직렬화로만 생성). `ProtocolVersion`·`QoS`·`Payload`·`AuthError`처럼 **새 값이 생기면 모든 처리 지점이 바뀌어야 하는 타입에는 붙이지 않는다** — 컴파일러가 빠진 처리를 잡아 주는 편이 낫고, 그런 추가는 어차피 깨는 변경으로 다룬다. `ClientCode::Unavailable`을 추가한 일이 앞쪽 기준이 필요한 사례다.
 
 ### 5. 호환성·버전 정책
 
@@ -137,7 +137,7 @@ gateway의 나머지 전부: `app_state`, `transport::*`, `policy::*`, `obs`, `a
 |---|---|
 | S1 ✅ | `wsprism-core` → `wsprism-protocol` 이름 변경, 종료 코드 매핑을 protocol로 이동 (지난 기록 문서·SVG 프로파일의 옛 이름은 역사 기록이라 그대로 둔다) |
 | S2 ✅ | `wsprism-engine` 생성: realtime·dispatch·services·permissions·sys 이동, `RoomLimits` 분리(테넌트별 `Arc` 공유 — 세션마다 하던 `TenantLimits` 복제·할당 제거), 이름 변경(`HotService`·`handle_hot`, `HotRelayService`). 엔진 의존성에 axum·hyper·reqwest·ring·jwt·YAML·rustls 없음(`cargo tree` 확인). **벤치: §6 측정 결과 참고 — 팬아웃 +8~12% 미해결** |
-| S3 | 공개 범위 정리: `unreachable_pub`, `non_exhaustive`, `spi`, `internals` feature, fuzz·벤치 경로 정리 |
+| S3 ✅ | protocol·engine 공개 범위 정리: 엔진 모듈 비공개화 + 루트 재수출(안정) + `spi`(불안정), `RealtimeCtx`의 서버용 메서드 `#[doc(hidden)]`·SPI 표시, `trace_id` 필드→메서드, `unreachable_pub`. 게이트웨이 모듈 정리와 `internals` feature는 테스트가 빌더로 옮겨 가는 S4로 이동 |
 | S4 | `GatewayBuilder` + `kind: plugin` + 예약 이름 검사. `main.rs`와 테스트 헬퍼를 빌더로 전환 |
 | S5 | 파사드 `wsprism`(prelude), `docs/API.md`(공개 목록과 등급), 호환성 정책 문서, 사용자 서비스 예제(`examples/custom-service`: 빌더 + Ext 서비스 하나 + 테스트) |
 | S6 | MSRV 확정 + CI 작업 (툴체인 다운로드 승인 후) |

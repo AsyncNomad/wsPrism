@@ -25,9 +25,9 @@ impl RoomService {
         let joined = ctx.join_room(&room)?;
         ctx.set_active_room(Some(&room));
         let msg = match ctx.protocol() {
-            ProtocolVersion::V1 => sys::joined(&room, &ctx.trace_id),
+            ProtocolVersion::V1 => sys::joined(&room, ctx.trace_id()),
             ProtocolVersion::V2 => {
-                sys::joined_v2(&room, joined.room_id, joined.member_id, &ctx.trace_id)
+                sys::joined_v2(&room, joined.room_id, joined.member_id, ctx.trace_id())
             }
         };
         ctx.reply(msg)
@@ -43,7 +43,7 @@ impl RoomService {
         if ctx.active_room() == Some(room.as_str()) {
             ctx.set_active_room(None);
         }
-        ctx.reply(sys::left(&room, &ctx.trace_id))
+        ctx.reply(sys::left(&room, ctx.trace_id()))
     }
 }
 

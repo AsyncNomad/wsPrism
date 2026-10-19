@@ -15,6 +15,7 @@ use thiserror::Error;
 /// These codes are used in outward-facing responses and logging to decouple
 /// client behavior from internal error variants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ClientCode {
     /// Invalid input / malformed message.
     BadRequest,
@@ -67,6 +68,7 @@ pub type Result<T> = std::result::Result<T, WsPrismError>;
 
 /// Unified error type used by core and gateway layers.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum WsPrismError {
     #[error("bad request: {0}")]
     BadRequest(String),

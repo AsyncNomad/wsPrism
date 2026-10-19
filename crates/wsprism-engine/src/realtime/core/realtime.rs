@@ -254,7 +254,7 @@ pub struct RealtimeCtx {
     user_key: Arc<str>,
     session_id: Arc<str>,
     session_key: Arc<str>,
-    pub trace_id: Arc<str>,
+    trace_id: Arc<str>,
     active_room: Option<Arc<str>>,
     /// `seq` of the request being handled, for reply correlation.
     request_seq: Option<u64>,
@@ -285,6 +285,8 @@ pub struct CtxIdentity {
 
 impl RealtimeCtx {
     /// Construct the context for one session.
+    /// SPI (unstable): for the session runtime, not services.
+    #[doc(hidden)]
     pub fn new(
         id: CtxIdentity,
         limits: Arc<RoomLimits>,
@@ -310,18 +312,27 @@ impl RealtimeCtx {
         }
     }
 
+    /// Trace id of this session (also in its `sys.*` messages).
+    pub fn trace_id(&self) -> &str {
+        &self.trace_id
+    }
+
     pub fn tenant(&self) -> &str {
         &self.tenant
     }
     pub fn user(&self) -> &str {
         &self.user
     }
+    /// SPI (unstable): for the session runtime, not services.
+    #[doc(hidden)]
     pub fn user_key(&self) -> &str {
         &self.user_key
     }
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
+    /// SPI (unstable): for the session runtime, not services.
+    #[doc(hidden)]
     pub fn session_key(&self) -> &str {
         &self.session_key
     }
@@ -329,6 +340,8 @@ impl RealtimeCtx {
     pub fn active_room(&self) -> Option<&str> {
         self.active_room.as_deref()
     }
+    /// SPI (unstable): for the session runtime, not services.
+    #[doc(hidden)]
     pub fn set_active_room(&mut self, room: Option<&str>) {
         self.active_room = room.map(Arc::from);
     }
@@ -343,10 +356,14 @@ impl RealtimeCtx {
     }
 
     /// Set by the session around each inbound request.
+    /// SPI (unstable): for the session runtime, not services.
+    #[doc(hidden)]
     pub fn begin_request(&mut self, seq: Option<u64>) {
         self.request_seq = seq;
     }
 
+    /// SPI (unstable): for the session runtime, not services.
+    #[doc(hidden)]
     pub fn end_request(&mut self) {
         self.request_seq = None;
     }
@@ -423,6 +440,8 @@ impl RealtimeCtx {
     /// The room a Hot frame targets and this session's membership in it:
     /// v2 names the room id (`chan`) and must be a room this session joined
     /// (ADR 0006 R5, R7); v1 targets the active room.
+    /// SPI (unstable): for the session runtime, not services.
+    #[doc(hidden)]
     pub fn hot_target(&self, frame: &HotFrame) -> Option<(&str, Joined)> {
         let found = match frame.chan {
             Some(chan) => self.joined.iter().find(|(_, j)| j.room_id == chan),

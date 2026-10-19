@@ -28,7 +28,7 @@ pub use proxy::ProxyAuthenticator;
 pub use ticket::{
     IssueError, TicketAuthenticator, TicketStore, DEFAULT_TICKET_TTL, MAX_TICKET_TTL, TICKET_PREFIX,
 };
-pub use wsprism_engine::permissions::{Permissions, RoomPattern};
+pub use wsprism_engine::{Permissions, RoomPattern};
 
 /// What an authenticator gets to see of a connection attempt.
 #[derive(Debug, Clone, Copy)]

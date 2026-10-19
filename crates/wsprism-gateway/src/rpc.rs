@@ -21,9 +21,9 @@ use wsprism_protocol::protocol::text::Envelope;
 use crate::backend::{Backend, Endpoint};
 use crate::config::schema::RpcConfig;
 use crate::policy::allowlist::{compile_ext_rules, is_ext_allowed, ExtRule};
-use wsprism_engine::realtime::core::DeferredReply;
-use wsprism_engine::realtime::RealtimeCtx;
-use wsprism_engine::sys;
+use wsprism_engine::spi::sys;
+use wsprism_engine::DeferredReply;
+use wsprism_engine::RealtimeCtx;
 
 /// Longest backend error message forwarded to a client.
 const MAX_ERROR_MSG: usize = 512;
@@ -100,7 +100,7 @@ impl RpcProxy {
             "room": env.room,
             "data": env.data,
         });
-        let trace_id = ctx.trace_id.to_string();
+        let trace_id = ctx.trace_id().to_string();
         let this = Arc::clone(self);
         tokio::spawn(async move { this.round_trip(body, reply, &trace_id).await });
         Ok(())

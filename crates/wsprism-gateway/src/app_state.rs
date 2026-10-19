@@ -17,9 +17,9 @@ use crate::{
     config::{GatewayConfig, TenantConfig},
     policy,
 };
-use wsprism_engine::dispatch::Dispatcher;
-use wsprism_engine::realtime::RealtimeCore;
 use wsprism_engine::services::{ChatService, HotRelayService, RoomService};
+use wsprism_engine::spi::Dispatcher;
+use wsprism_engine::spi::RealtimeCore;
 use wsprism_engine::RoomLimits;
 // Sprint 5
 use crate::transport::client_ip::TrustedProxies;
@@ -307,19 +307,19 @@ impl AppState {
         vec![
             (
                 "wsprism_egress_drop_total",
-                wsprism_engine::realtime::core::egress_drop_count(),
+                wsprism_engine::spi::egress_drop_count(),
             ),
             (
                 "wsprism_egress_slow_consumer_closes_total",
-                wsprism_engine::realtime::core::egress_slow_consumer_count(),
+                wsprism_engine::spi::egress_slow_consumer_count(),
             ),
             (
                 "wsprism_hot_slot_overwritten_total",
-                wsprism_engine::realtime::core::hot_slot_overwrite_count(),
+                wsprism_engine::spi::hot_slot_overwrite_count(),
             ),
             (
                 "wsprism_hot_slot_full_drops_total",
-                wsprism_engine::realtime::core::hot_slot_full_count(),
+                wsprism_engine::spi::hot_slot_full_count(),
             ),
         ]
     }

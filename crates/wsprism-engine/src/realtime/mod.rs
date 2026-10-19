@@ -3,8 +3,8 @@
 //! Provides session registry, presence tracking, QoS-aware publishing helpers,
 //! and per-message context passed to services.
 
-pub mod core;
-pub mod types;
+pub(crate) mod core;
+pub(crate) mod types;
 
-pub use core::{Presence, RealtimeCore, RealtimeCtx, SessionRegistry};
-pub use types::{close_code, CloseSpec, HotOut, OutFrame, Outgoing, Payload, QoS, Utf8Text};
+pub(crate) use core::RealtimeCtx;
+pub(crate) use types::{HotOut, Outgoing, Payload, QoS};
