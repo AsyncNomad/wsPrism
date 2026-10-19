@@ -8,7 +8,32 @@
 use dashmap::DashMap;
 use std::fmt::Write;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
+
+/// Sorted owned label key.
+fn label_key(labels: &[(&str, &str)]) -> Vec<(String, String)> {
+    let mut key: Vec<(String, String)> = labels
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    key.sort();
+    key
+}
+
+/// The value for `labels`, created if missing. Looks up under the shard
+/// *read* lock first, so steady-state updates of the same series don't
+/// serialize on a write lock.
+fn series<V: Default>(
+    map: &DashMap<Vec<(String, String)>, Arc<V>>,
+    labels: &[(&str, &str)],
+) -> Arc<V> {
+    let key = label_key(labels);
+    if let Some(v) = map.get(&key) {
+        return Arc::clone(v.value());
+    }
+    Arc::clone(map.entry(key).or_default().value())
+}
 
 /// Helper to escape label values.
 fn escape_label(v: &str) -> String {
@@ -19,7 +44,7 @@ fn escape_label(v: &str) -> String {
 
 #[derive(Default)]
 pub struct CounterVec {
-    map: DashMap<Vec<(String, String)>, AtomicU64>,
+    map: DashMap<Vec<(String, String)>, Arc<AtomicU64>>,
 }
 
 impl CounterVec {
@@ -30,14 +55,7 @@ impl CounterVec {
 
     /// Increment by an arbitrary value.
     pub fn add(&self, labels: &[(&str, &str)], v: u64) {
-        let mut key: Vec<(String, String)> = labels
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        key.sort();
-
-        let counter = self.map.entry(key).or_insert_with(|| AtomicU64::new(0));
-        counter.fetch_add(v, Ordering::Relaxed);
+        series(&self.map, labels).fetch_add(v, Ordering::Relaxed);
     }
 
     /// Render in Prometheus text exposition format.
@@ -58,7 +76,7 @@ impl CounterVec {
 
 #[derive(Default)]
 pub struct GaugeVec {
-    map: DashMap<Vec<(String, String)>, AtomicI64>,
+    map: DashMap<Vec<(String, String)>, Arc<AtomicI64>>,
 }
 
 impl GaugeVec {
@@ -73,13 +91,7 @@ impl GaugeVec {
 
     /// Add an arbitrary signed delta.
     pub fn add(&self, labels: &[(&str, &str)], v: i64) {
-        let mut key: Vec<(String, String)> = labels
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        key.sort();
-        let gauge = self.map.entry(key).or_insert_with(|| AtomicI64::new(0));
-        gauge.fetch_add(v, Ordering::Relaxed);
+        series(&self.map, labels).fetch_add(v, Ordering::Relaxed);
     }
 
     /// Render in Prometheus text exposition format.
@@ -104,7 +116,7 @@ const BUCKETS_MICROS: [u64; 9] = [
     100, 500, 1_000, 5_000, 10_000, 50_000, 100_000, 500_000, 1_000_000,
 ];
 
-struct AtomicHistogram {
+pub struct AtomicHistogram {
     count: AtomicU64,
     sum: AtomicU64,
     buckets: [AtomicU64; 9],
@@ -132,30 +144,38 @@ impl Default for AtomicHistogram {
 
 #[derive(Default)]
 pub struct HistogramVec {
-    map: DashMap<Vec<(String, String)>, AtomicHistogram>,
+    map: DashMap<Vec<(String, String)>, Arc<AtomicHistogram>>,
+}
+
+/// One histogram series, resolved once (e.g. per session) so observing it
+/// is just atomic adds — no label allocation, no map lookup.
+#[derive(Clone)]
+pub struct Histogram(Arc<AtomicHistogram>);
+
+impl Histogram {
+    /// Observe a duration (microsecond buckets, cumulative).
+    pub fn observe(&self, duration: Duration) {
+        let hist = &self.0;
+        let micros = duration.as_micros() as u64;
+        hist.count.fetch_add(1, Ordering::Relaxed);
+        hist.sum.fetch_add(micros, Ordering::Relaxed);
+        // One bucket per observation (its own range); render() accumulates.
+        if let Some(i) = BUCKETS_MICROS.iter().position(|&b| micros <= b) {
+            hist.buckets[i].fetch_add(1, Ordering::Relaxed);
+        }
+    }
 }
 
 impl HistogramVec {
-    /// Observe a duration and increment cumulative buckets (microsecond scale).
+    /// The series for `labels`, to observe repeatedly without lookups.
+    pub fn handle(&self, labels: &[(&str, &str)]) -> Histogram {
+        Histogram(series(&self.map, labels))
+    }
+
+    /// Observe a duration (looks the series up; prefer a cached [`Histogram`]
+    /// on hot paths).
     pub fn observe(&self, labels: &[(&str, &str)], duration: Duration) {
-        let mut key: Vec<(String, String)> = labels
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect();
-        key.sort();
-
-        let hist = self.map.entry(key).or_default();
-        let micros = duration.as_micros() as u64;
-
-        hist.count.fetch_add(1, Ordering::Relaxed);
-        hist.sum.fetch_add(micros, Ordering::Relaxed); // Record sum in micros
-
-        // Cumulative Buckets: Increment ALL buckets larger than value
-        for (i, &b) in BUCKETS_MICROS.iter().enumerate() {
-            if micros <= b {
-                hist.buckets[i].fetch_add(1, Ordering::Relaxed);
-            }
-        }
+        self.handle(labels).observe(duration);
     }
 
     /// Render in Prometheus text exposition format (unit: microseconds).
@@ -176,12 +196,11 @@ impl HistogramVec {
                 format!("{},", label_str)
             };
 
+            let mut cumulative = 0;
             for (i, &le) in BUCKETS_MICROS.iter().enumerate() {
-                let count = hist.buckets[i].load(Ordering::Relaxed);
-                // Convert bucket le from micros to seconds string for standard Prometheus display?
-                // Or just keep int? Standard is seconds (float).
-                // For simplicity in this int-based impl, we output micros but should ideally label unit.
-                // Let's output integer micros for 'le'.
+                cumulative += hist.buckets[i].load(Ordering::Relaxed);
+                let count = cumulative;
+                // `le` in microseconds (the metric name says so: `_micros`).
                 let _ = writeln!(out, "{}_bucket{{{}le=\"{}\"}} {}", name, prefix, le, count);
             }
             let count = hist.count.load(Ordering::Relaxed);
@@ -204,7 +223,6 @@ pub struct GatewayMetrics {
     pub decode_errors: CounterVec,
     pub service_errors: CounterVec,
     pub writer_timeouts: CounterVec,
-    pub unknown_service_errors: CounterVec,
     draining: std::sync::atomic::AtomicBool,
 }
 
@@ -237,8 +255,6 @@ impl GatewayMetrics {
             .render("wsprism_service_errors_total", &mut out);
         self.writer_timeouts
             .render("wsprism_writer_timeouts_total", &mut out);
-        self.unknown_service_errors
-            .render("wsprism_unknown_service_total", &mut out);
 
         let _ = writeln!(
             out,
@@ -249,5 +265,30 @@ impl GatewayMetrics {
             let _ = writeln!(out, "{} {}", k, v);
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn histogram_renders_cumulative_buckets() {
+        let h = HistogramVec::default();
+        let s = h.handle(&[("lane", "ext")]);
+        s.observe(Duration::from_micros(50)); // <= 100
+        s.observe(Duration::from_micros(700)); // <= 1000
+        s.observe(Duration::from_secs(5)); // +Inf only
+        let mut out = String::new();
+        h.render("d", &mut out);
+        assert!(out.contains(r#"d_bucket{lane="ext",le="100"} 1"#), "{out}");
+        assert!(out.contains(r#"d_bucket{lane="ext",le="500"} 1"#), "{out}");
+        assert!(out.contains(r#"d_bucket{lane="ext",le="1000"} 2"#), "{out}");
+        assert!(
+            out.contains(r#"d_bucket{lane="ext",le="1000000"} 2"#),
+            "{out}"
+        );
+        assert!(out.contains(r#"d_bucket{lane="ext",le="+Inf"} 3"#), "{out}");
+        assert!(out.contains(r#"d_count{lane="ext"} 3"#), "{out}");
     }
 }

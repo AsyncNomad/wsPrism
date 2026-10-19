@@ -143,10 +143,7 @@ impl Session {
             None => self.dispatcher.dispatch_text(&mut self.ctx, env).await,
         };
         // Always measure Ext lane
-        self.metrics.dispatch_duration.observe(
-            &[("tenant", self.tenant()), ("lane", "ext")],
-            start.elapsed(),
-        );
+        self.ext_duration.observe(start.elapsed());
         match res {
             Ok(()) => Flow::Continue(()),
             Err(e) => {
@@ -193,9 +190,7 @@ impl Session {
 
         let res = self.dispatcher.dispatch_hot(&mut self.ctx, frame).await;
         if let Some(s) = start {
-            self.metrics
-                .dispatch_duration
-                .observe(&[("tenant", self.tenant()), ("lane", "hot")], s.elapsed());
+            self.hot_duration.observe(s.elapsed());
         }
         match res {
             Ok(()) => Flow::Continue(()),

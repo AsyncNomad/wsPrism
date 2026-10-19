@@ -62,6 +62,13 @@ fn metrics(c: &mut Criterion) {
             ]))
         })
     });
+    // What a session does per Ext message: observe a pre-resolved series.
+    let h = m
+        .dispatch_duration
+        .handle(&[("tenant", "acme"), ("lane", "ext")]);
+    c.bench_function("metrics/histogram_cached_observe", |b| {
+        b.iter(|| h.observe(black_box(std::time::Duration::from_micros(42))))
+    });
 }
 
 /// A room of `members` sessions; returns the core and the receivers to drain.

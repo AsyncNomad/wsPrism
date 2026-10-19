@@ -27,7 +27,7 @@ use wsprism_protocol::error::{ClientCode, Result, WsPrismError};
 
 use crate::app_state::AppState;
 use crate::auth::Permissions;
-use crate::obs::metrics::GatewayMetrics;
+use crate::obs::metrics::{GatewayMetrics, Histogram};
 use crate::policy::engine::ConnRateLimiter;
 use crate::policy::TenantPolicyRuntime;
 use crate::rpc::RpcProxy;
@@ -122,6 +122,10 @@ struct Session {
     /// The tenant's RPC proxy: matching Ext requests go to its backend.
     rpc: Option<Arc<RpcProxy>>,
     metrics: Arc<GatewayMetrics>,
+    /// Dispatch latency series for this session's tenant, resolved once
+    /// (observed on every Ext message).
+    ext_duration: Histogram,
+    hot_duration: Histogram,
     out_tx: mpsc::Sender<OutFrame>,
     writer_timeout: Duration,
     /// Close requests from other tasks and liveness for the sweeper (which

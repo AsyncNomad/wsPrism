@@ -215,6 +215,12 @@ impl Session {
             policy,
             dispatcher: app.dispatcher(),
             rpc: app.rpc(&t_cfg.id),
+            ext_duration: metrics
+                .dispatch_duration
+                .handle(&[("tenant", &t_cfg.id), ("lane", "ext")]),
+            hot_duration: metrics
+                .dispatch_duration
+                .handle(&[("tenant", &t_cfg.id), ("lane", "hot")]),
             metrics,
             out_tx,
             writer_timeout: Duration::from_millis(gw.writer_send_timeout_ms),
