@@ -28,10 +28,10 @@ struct Node {
     _tasks: BrokerTasks,
 }
 
-fn node(slot: u16, limits: OutboxLimits) -> Node {
+async fn node(slot: u16, limits: OutboxLimits) -> Node {
     let broker = TestBroker::new(slot);
     let core = Arc::new(RealtimeCore::with_broker(broker.clone(), limits).unwrap());
-    let tasks = core.start();
+    let tasks = core.start().await.unwrap();
     Node {
         core,
         broker,
@@ -42,13 +42,21 @@ fn node(slot: u16, limits: OutboxLimits) -> Node {
 struct Client {
     ctx: RealtimeCtx,
     rx: mpsc::Receiver<OutFrame>,
+    signals: Arc<SessionSignals>,
+}
+
+impl Client {
+    fn ctx_signals(&self) -> &SessionSignals {
+        &self.signals
+    }
 }
 
 fn client(n: &Node, tenant: &str, user: &str, presence_events: bool) -> Client {
     let (tx, rx) = mpsc::channel(1024);
+    let signals = SessionSignals::new();
     let conn = Connection {
         tx,
-        signals: SessionSignals::new(),
+        signals: Arc::clone(&signals),
     };
     let session_key = format!("{tenant}::{user}::s");
     n.core
@@ -76,6 +84,7 @@ fn client(n: &Node, tenant: &str, user: &str, presence_events: bool) -> Client {
     Client {
         ctx: RealtimeCtx::new(id, Arc::default(), conn, Arc::clone(&n.core)),
         rx,
+        signals,
     }
 }
 
@@ -120,7 +129,7 @@ async fn settle() {
 
 #[tokio::test]
 async fn ext_publishes_reach_members_only_through_the_broker() {
-    let n = node(0, OutboxLimits::default());
+    let n = node(0, OutboxLimits::default()).await;
     let mut a = client(&n, "t", "a", false);
     let mut b = client(&n, "t", "b", false);
     a.ctx.join_room("r").unwrap();
@@ -141,7 +150,7 @@ async fn ext_publishes_reach_members_only_through_the_broker() {
 /// Every room path of the engine is recorded by the broker (B3).
 #[tokio::test]
 async fn every_engine_room_path_goes_through_the_broker() {
-    let n = node(0, OutboxLimits::default());
+    let n = node(0, OutboxLimits::default()).await;
     let mut a = client(&n, "t", "a", true);
     let mut b = client(&n, "t", "b", true);
     a.ctx.join_room("r").unwrap();
@@ -209,7 +218,7 @@ async fn every_engine_room_path_goes_through_the_broker() {
 
 #[tokio::test]
 async fn hot_is_delivered_locally_first_and_published() {
-    let n = node(0, OutboxLimits::default());
+    let n = node(0, OutboxLimits::default()).await;
     let mut a = client(&n, "t", "a", false);
     let mut b = client(&n, "t", "b", false);
     let joined = a.ctx.join_room("r").unwrap();
@@ -248,7 +257,7 @@ async fn hot_is_delivered_locally_first_and_published() {
 
 #[tokio::test]
 async fn a_full_outbox_refuses_reliable_and_drops_lossy() {
-    let n = node(0, OutboxLimits::new(4, 4));
+    let n = node(0, OutboxLimits::new(4, 4)).await;
     let mut a = client(&n, "t", "a", false);
     a.ctx.join_room("r").unwrap();
     settle().await;
@@ -284,7 +293,7 @@ async fn a_full_outbox_refuses_reliable_and_drops_lossy() {
 
 #[tokio::test]
 async fn one_tenant_cannot_take_another_tenants_share() {
-    let n = node(0, OutboxLimits::new(100, 3));
+    let n = node(0, OutboxLimits::new(100, 3)).await;
     let mut a = client(&n, "noisy", "a", false);
     let mut b = client(&n, "quiet", "b", false);
     a.ctx.join_room("r").unwrap();
@@ -315,7 +324,7 @@ async fn one_tenant_cannot_take_another_tenants_share() {
 
 #[tokio::test]
 async fn unavailable_is_retried_in_order_and_rejected_is_dropped() {
-    let n = node(0, OutboxLimits::default());
+    let n = node(0, OutboxLimits::default()).await;
     let mut a = client(&n, "t", "a", false);
     a.ctx.join_room("r").unwrap();
     settle().await;
@@ -347,7 +356,7 @@ async fn unavailable_is_retried_in_order_and_rejected_is_dropped() {
 async fn subscriptions_follow_rooms_exactly_under_races() {
     // Many rooms for 8 sessions, so rooms are created and dropped often.
     const ROOMS: u32 = 20;
-    let n = node(0, OutboxLimits::default());
+    let n = node(0, OutboxLimits::default()).await;
     n.broker.set_subscription_delay(Duration::from_micros(200));
     let mut handles = Vec::new();
     for t in 0..8 {
@@ -405,7 +414,7 @@ async fn subscriptions_follow_rooms_exactly_under_races() {
 
 #[tokio::test]
 async fn member_ids_carry_the_node_slot() {
-    let n = node(5, OutboxLimits::default());
+    let n = node(5, OutboxLimits::default()).await;
     let mut a = client(&n, "t", "a", false);
     let mut b = client(&n, "t", "b", false);
     let ja = a.ctx.join_room("r").unwrap();
@@ -418,8 +427,80 @@ async fn member_ids_carry_the_node_slot() {
     assert_eq!(jc.member_id, ja.member_id);
 }
 
-#[test]
-fn node_slots_are_bounded() {
+#[tokio::test]
+async fn node_slots_are_bounded() {
     let broker = TestBroker::new(1024);
-    assert!(RealtimeCore::with_broker(broker, OutboxLimits::default()).is_err());
+    let core = Arc::new(RealtimeCore::with_broker(broker, OutboxLimits::default()).unwrap());
+    assert!(core.start().await.is_err());
+}
+
+/// Another node's Hot frame gets this node's room id (`chan`) in the bytes
+/// and in the slot key; its `except` does not apply here.
+#[tokio::test]
+async fn remote_hot_frames_get_the_local_room_id() {
+    let n = node(0, OutboxLimits::default()).await;
+    let mut a = client(&n, "t", "a", false);
+    // Make this node's room id differ from the publisher's (which used 9).
+    n.core
+        .presence
+        .try_join(
+            "t",
+            "t::pad",
+            "t::x",
+            wsprism_engine::spi::Member {
+                key: "t::x::s".into(),
+                conn: Connection {
+                    tx: mpsc::channel(1).0,
+                    signals: SessionSignals::new(),
+                },
+                member_id: 0,
+                user: "x".into(),
+            },
+            &Default::default(),
+        )
+        .unwrap();
+    let joined = a.ctx.join_room("r").unwrap();
+    settle().await;
+    let v2 = wsprism_protocol::protocol::hot::encode_hot_frame_v2(
+        &wsprism_protocol::protocol::hot::HotOutV2 {
+            chan: 9,
+            svc_id: 1,
+            opcode: 2,
+            key: Some(5),
+            seq: None,
+            sender: (3 << 22) | 1,
+            payload: Bytes::from_static(b"s"),
+        },
+    );
+    let hot = OutFrame::Hot(Arc::new(wsprism_engine::spi::HotOut {
+        v1: Bytes::from_static(b"s"),
+        v2,
+        slot_key: Some((9, (3 << 22) | 1, 1, 5)),
+    }));
+    let mut f = wsprism_engine::broker::BrokerFrame::new(3, "t::r", QoS::Lossy, hot);
+    f = f.except(Some("t::a::s")); // another node's session key: ignored here
+    n.broker.inject(f).await;
+    settle().await;
+    // Keyed: it lands in a's Hot slot, under the local room id.
+    let mut got = Vec::new();
+    a.ctx_signals().hot.drain_into(&mut got);
+    assert_eq!(got.len(), 1);
+    let h = &got[0];
+    assert_ne!(joined.room_id, 9);
+    assert_eq!(&h.v2[2..6], &joined.room_id.to_le_bytes());
+    assert_eq!(h.slot_key, Some((joined.room_id, (3 << 22) | 1, 1, 5)));
+}
+
+#[tokio::test]
+async fn a_subscription_gap_is_reported_to_the_room() {
+    let n = node(0, OutboxLimits::default()).await;
+    let mut a = client(&n, "t", "a", false);
+    a.ctx.join_room("r").unwrap();
+    settle().await;
+    n.broker.gap(&["t::r", "t::nobody-here"]).await;
+    let v: serde_json::Value = serde_json::from_str(&recv_text(&mut a).await).unwrap();
+    assert_eq!(
+        (v["type"].as_str(), v["room"].as_str()),
+        (Some("gap"), Some("r"))
+    );
 }

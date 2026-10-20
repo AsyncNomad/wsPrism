@@ -22,6 +22,9 @@ allow = [
   "ISC",
   "Unicode-3.0",
   "Zlib",
+  # Boost 1.0 (OSI): xxhash-rust, a required dependency of the redis crate
+  # (ADR 0011 R3). Permissive; no notice needed in binary distributions.
+  "BSL-1.0",
 ]
 confidence-threshold = 0.9
 

@@ -213,6 +213,18 @@ such a room:
 - Clients drop messages whose offset they have already seen (the JS SDK does
   this, and resumes automatically on reconnect).
 
+### Gaps (cluster, ADR 0011 §4)
+
+With a cluster broker, a node that briefly lost its subscription to the
+broker tells the members of every room it was subscribed to:
+
+```json
+{"v":1,"svc":"sys","type":"gap","room":"lobby"}
+```
+
+Messages of that room may have been lost: reload its state from your
+backend (the JS SDK emits a `gap` event).
+
 ### Presence events (ADR 0010)
 
 Tenants with `policy.presence_events: true` tell room members about

@@ -40,6 +40,59 @@ clients and the server API alike). `limits.max_rooms_per_user` defaults to
 **64** (`0` = unlimited): every joined room costs memory in several indices,
 so an unbounded default would let one client grow it without limit.
 
+## Cluster broker (`gateway.broker`, ADR 0011) — experimental
+
+By default (`kind: memory`) rooms live in one gateway process. With Redis,
+several gateway nodes share rooms: a message published on any node reaches
+the room's members on every node.
+
+```yaml
+gateway:
+  broker:
+    kind: redis
+    url_env: WSPRISM_REDIS_URL     # or url: "rediss://user:pass@redis:6380/0"
+    prefix: wsp                    # keys and channels: wsp:...
+    pubsub_connections: 4          # subscriber connections, 1-64
+    slot_ttl_s: 30                 # node slot lifetime without heartbeat, 3-300
+    outbox_capacity: 65536         # frames queued for Redis (all tenants)
+    outbox_per_tenant: 16384       # ... and per tenant
+```
+
+- **Startup:** the node connects and claims a *node slot* (one of 1,024)
+  before it serves anyone; if Redis is unreachable it does not start. Member
+  ids (Hot `sender`) carry the slot, so they are unique across nodes.
+- **Ordering:** Ext messages go through Redis, so every node delivers a
+  room's messages in the same order (local members included, at the cost of
+  one Redis round trip). Hot state is delivered locally at once and also
+  sent to the other nodes.
+- **Redis trouble:** frames wait in the outbox and are retried in order;
+  when the outbox (or a tenant's share) is full, Reliable publishes are
+  refused with `UNAVAILABLE` (server API: 503 + `Retry-After`) and Lossy ones
+  are dropped. If a node's subscription drops, it resubscribes and sends
+  `sys.gap` to the affected rooms' members (their apps resync). Hot state
+  keeps flowing between local members.
+- **Metrics:** `wsprism_broker_outbox_refused_total`,
+  `wsprism_broker_retries_total`, `wsprism_broker_failed_total`.
+- **TLS:** `rediss://` (rustls, system roots).
+- **Least-privilege ACL** (verified by the cluster tests; `wsp` = your
+  prefix):
+
+  ```
+  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +pexpire +eval +evalsha +script|load +client|setinfo
+  ```
+
+  (`client|setinfo` is optional: without it the client library's
+  identification is refused and logged by Redis, nothing else.)
+- **Not yet (ADR 0011 R3-R4):** room history with a cluster broker (startup
+  fails with `tenants[].history`), shared one-time tickets (a ticket works
+  only on the node that issued it), cluster-wide presence queries,
+  disconnects and sid replacement. Session and room limits are per node.
+- **Scope:** one Redis (or Sentinel-managed primary). Keys use Redis Cluster
+  hash tags already (`wsp:r:{tenant::room}`), so Cluster support will not
+  change them.
+
+---
+
 ## Room history (`tenants[].history`, ADR 0011 §3)
 
 Rooms matching a rule keep their recent messages so clients can resume after

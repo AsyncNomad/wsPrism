@@ -160,8 +160,9 @@ pub struct Presence {
     // u32 wrap-around after ~4 billion rooms is accepted (a collision needs
     // both rooms to still be live). Member ids are per room (`Room`).
     next_room_id: AtomicU32,
-    /// This node's slot, pre-shifted into a member id's top bits.
-    slot_bits: u32,
+    /// This node's slot, pre-shifted into a member id's top bits (set when
+    /// the broker starts, before anyone joins).
+    slot_bits: AtomicU32,
     /// Queued broker: where room creation/removal records its
     /// (un)subscription, under the same shard lock (ADR 0011 B5).
     outbox: Option<Arc<BrokerOutbox>>,
@@ -184,7 +185,7 @@ impl Presence {
             user_room_refs: DashMap::new(),
             tenant_room_counts: DashMap::new(),
             next_room_id: AtomicU32::new(1),
-            slot_bits: u32::from(slot) << MEMBER_BITS,
+            slot_bits: AtomicU32::new(u32::from(slot) << MEMBER_BITS),
             outbox,
         }
     }
@@ -246,7 +247,7 @@ impl Presence {
         let (room_id, member_id) = match self.room_to_sessions.entry(room_key.to_string()) {
             Entry::Occupied(mut room) => {
                 let room = room.get_mut();
-                let member_id = room.issue_member_id(self.slot_bits)?;
+                let member_id = room.issue_member_id(self.slot_bits.load(Ordering::Relaxed))?;
                 room.members.push(Member {
                     member_id,
                     ..member
@@ -256,7 +257,7 @@ impl Presence {
             Entry::Vacant(slot) => {
                 self.reserve_room_slot(tenant_id, limits.max_rooms_total)?;
                 let mut room = Room::new(self.next_room_id.fetch_add(1, Ordering::Relaxed));
-                let member_id = room.issue_member_id(self.slot_bits)?;
+                let member_id = room.issue_member_id(self.slot_bits.load(Ordering::Relaxed))?;
                 room.members.push(Member {
                     member_id,
                     ..member
@@ -392,6 +393,12 @@ impl Presence {
         if let Some(room) = self.room_to_sessions.get(room_key) {
             room.members.iter().for_each(&mut f);
         }
+    }
+
+    /// Use node slot `slot` (already validated) for member ids from now on.
+    pub(crate) fn set_node_slot(&self, slot: u16) {
+        self.slot_bits
+            .store(u32::from(slot) << MEMBER_BITS, Ordering::Relaxed);
     }
 
     /// How many sessions are in the room.

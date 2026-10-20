@@ -1,13 +1,13 @@
 # Releasing
 
-All four crates are released together with one version (ADR 0009 §5-2).
+All five crates are released together with one version (ADR 0009 §5-2).
 Publish order follows the dependency chain.
 
 ## Checklist
 
 1. **Branch:** release from `main` with a clean tree.
 2. **Version:** set `version` in `[workspace.package]` (root `Cargo.toml`) and
-   in `[workspace.dependencies]` for the four internal crates.
+   in `[workspace.dependencies]` for the five internal crates.
 3. **Changelog:** rename `[Unreleased]` in `CHANGELOG.md` to the version and
    date. Every breaking Rust API change and every MSRV change must be listed.
 4. **Gates** (CI runs them too):
@@ -18,6 +18,9 @@ Publish order follows the dependency chain.
    cargo +1.95 check --workspace --all-targets --locked   # MSRV
    cargo deny check                                        # advisories, licenses
    sdk/js/run-tests.sh && examples/chat-and-state/run-tests.sh
+   export WSPRISM_TEST_REDIS=$(bench/redis-test.sh)       # cluster tests
+   cargo test -p wsprism-gateway --test cluster --test cluster_gap
+   bench/redis-test.sh stop
    ```
 5. **Package dry run** (builds each packaged crate against the others), in a
    **fresh target directory**: packages of the same version are cached as
@@ -33,6 +36,7 @@ Publish order follows the dependency chain.
    ```sh
    cargo publish -p wsprism-protocol
    cargo publish -p wsprism-engine
+   cargo publish -p wsprism-redis
    cargo publish -p wsprism-gateway
    cargo publish -p wsprism
    ```

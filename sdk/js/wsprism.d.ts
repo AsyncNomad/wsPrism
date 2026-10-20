@@ -114,6 +114,8 @@ export interface Events {
   error: WsPrismError | Error;
   reconnecting: { attempt: number; delayMs: number };
   rejoined: Joined[];
+  /** Messages of `room` may have been lost (cluster): reload its state. */
+  gap: { room: string };
 }
 
 export class WsPrismClient {

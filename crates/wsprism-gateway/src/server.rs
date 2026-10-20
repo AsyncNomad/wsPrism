@@ -21,6 +21,13 @@ pub async fn serve_with_api(
     state: AppState,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> std::io::Result<()> {
+    // Broker first (connect, claim the node slot; ADR 0011): member ids
+    // carry the slot, so nobody may join before it is known.
+    let _broker = state
+        .realtime()
+        .start()
+        .await
+        .map_err(|e| std::io::Error::other(format!("broker: {}", e.client_message())))?;
     let _api = api.map(|l| {
         let app = crate::api::router(state.clone());
         AbortOnDrop(tokio::spawn(async move {
@@ -31,8 +38,6 @@ pub async fn serve_with_api(
     });
     let app = router::build_router(state.clone());
     let _sweeper = AbortOnDrop(tokio::spawn(sweeper(state.clone())));
-    // Queued broker: outbox drain and incoming frames (none for one node).
-    let _broker = state.realtime().start();
     let socket = &state.cfg().gateway.socket;
     axum::serve(
         listener,

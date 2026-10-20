@@ -48,6 +48,24 @@ jobs:
         env:
           WSPRISM_TEST_BROKER: queued
 
+  # Two gateway nodes sharing rooms through a Redis service container
+  # (ADR 0011 R3). The service is only reachable from this job.
+  cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7.2
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cluster tests
+        run: cargo test -p wsprism-gateway --locked --test cluster --test cluster_gap
+        env:
+          WSPRISM_TEST_REDIS: redis://127.0.0.1:6379
+
   # Minimum supported Rust version (workspace rust-version; ADR 0009 §5-4).
   msrv:
     runs-on: ubuntu-latest

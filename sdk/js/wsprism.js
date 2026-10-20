@@ -158,7 +158,7 @@ export class WsPrismClient {
     this.refreshTimer = null;
   }
 
-  /** Subscribe to "open" | "close" | "message" | "state" | "presence" | "refreshed" | "error" | "reconnecting" | "rejoined". */
+  /** Subscribe to "open" | "close" | "message" | "state" | "presence" | "gap" | "refreshed" | "error" | "reconnecting" | "rejoined". */
   on(event, fn) {
     if (!this.listeners.has(event)) this.listeners.set(event, new Set());
     this.listeners.get(event).add(fn);
@@ -255,6 +255,12 @@ export class WsPrismClient {
     }
     if (msg.svc === "sys" && msg.type === "error") {
       this.emit("error", new WsPrismError(msg.data?.code, msg.data?.msg));
+      return;
+    }
+    // A cluster node may have lost this room's messages (ADR 0011 §4):
+    // the app reloads the room's state from its backend.
+    if (msg.svc === "sys" && msg.type === "gap") {
+      this.emit("gap", { room: msg.room });
       return;
     }
     if (msg.svc === "sys" && (msg.type === "member_joined" || msg.type === "member_left")) {

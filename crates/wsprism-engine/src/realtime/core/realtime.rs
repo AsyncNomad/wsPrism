@@ -13,10 +13,10 @@ use crate::realtime::core::history::{self, History, HistoryConfig, HistoryPos, R
 use crate::realtime::core::{
     now_ms, CloseRequest, Connection, Departed, Joined, Member, Presence, Put, SessionRegistry,
 };
-use crate::realtime::types::{close_code, CloseSpec, OutFrame, Outgoing, Payload, QoS};
+use crate::realtime::types::{close_code, CloseSpec, HotOut, OutFrame, Outgoing, Payload, QoS};
 use crate::sys;
 use crate::RoomLimits;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use tokio::sync::mpsc::error::TrySendError;
 use wsprism_protocol::error::ClientCode;
@@ -70,7 +70,8 @@ pub struct RealtimeCore {
     broker: Arc<dyn Broker>,
     /// `Some` iff the broker is queued: room frames go through it.
     outbox: Option<Arc<BrokerOutbox>>,
-    node_slot: u16,
+    /// This node's slot (from the broker's `start`).
+    node_slot: AtomicU16,
     /// `Some` iff some tenant keeps room history (ADR 0011 §3).
     history: Option<History>,
 }
@@ -91,7 +92,7 @@ impl RealtimeCore {
             counters: EgressCounters::default(),
             broker: Arc::new(MemoryBroker),
             outbox: None,
-            node_slot: 0,
+            node_slot: AtomicU16::new(0),
             history: None,
         }
     }
@@ -114,12 +115,6 @@ impl RealtimeCore {
     /// A core whose room traffic goes through `broker` (ADR 0011;
     /// experimental). A queued broker needs [`RealtimeCore::start`].
     pub fn with_broker(broker: Arc<dyn Broker>, limits: OutboxLimits) -> Result<Self> {
-        let node_slot = broker.node_slot();
-        if node_slot > MAX_NODE_SLOT {
-            return Err(WsPrismError::BadRequest(format!(
-                "broker node slot {node_slot} is above {MAX_NODE_SLOT}"
-            )));
-        }
         if limits.capacity == 0 || limits.per_tenant == 0 {
             return Err(WsPrismError::BadRequest(
                 "broker outbox limits must be positive".into(),
@@ -129,19 +124,32 @@ impl RealtimeCore {
             (broker.mode() == BrokerMode::Queued).then(|| Arc::new(BrokerOutbox::new(limits)));
         Ok(Self {
             sessions: Arc::new(SessionRegistry::new()),
-            presence: Arc::new(Presence::with_routing(node_slot, outbox.clone())),
+            presence: Arc::new(Presence::with_routing(0, outbox.clone())),
             counters: EgressCounters::default(),
             broker,
             outbox,
-            node_slot,
+            node_slot: AtomicU16::new(0),
             history: None,
         })
     }
 
-    /// Start the broker tasks (outbox drain, incoming frames) on the current
-    /// Tokio runtime; they stop when the returned guard is dropped. Nothing to
-    /// start for an inline broker.
-    pub fn start(self: &Arc<Self>) -> BrokerTasks {
+    /// Start the broker (connect, claim the node slot) and its tasks (outbox
+    /// drain, incoming frames) on the current Tokio runtime; they stop when
+    /// the returned guard is dropped. Call before serving anyone: member
+    /// ids carry the node slot.
+    pub async fn start(self: &Arc<Self>) -> Result<BrokerTasks> {
+        let slot = self
+            .broker
+            .start()
+            .await
+            .map_err(|e| WsPrismError::Unavailable(e.to_string()))?;
+        if slot > MAX_NODE_SLOT {
+            return Err(WsPrismError::BadRequest(format!(
+                "broker node slot {slot} is above {MAX_NODE_SLOT}"
+            )));
+        }
+        self.node_slot.store(slot, Ordering::Relaxed);
+        self.presence.set_node_slot(slot);
         let mut tasks = Vec::new();
         if let Some(outbox) = &self.outbox {
             tasks.push(tokio::spawn(run_outbox(
@@ -152,7 +160,7 @@ impl RealtimeCore {
                 tasks.push(tokio::spawn(run_incoming(Arc::downgrade(self), rx)));
             }
         }
-        BrokerTasks(tasks)
+        Ok(BrokerTasks(tasks))
     }
 
     /// The outbox's counters, if the broker is queued.
@@ -403,7 +411,8 @@ impl RealtimeCore {
             (false, _) => self.presence.member_count(room_key),
         };
         let reliable = matches!(qos, QoS::Reliable);
-        let bf = BrokerFrame::new(self.node_slot, room_key, qos, frame).except(except);
+        let origin = self.node_slot.load(Ordering::Relaxed);
+        let bf = BrokerFrame::new(origin, room_key, qos, frame).except(except);
         match outbox.push_frame(bf) {
             Ok(()) => Ok(n),
             Err(_) if reliable && !hot => Err(WsPrismError::Unavailable(
@@ -414,12 +423,44 @@ impl RealtimeCore {
         }
     }
 
+    /// Another node's Hot frame: room ids (`chan`) are per node (ADR 0011
+    /// §5), so put in ours — once per frame, shared by every recipient.
+    fn deliver_remote_hot(&self, f: &BrokerFrame, h: &HotOut) {
+        let Some(chan) = self.presence.room_id(&f.room_key) else {
+            return; // no members here (any more)
+        };
+        let mut v2 = bytes::BytesMut::from(&h.v2[..]);
+        if let Some(c) = v2.get_mut(2..6) {
+            c.copy_from_slice(&chan.to_le_bytes());
+        }
+        let hot = HotOut {
+            v1: h.v1.clone(),
+            v2: v2.freeze(),
+            slot_key: h
+                .slot_key
+                .map(|(_, sender, svc, key)| (chan, sender, svc, key)),
+        };
+        self.fan_out(&f.room_key, &OutFrame::Hot(Arc::new(hot)), &f.qos);
+    }
+
+    /// The broker lost frames of these rooms: tell their members (`sys.gap`),
+    /// who resync (ADR 0011 §4).
+    fn deliver_gap(&self, rooms: &[Arc<str>]) {
+        for room_key in rooms {
+            let room = room_key.split_once("::").map_or(&**room_key, |(_, r)| r);
+            let frame = OutFrame::text(sys::gap(room).to_string());
+            self.fan_out(room_key, &frame, &QoS::Reliable);
+        }
+    }
+
     /// A frame from the broker: deliver it to this node's members.
     fn deliver_incoming(&self, f: &BrokerFrame) {
-        let local = f.origin == self.node_slot;
-        if let OutFrame::Hot(_) = f.body {
-            // Our own Hot frames were delivered when published. Other nodes'
-            // Hot frames need this node's `chan` (ADR 0011 §5): R3.
+        let local = f.origin == self.node_slot.load(Ordering::Relaxed);
+        if let OutFrame::Hot(h) = &f.body {
+            // Our own Hot frames were delivered when published.
+            if !local {
+                self.deliver_remote_hot(f, h);
+            }
             return;
         }
         match (&f.except, local) {
@@ -560,6 +601,7 @@ async fn run_incoming(core: Weak<RealtimeCore>, mut rx: tokio::sync::mpsc::Recei
         let Some(core) = core.upgrade() else { return };
         match msg {
             Incoming::Frame(f) => core.deliver_incoming(&f),
+            Incoming::Gap(rooms) => core.deliver_gap(&rooms),
         }
     }
 }

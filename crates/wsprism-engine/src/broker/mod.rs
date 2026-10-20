@@ -18,6 +18,7 @@
 mod outbox;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
+pub mod wire;
 
 use std::fmt;
 use std::sync::Arc;
@@ -103,6 +104,10 @@ pub enum Subscription {
 pub enum Incoming {
     /// A room frame (from any node, this one included).
     Frame(BrokerFrame),
+    /// Frames of these rooms (internal keys) may have been lost — the
+    /// subscription was interrupted and is back. Their members get
+    /// `sys.gap` (ADR 0011 §4).
+    Gap(Vec<Arc<str>>),
 }
 
 /// Why a broker call failed.
@@ -138,10 +143,11 @@ pub trait Broker: Send + Sync + 'static {
     /// Inline (single node) or queued.
     fn mode(&self) -> BrokerMode;
 
-    /// This node's slot (0..=[`MAX_NODE_SLOT`]): the top bits of every member
-    /// id it issues, so ids are unique across the cluster (ADR 0011 B1).
-    fn node_slot(&self) -> u16 {
-        0
+    /// Connect and claim this node's slot (0..=[`MAX_NODE_SLOT`]): the top
+    /// bits of every member id it issues, so ids are unique across the
+    /// cluster (ADR 0011 B1). Called once, before the node serves anyone.
+    async fn start(&self) -> Result<u16, BrokerError> {
+        Ok(0)
     }
 
     /// Send frames to every node subscribed to their rooms (this one too, for

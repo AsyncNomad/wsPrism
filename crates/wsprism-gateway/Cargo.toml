@@ -14,6 +14,7 @@ categories = ["network-programming", "web-programming::websocket", "asynchronous
 [dependencies]
 wsprism-protocol = { workspace = true }
 wsprism-engine = { workspace = true }
+wsprism-redis = { workspace = true, optional = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_norway = { workspace = true }
@@ -46,6 +47,8 @@ wsprism-gateway = { path = ".", features = ["internals"] }
 # Test brokers (ADR 0011 B3): `WSPRISM_TEST_BROKER=queued` runs the suite
 # through a queued loopback broker.
 wsprism-engine = { workspace = true, features = ["testing"] }
+# Cluster tests poke Redis directly (e.g. drop subscriber connections).
+redis = { workspace = true }
 criterion = { workspace = true }
 ring = "0.17"
 tokio-tungstenite = "0.24"
@@ -55,6 +58,9 @@ name = "hotpath"
 harness = false
 
 [features]
+default = ["redis"]
+# Cluster broker on Redis (`gateway.broker.kind: redis`, ADR 0011).
+redis = ["dep:wsprism-redis"]
 mimalloc = ["dep:mimalloc"]
 # Internals for this repository's tests, benchmarks and fuzz targets only.
 internals = []

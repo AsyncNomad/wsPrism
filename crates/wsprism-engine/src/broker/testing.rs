@@ -20,7 +20,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::{mpsc, watch};
 
-use super::{Broker, BrokerError, BrokerFrame, BrokerMode, Incoming, Subscription};
+use super::{wire, Broker, BrokerError, BrokerFrame, BrokerMode, Incoming, Subscription};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -124,6 +124,17 @@ impl TestBroker {
         self.open.send_replace(true);
     }
 
+    /// Deliver `frame` as if another node had published it.
+    pub async fn inject(&self, frame: BrokerFrame) {
+        let _ = self.tx.send(Incoming::Frame(frame)).await;
+    }
+
+    /// Report a subscription gap for `rooms` (internal keys).
+    pub async fn gap(&self, rooms: &[&str]) {
+        let rooms = rooms.iter().map(|r| Arc::from(*r)).collect();
+        let _ = self.tx.send(Incoming::Gap(rooms)).await;
+    }
+
     fn take_one(counter: &Mutex<usize>) -> bool {
         let mut n = lock(counter);
         let hit = *n > 0;
@@ -145,8 +156,8 @@ impl Broker for TestBroker {
         BrokerMode::Queued
     }
 
-    fn node_slot(&self) -> u16 {
-        self.slot
+    async fn start(&self) -> Result<u16, BrokerError> {
+        Ok(self.slot)
     }
 
     async fn publish(&self, batch: &[BrokerFrame]) -> Result<(), BrokerError> {
@@ -162,7 +173,13 @@ impl Broker for TestBroker {
         lock(&self.published).extend(batch.iter().cloned());
         for f in batch {
             if lock(&self.subscribed).contains(&f.room_key) {
-                let _ = self.tx.send(Incoming::Frame(f.clone())).await;
+                // Through the wire format, as a real broker would.
+                let Some(bytes) = wire::encode(f) else {
+                    continue;
+                };
+                let back =
+                    wire::decode(&bytes).map_err(|e| BrokerError::Rejected(e.to_string()))?;
+                let _ = self.tx.send(Incoming::Frame(back)).await;
             }
         }
         Ok(())

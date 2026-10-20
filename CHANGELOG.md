@@ -1,6 +1,6 @@
 # Changelog
 
-All crates (`wsprism`, `wsprism-gateway`, `wsprism-engine`, `wsprism-protocol`)
+All crates (`wsprism`, `wsprism-gateway`, `wsprism-redis`, `wsprism-engine`, `wsprism-protocol`)
 are released together with the same version. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Compatibility policy: [docs/API.md](docs/API.md) — wire contracts only grow;
 the Rust API may break in 0.x minor releases, always listed here.
@@ -49,8 +49,14 @@ the Rust API may break in 0.x minor releases, always listed here.
 - `policy.hot_echo_to_sender: false` relays Hot state to everyone but the sender;
   services get `RealtimeCtx::publish_room_others`.
 - Room names are limited to 1-128 bytes without control characters; `max_rooms_per_user` defaults to 64.
+- Cluster broker on Redis (**experimental**, `gateway.broker.kind: redis`,
+  crate `wsprism-redis`, default gateway feature `redis`): nodes share rooms
+  over Redis pub/sub, member ids carry a per-node slot, Hot state crosses
+  nodes with each node's room id, and a dropped subscription is reported to
+  members as `sys.gap`. Not yet: history, shared tickets and cluster-wide
+  control with a cluster broker.
 - Server API publish answers 503 + `Retry-After` when a cluster broker's queue
-  is full (not reachable with the single-node default).
+  is full.
 
 ### Rust API
 - `wsprism` facade with `Gateway::builder()`: add your own `TextService` /
@@ -70,7 +76,8 @@ the Rust API may break in 0.x minor releases, always listed here.
 - Example app `examples/chat-and-state` (Node backend + SDK).
 
 ### Known limitations
-- Single node: the broker boundary is in place (ADR 0011 R1), but no
-  cluster broker ships yet, so gateways do not share rooms.
+- The Redis cluster broker is experimental: history, one-time tickets,
+  presence queries, disconnects and session limits are still per node
+  (ADR 0011 R3-R4).
 - Embedders should build with `codegen-units = 1` like this workspace
   (fan-out micro-benchmark −9–10% otherwise; docs/API.md).

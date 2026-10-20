@@ -11,6 +11,7 @@ use wsprism_protocol::error::{Result, WsPrismError};
 
 use crate::auth::{AuthChain, TicketStore};
 use crate::backend::Backend;
+use crate::config::schema::BrokerConfig;
 use crate::gateway::Extensions;
 use crate::obs::metrics::GatewayMetrics;
 use crate::rpc::RpcProxy;
@@ -18,6 +19,7 @@ use crate::{
     config::{GatewayConfig, TenantConfig},
     policy,
 };
+use wsprism_engine::broker::OutboxLimits;
 use wsprism_engine::services::{ChatService, HotRelayService, RoomService};
 use wsprism_engine::spi::Dispatcher;
 use wsprism_engine::spi::{HistoryConfig, HistoryRule, RealtimeCore};
@@ -146,8 +148,12 @@ impl AppState {
                 );
             }
         }
+        let broker = match ext.broker {
+            Some(b) => Some(b),
+            None => configured_broker(&cfg.gateway.broker)?,
+        };
         let realtime = Arc::new(
-            match ext.broker {
+            match broker {
                 None => RealtimeCore::new(),
                 Some((broker, limits)) => RealtimeCore::with_broker(broker, limits)?,
             }
@@ -360,5 +366,35 @@ impl AppState {
             ]);
         }
         v
+    }
+}
+
+/// The broker `gateway.broker` asks for; `None` = one node (memory).
+type ConfiguredBroker = Option<(Arc<dyn wsprism_engine::broker::Broker>, OutboxLimits)>;
+
+fn configured_broker(cfg: &BrokerConfig) -> Result<ConfiguredBroker> {
+    match cfg {
+        BrokerConfig::Memory => Ok(None),
+        #[cfg(feature = "redis")]
+        BrokerConfig::Redis(r) => {
+            let redis_cfg = wsprism_redis::RedisConfig::new(r.resolve_url()?)
+                .prefix(r.prefix.clone())
+                .pubsub_connections(r.pubsub_connections)
+                .slot_ttl(std::time::Duration::from_secs(r.slot_ttl_s));
+            let broker = wsprism_redis::RedisBroker::new(redis_cfg)
+                .map_err(|e| WsPrismError::BadRequest(format!("gateway.broker: {e}")))?;
+            Ok(Some((
+                Arc::new(broker),
+                OutboxLimits::new(r.outbox_capacity, r.outbox_per_tenant),
+            )))
+        }
+        #[cfg(not(feature = "redis"))]
+        BrokerConfig::Redis(_) => Err(WsPrismError::BadRequest(
+            "gateway.broker.kind redis needs the gateway's `redis` feature".into(),
+        )),
+        #[allow(unreachable_patterns)]
+        _ => Err(WsPrismError::BadRequest(
+            "unsupported gateway.broker".into(),
+        )),
     }
 }

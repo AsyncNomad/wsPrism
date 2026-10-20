@@ -40,11 +40,13 @@ cargo build --release -p wsprism-loadgen
 | JWKS·대역 내 토큰 갱신 | ✅ | [ADR 0012](../adr/0012-jwks-and-token-refresh.md) |
 | R1 Broker 경계 | ✅ | [ADR 0011](../adr/0011-broker-history-and-cluster.md) 「R1 구현」 |
 | R2 이력·복구 (단일 노드) | ✅ | ADR 0011 「R2 구현」 |
-| R3~R5 Redis·클러스터·카오스 | ⏳ 다음 — (`redis` 크레이트·`redis:7` 이미지 다운로드 승인 필요) | ADR 0011 §9~11 |
+| R3-1 Redis 노드 간 룸 공유 | ✅ | ADR 0011 「R3-1 구현」 |
+| R3-2 클러스터 이력 → R3-3 공유 티켓 → A15 Redis 처리량 → R4 → R5 | ⏳ 다음 | ADR 0011 |
 
 - **성능 회귀 판정 (ADR 0011 B2):** `bench/run-icount.sh`(valgrind callgrind, 결정적 명령어 수 — WSL2에는 CPU PMU가 없어 `perf stat -e instructions` 불가)와 `bench/run-mem-users.sh`(유휴 메모리). 기준선은 `bench/results/icount-pre-r1.jsonl`, `mem-pre-r1.jsonl`. 단계마다 같은 스크립트로 다시 재서 ±2%를 본다.
 - **Queued 모드 회귀:** `WSPRISM_TEST_BROKER=queued cargo test -p wsprism-gateway` (CI에도 있음).
 - 전체 테스트가 메모리 부족(exit 137)으로 죽으면 `-j 4`로 병렬도를 낮춘다.
+- **클러스터 테스트:** `export WSPRISM_TEST_REDIS=$(bench/redis-test.sh)` (외부와 차단된 docker 네트워크의 Redis), 끝나면 `bench/redis-test.sh stop`. 없으면 클러스터 테스트는 아무것도 하지 않고 통과한다.
 
 ## 실험 재개 방법
 

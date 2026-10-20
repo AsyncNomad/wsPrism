@@ -87,6 +87,11 @@ pub struct GatewaySection {
     #[serde(default)]
     pub public_metrics: bool,
 
+    /// How room traffic reaches other gateway nodes (ADR 0011). Default:
+    /// `memory` (one node).
+    #[serde(default)]
+    pub broker: BrokerConfig,
+
     /// WebSocket ping interval in milliseconds.
     #[serde(default = "default_ping_interval_ms")]
     pub ping_interval_ms: u64,
@@ -225,6 +230,7 @@ impl Default for GatewaySection {
         Self {
             listen: default_listen(),
             public_metrics: false,
+            broker: BrokerConfig::default(),
             ping_interval_ms: default_ping_interval_ms(),
             idle_timeout_ms: default_idle_timeout_ms(),
             writer_send_timeout_ms: default_writer_send_timeout_ms(),
@@ -240,6 +246,9 @@ impl Default for GatewaySection {
 
 impl GatewaySection {
     pub fn validate(&self) -> Result<()> {
+        if let BrokerConfig::Redis(r) = &self.broker {
+            r.validate()?;
+        }
         if !(32..=128).contains(&self.handshake_limit.ipv6_prefix_len) {
             return Err(WsPrismError::BadRequest(
                 "gateway.handshake_limit.ipv6_prefix_len must be 32-128".into(),
@@ -405,6 +414,111 @@ pub struct ApiKeyConfig {
     /// For logs only.
     pub name: String,
     pub sha256: String,
+}
+
+/// `gateway.broker` (ADR 0011).
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[non_exhaustive]
+pub enum BrokerConfig {
+    /// One node; rooms live in this process.
+    #[default]
+    Memory,
+    /// Nodes share rooms through Redis pub/sub (experimental; ADR 0011 R3).
+    Redis(RedisBrokerConfig),
+}
+
+/// `gateway.broker` with `kind: redis`.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RedisBrokerConfig {
+    /// `redis://` or `rediss://` URL. Exactly one of `url` / `url_env`.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Environment variable holding the URL (keeps a password out of the
+    /// config file).
+    #[serde(default)]
+    pub url_env: Option<String>,
+    /// Prefix of every key and channel (several clusters can share one Redis).
+    #[serde(default = "default_redis_prefix")]
+    pub prefix: String,
+    /// Subscriber connections, 1-64.
+    #[serde(default = "default_pubsub_connections")]
+    pub pubsub_connections: usize,
+    /// Seconds a node's slot survives without a heartbeat, 3-300.
+    #[serde(default = "default_slot_ttl_s")]
+    pub slot_ttl_s: u64,
+    /// Frames queued for Redis in total (the outbox, ADR 0011 B4).
+    #[serde(default = "default_outbox_capacity")]
+    pub outbox_capacity: usize,
+    /// Frames one tenant may have queued.
+    #[serde(default = "default_outbox_per_tenant")]
+    pub outbox_per_tenant: usize,
+}
+
+fn default_redis_prefix() -> String {
+    "wsp".into()
+}
+fn default_pubsub_connections() -> usize {
+    4
+}
+fn default_slot_ttl_s() -> u64 {
+    30
+}
+fn default_outbox_capacity() -> usize {
+    65_536
+}
+fn default_outbox_per_tenant() -> usize {
+    16_384
+}
+
+impl RedisBrokerConfig {
+    /// The URL (from `url` or the `url_env` variable).
+    pub fn resolve_url(&self) -> Result<String> {
+        match (&self.url, &self.url_env) {
+            (Some(u), None) => Ok(u.clone()),
+            (None, Some(var)) => std::env::var(var).map_err(|_| {
+                WsPrismError::BadRequest(format!("gateway.broker.url_env {var} is not set"))
+            }),
+            _ => Err(WsPrismError::BadRequest(
+                "gateway.broker: exactly one of url / url_env".into(),
+            )),
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        let bad = |m: &str| Err(WsPrismError::BadRequest(format!("gateway.broker.{m}")));
+        if self.url.is_some() == self.url_env.is_some() {
+            return bad("url / url_env: exactly one is required");
+        }
+        if let Some(u) = &self.url {
+            if !(u.starts_with("redis://") || u.starts_with("rediss://")) {
+                return bad("url must start with redis:// or rediss://");
+            }
+        }
+        if self.prefix.is_empty()
+            || self.prefix.len() > 64
+            || !self
+                .prefix
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-' || b == b'.')
+        {
+            return bad("prefix must be 1-64 of [A-Za-z0-9_.-]");
+        }
+        if !(1..=64).contains(&self.pubsub_connections) {
+            return bad("pubsub_connections must be 1-64");
+        }
+        if !(3..=300).contains(&self.slot_ttl_s) {
+            return bad("slot_ttl_s must be 3-300");
+        }
+        if self.outbox_capacity == 0
+            || !(1..=self.outbox_capacity).contains(&self.outbox_per_tenant)
+        {
+            return bad("outbox_per_tenant must be 1..=outbox_capacity");
+        }
+        Ok(())
+    }
 }
 
 /// One link of a tenant's authentication chain.

@@ -95,6 +95,11 @@ pub fn member_event(kind: &str, room: &str, user: &str, member_id: u32) -> Value
     json!({ "v": 1, "svc": "sys", "type": kind, "room": room, "data": { "user": user, "member_id": member_id } })
 }
 
+/// `sys.gap`: messages of `room` may have been lost (ADR 0011 §4).
+pub fn gap(room: &str) -> Value {
+    json!({ "v": 1, "svc": "sys", "type": "gap", "room": room })
+}
+
 /// `sys.left`.
 pub fn left(room: &str, trace_id: &str) -> Value {
     json!({ "v": 1, "svc": "sys", "type": "left", "room": room, "trace_id": trace_id })
