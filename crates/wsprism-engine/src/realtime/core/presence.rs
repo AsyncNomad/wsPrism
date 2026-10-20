@@ -102,8 +102,19 @@ struct Room {
     /// Queued broker: becomes true once this node's subscription to the
     /// room is in effect (a recovering join waits for it, ADR 0011 §3).
     subscribed: Option<Subscribed>,
-    /// The cluster history epoch last seen on this room's kept frames.
-    epoch: std::sync::Mutex<Option<Arc<str>>>,
+    /// The cluster history position last delivered here: (epoch, offset).
+    kept: std::sync::Mutex<Option<(Arc<str>, u64)>>,
+}
+
+/// What [`Presence::kept_seen`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum KeptSeen {
+    /// Deliver it.
+    New,
+    /// Already delivered here: skip it.
+    Duplicate,
+    /// Deliver it after telling the room its history restarted.
+    NewEpoch,
 }
 
 /// Bits of a member id counted per room (the rest is the node slot).
@@ -118,7 +129,7 @@ impl Room {
             next_member: 1,
             wrapped: false,
             subscribed: None,
-            epoch: std::sync::Mutex::default(),
+            kept: std::sync::Mutex::default(),
         }
     }
 
@@ -461,24 +472,40 @@ impl Presence {
         out
     }
 
-    /// Note `epoch` for `room_key`; true if it replaced a different one
-    /// (the cluster's history for the room was lost; ADR 0011 R5).
-    pub(crate) fn epoch_changed(&self, room_key: &str, epoch: &Arc<str>) -> bool {
+    /// A kept frame at (`epoch`, `offset`) is about to be delivered here:
+    /// record it, and say whether it is new, already delivered (a node's
+    /// gap fill and the live stream can overlap), or the first of a new
+    /// epoch (the cluster's history for the room was lost; ADR 0011 R5).
+    pub(crate) fn kept_seen(&self, room_key: &str, epoch: &Arc<str>, offset: u64) -> KeptSeen {
         let Some(room) = self.room_to_sessions.get(room_key) else {
-            return false;
+            return KeptSeen::Duplicate; // no members here
         };
-        let mut seen = room
-            .epoch
+        let mut kept = room
+            .kept
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match &*seen {
-            Some(prev) if **prev == **epoch => false,
-            prev => {
-                let changed = prev.is_some();
-                *seen = Some(Arc::clone(epoch));
-                changed
+        let seen = match &*kept {
+            Some((e, last)) if **e == **epoch => {
+                if offset <= *last {
+                    return KeptSeen::Duplicate;
+                }
+                KeptSeen::New
             }
-        }
+            Some(_) => KeptSeen::NewEpoch,
+            None => KeptSeen::New,
+        };
+        *kept = Some((Arc::clone(epoch), offset));
+        seen
+    }
+
+    /// The history position last delivered in `room_key` (cluster).
+    pub(crate) fn kept_pos(&self, room_key: &str) -> Option<(Arc<str>, u64)> {
+        self.room_to_sessions
+            .get(room_key)?
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// How many sessions are in the room.

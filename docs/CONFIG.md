@@ -42,6 +42,9 @@ so an unbounded default would let one client grow it without limit.
 
 ## Cluster broker (`gateway.broker`, ADR 0011) — experimental
 
+Operations guide (failure behaviour, Redis requirements, capacity):
+[CLUSTER.md](CLUSTER.md).
+
 By default (`kind: memory`) rooms live in one gateway process. With Redis,
 several gateway nodes share rooms: a message published on any node reaches
 the room's members on every node.
@@ -97,7 +100,7 @@ gateway:
   commands the Lua scripts run; `wsp` = your prefix):
 
   ```
-  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +getdel +del +exists +incr +incrby +decrby +pexpire +time +zadd +zcard +zrange +zrangebyscore +zremrangebyrank +zpopmin +hgetall +hset +hdel +sadd +srem +smembers +eval +evalsha +script|load +client|setinfo
+  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +getdel +del +exists +incr +incrby +decrby +pexpire +time +zadd +zcard +zrange +zrangebyscore +zremrangebyrank +zpopmin +hget +hgetall +hset +hdel +hexists +sadd +srem +smembers +eval +evalsha +script|load +client|setinfo
   ```
 
   (`client|setinfo` is optional: without it the client library's

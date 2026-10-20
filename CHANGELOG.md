@@ -59,7 +59,11 @@ the Rust API may break in 0.x minor releases, always listed here.
   cluster-wide: sid replacement, per-user limits (exact, one Redis script)
   and the server API's disconnect span nodes. Presence is cluster-wide
   (queries, join snapshots), and the members of a node that dies are
-  announced as having left, once.
+  announced as having left, once. Nodes repair themselves after Redis
+  loses data or a node is cut off, refill history rooms after a dropped
+  subscription, tell clients when a room's history restarted, and never
+  apply a retried history publish twice. Chaos-tested: node `kill -9`,
+  Redis restart, Redis pause (docs/CLUSTER.md).
 - Server API publish answers 503 + `Retry-After` when a cluster broker's queue
   is full.
 

@@ -65,6 +65,15 @@ jobs:
         run: |
           cargo test -p wsprism-gateway --locked --test cluster --test cluster_gap
           cargo test -p wsprism-redis --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Node kill -9 with SDK clients (the Redis restart / pause scenarios
+      # need the docker container and are skipped here).
+      - name: Chaos tests
+        run: |
+          cargo build -p wsprism-gateway --locked
+          node --test --test-force-exit sdk/js/test/chaos.test.mjs
         env:
           WSPRISM_TEST_REDIS: redis://127.0.0.1:6379
 

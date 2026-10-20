@@ -69,39 +69,51 @@ const POSITION_TTL: Duration = Duration::from_secs(24 * 3600);
 
 /// One room's part of an outbox batch, in order (A15: one script call per
 /// room and batch, not per message — per message only the PUBLISH is left).
-/// KEYS: seq, epoch, log, bytes. ARGV: channel, size, ttl ms, max bytes,
-/// epoch candidate, position ttl ms, then pairs (head, text) per message:
-/// a kept message gets the next offset; head = '' publishes text as is.
-/// Returns the last offset.
+/// KEYS: seq, epoch, log, bytes, applied. ARGV: channel, size, ttl ms, max
+/// bytes, epoch candidate, position ttl ms, node id, then triples (head,
+/// text, frame seq) per message: a kept message gets the next offset;
+/// head = '' publishes text as is. A frame whose seq this node already had
+/// applied here is skipped: the outbox retries a batch whose reply timed
+/// out, and the first try may have run (R5). Returns the last offset.
 const PUBLISH_KEPT: &str = r"
 local ch, size, ttl, maxb, pttl = ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4]), tonumber(ARGV[6])
 if redis.call('EXISTS', KEYS[1], KEYS[2]) < 2 then
   redis.call('SET', KEYS[2], ARGV[5], 'PX', pttl)
   redis.call('SET', KEYS[1], 0, 'PX', pttl)
-  redis.call('DEL', KEYS[3], KEYS[4])
+  redis.call('DEL', KEYS[3], KEYS[4], KEYS[5])
 end
 local ep = redis.call('GET', KEYS[2])
+local done = tonumber(redis.call('HGET', KEYS[5], ARGV[7]) or '0')
+local last = done
 local kept = 0
-for i = 7, #ARGV, 2 do
-  if ARGV[i] ~= '' then kept = kept + 1 end
+for i = 8, #ARGV, 3 do
+  if ARGV[i] ~= '' and tonumber(ARGV[i + 2]) > done then kept = kept + 1 end
 end
 local o = redis.call('INCRBY', KEYS[1], kept) - kept
 local t = redis.call('TIME')
 local now = (tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)) .. ':'
 local z, added = {}, 0
-for i = 7, #ARGV, 2 do
-  if ARGV[i] == '' then
-    redis.call('PUBLISH', ch, ARGV[i + 1])
-  else
-    o = o + 1
-    -- `<offset>:<epoch>`: receivers notice when the history restarted.
-    local s = tostring(o) .. ':' .. ep
-    local msg = ARGV[i] .. string.char(#s) .. s .. ARGV[i + 1]
-    z[#z + 1] = o
-    z[#z + 1] = now .. msg
-    added = added + #msg
-    redis.call('PUBLISH', ch, msg)
+for i = 8, #ARGV, 3 do
+  local fseq = tonumber(ARGV[i + 2])
+  if fseq > done then
+    if fseq > last then last = fseq end
+    if ARGV[i] == '' then
+      redis.call('PUBLISH', ch, ARGV[i + 1])
+    else
+      o = o + 1
+      -- `<offset>:<epoch>`: receivers notice when the history restarted.
+      local s = tostring(o) .. ':' .. ep
+      local msg = ARGV[i] .. string.char(#s) .. s .. ARGV[i + 1]
+      z[#z + 1] = o
+      z[#z + 1] = now .. msg
+      added = added + #msg
+      redis.call('PUBLISH', ch, msg)
+    end
   end
+end
+if last > done then
+  redis.call('HSET', KEYS[5], ARGV[7], last)
+  redis.call('PEXPIRE', KEYS[5], pttl)
 end
 if kept > 0 then
   redis.call('ZADD', KEYS[3], unpack(z))
@@ -311,6 +323,11 @@ fn history_keys(prefix: &str, room_key: &str) -> [String; 4] {
     ["seq", "epoch", "log", "bytes"].map(|k| format!("{prefix}:h:{{{room_key}}}:{k}"))
 }
 
+/// Per room: the last frame seq applied from each node (idempotent retries).
+fn applied_key(prefix: &str, room_key: &str) -> String {
+    format!("{prefix}:h:{{{room_key}}}:applied")
+}
+
 struct ShardCmd {
     sub: Subscription,
     ack: oneshot::Sender<Result<(), BrokerError>>,
@@ -332,6 +349,9 @@ pub struct RedisBroker {
     cfg: RedisConfig,
     node_id: String,
     conn: OnceCell<ConnectionManager>,
+    /// The outbox's own connection, patient with a stalled Redis (see
+    /// `PUBLISH_TIMEOUT`).
+    publish_conn: OnceCell<ConnectionManager>,
     shards: OnceLock<Vec<mpsc::UnboundedSender<ShardCmd>>>,
     incoming_tx: mpsc::Sender<Incoming>,
     incoming_rx: Mutex<Option<mpsc::Receiver<Incoming>>>,
@@ -345,6 +365,15 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 fn unavailable(e: redis::RedisError) -> BrokerError {
     BrokerError::Unavailable(format!("redis: {e}"))
 }
+
+/// How long a publish waits for Redis before it counts as failed. A failed
+/// publish is retried, and if the first try did run (the reply was only
+/// late), plain room messages would arrive twice (kept ones are applied
+/// once either way, see `PUBLISH_KEPT`). The client library's default is
+/// 500 ms, which turned a 2 s Redis pause into duplicates (R5 chaos test).
+/// While a publish waits, new ones are refused after the outbox's
+/// `max_wait`, so waiting longer does not pile up latency.
+const PUBLISH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Incoming frames buffered between the subscribers and the engine.
 const INCOMING_QUEUE: usize = 65_536;
@@ -370,6 +399,7 @@ impl RedisBroker {
             cfg,
             node_id: random_id(),
             conn: OnceCell::new(),
+            publish_conn: OnceCell::new(),
             shards: OnceLock::new(),
             incoming_tx,
             incoming_rx: Mutex::new(Some(incoming_rx)),
@@ -440,6 +470,15 @@ impl Broker for RedisBroker {
             .await
             .map_err(unavailable)?;
         let slot = self.lease(&mut conn).await?;
+        let publish_conn = self
+            .client
+            .get_connection_manager_with_config(
+                redis::aio::ConnectionManagerConfig::new()
+                    .set_response_timeout(Some(PUBLISH_TIMEOUT)),
+            )
+            .await
+            .map_err(unavailable)?;
+        let _ = self.publish_conn.set(publish_conn);
         // Pipelined publishes call the script by hash: load it up front.
         let _: String = redis::cmd("SCRIPT")
             .arg("LOAD")
@@ -491,7 +530,7 @@ impl Broker for RedisBroker {
 
     async fn publish(&self, batch: &[BrokerFrame]) -> Result<(), BrokerError> {
         let mut conn = self
-            .conn
+            .publish_conn
             .get()
             .cloned()
             .ok_or_else(|| BrokerError::Unavailable("not started".into()))?;
@@ -519,22 +558,26 @@ impl Broker for RedisBroker {
             let cmd = pipe
                 .cmd("EVALSHA")
                 .arg(self.publish_kept.get_hash())
-                .arg(4)
+                .arg(5)
                 .arg(seq)
                 .arg(epoch)
                 .arg(log)
                 .arg(bytes)
+                .arg(applied_key(&self.cfg.prefix, &first.room_key))
                 .arg(self.channel(&first.room_key))
                 .arg(keep.size)
                 .arg(keep.ttl.as_millis() as u64)
                 .arg(keep.max_bytes)
                 .arg(random_id())
-                .arg(POSITION_TTL.as_millis() as u64);
+                .arg(POSITION_TTL.as_millis() as u64)
+                .arg(&self.node_id);
             for f in frames {
                 match (f.keep.is_some(), wire::encode_kept(f)) {
-                    (true, Some((head, text))) => cmd.arg(head.as_ref()).arg(text.as_ref()),
+                    (true, Some((head, text))) => {
+                        cmd.arg(head.as_ref()).arg(text.as_ref()).arg(f.seq)
+                    }
                     _ => match wire::encode(f) {
-                        Some(b) => cmd.arg("").arg(b.as_ref()),
+                        Some(b) => cmd.arg("").arg(b.as_ref()).arg(f.seq),
                         None => cmd,
                     },
                 };
@@ -544,11 +587,11 @@ impl Broker for RedisBroker {
         match pipe.query_async::<()>(&mut conn).await {
             Ok(()) => Ok(()),
             // Redis restarted and forgot the script: load it and let the
-            // outbox retry the batch. Commands before the failing one ran
-            // already, so a message may then be delivered twice (a kept one
-            // under a second offset) — rare, and clients drop what they
-            // have already seen by offset only within one offset.
-            Err(e) if e.code() == Some("NOSCRIPT") => {
+            // outbox retry the batch (kept frames are applied once anyway,
+            // by their seq). The error may come wrapped from a pipeline, so
+            // match its text too (R5: a missed NOSCRIPT retried forever).
+            Err(e) if e.code() == Some("NOSCRIPT") || e.to_string().contains("NOSCRIPT") => {
+                tracing::warn!("redis broker: script missing (Redis restarted?); loading it");
                 let _: Result<String, _> = redis::cmd("SCRIPT")
                     .arg("LOAD")
                     .arg(PUBLISH_KEPT)

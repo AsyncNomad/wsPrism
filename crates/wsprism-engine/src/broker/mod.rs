@@ -71,6 +71,10 @@ pub struct BrokerFrame {
     /// The history epoch that offset belongs to (incoming kept frames): a
     /// change means the history was lost and offsets restarted (R5).
     pub epoch: Option<Arc<str>>,
+    /// Rises with every frame this node queues (0 = not numbered): lets a
+    /// broker apply a retried frame once (R5: a write that timed out may
+    /// still have happened).
+    pub seq: u64,
 }
 
 /// How a history room keeps messages (from the tenant's `history` rule).
@@ -135,6 +139,7 @@ impl BrokerFrame {
             keep: None,
             offset: None,
             epoch: None,
+            seq: 0,
         }
     }
 

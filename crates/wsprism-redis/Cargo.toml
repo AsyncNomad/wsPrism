@@ -22,3 +22,5 @@ futures-util = { workspace = true }
 
 [dev-dependencies]
 redis = { workspace = true }
+bytes = { workspace = true }
+futures-util = { workspace = true }

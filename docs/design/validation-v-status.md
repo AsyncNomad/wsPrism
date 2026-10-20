@@ -45,11 +45,13 @@ cargo build --release -p wsprism-loadgen
 | R3-3 공유 1회용 티켓 | ✅ | ADR 0011 「R3-3 구현」 |
 | A15 Redis 처리량 측정·개선 | ✅ | ADR 0011 「A15 측정 결과와 후속」, BENCHMARKS |
 | R4 클러스터 세션·제어·presence | ✅ | ADR 0011 「R4-1」「R4-2」 |
-| R5 카오스(노드 kill -9, Redis 재시작, offset 검사기), 대조 작업 | ⏳ 다음 | ADR 0011 |
+| R5 대조 작업·카오스(노드 kill -9, Redis 재시작·정지, offset 검사기) | ✅ M3·M4 완료 기준 충족 | ADR 0011 「R5-1」「R5-2」, docs/CLUSTER.md |
+| M5 성능 과제(다중 파이프라인, 이력 저장 구조, 저부하 CPU, 키 있는 Hot, 다중 노드 측정, 이력 켠 경쟁 비교) → M6 운영 → 0.1.0 | ⏳ 다음 | ADR 0011 「A15」, ROADMAP |
 
 - **성능 회귀 판정 (ADR 0011 B2):** `bench/run-icount.sh`(valgrind callgrind, 결정적 명령어 수 — WSL2에는 CPU PMU가 없어 `perf stat -e instructions` 불가)와 `bench/run-mem-users.sh`(유휴 메모리). 기준선은 `bench/results/icount-pre-r1.jsonl`, `mem-pre-r1.jsonl`. 단계마다 같은 스크립트로 다시 재서 ±2%를 본다.
 - **Queued 모드 회귀:** `WSPRISM_TEST_BROKER=queued cargo test -p wsprism-gateway` (CI에도 있음).
 - 전체 테스트가 메모리 부족(exit 137)으로 죽으면 `-j 4`로 병렬도를 낮춘다.
+- **카오스 테스트:** `WSPRISM_TEST_REDIS=... node --test --test-force-exit sdk/js/test/chaos.test.mjs` (Redis 재시작·정지 시나리오는 docker 컨테이너 `wsp-redis` 필요).
 - **클러스터 테스트:** `export WSPRISM_TEST_REDIS=$(bench/redis-test.sh)` (외부와 차단된 docker 네트워크의 Redis), 끝나면 `bench/redis-test.sh stop`. 없으면 클러스터 테스트는 아무것도 하지 않고 통과한다.
 
 ## 실험 재개 방법

@@ -10,6 +10,7 @@ use crate::broker::{
     OutboxCounters, OutboxLimits, PresenceOp, MAX_NODE_SLOT,
 };
 use crate::realtime::core::history::{self, History, HistoryConfig, HistoryPos, Recover, Ring};
+use crate::realtime::core::presence::KeptSeen;
 use crate::realtime::core::{
     now_ms, CloseRequest, Connection, Departed, Joined, Member, Presence, Put, SessionRegistry,
     SessionSignals,
@@ -75,6 +76,8 @@ pub struct RealtimeCore {
     node_slot: AtomicU16,
     /// `Some` iff some tenant keeps room history (ADR 0011 §3).
     history: Option<History>,
+    /// Numbers queued frames (`BrokerFrame::seq`).
+    frame_seq: AtomicU64,
 }
 
 impl Default for RealtimeCore {
@@ -95,6 +98,7 @@ impl RealtimeCore {
             outbox: None,
             node_slot: AtomicU16::new(0),
             history: None,
+            frame_seq: AtomicU64::new(0),
         }
     }
 
@@ -128,6 +132,7 @@ impl RealtimeCore {
             outbox,
             node_slot: AtomicU16::new(0),
             history: None,
+            frame_seq: AtomicU64::new(0),
         })
     }
 
@@ -571,6 +576,7 @@ impl RealtimeCore {
         let origin = self.node_slot.load(Ordering::Relaxed);
         let mut bf = BrokerFrame::new(origin, room_key, qos, frame).except(except);
         bf.keep = keep;
+        bf.seq = self.frame_seq.fetch_add(1, Ordering::Relaxed) + 1;
         match outbox.push_frame(bf) {
             Ok(()) => Ok(n),
             Err(_) if reliable && !hot => Err(WsPrismError::Unavailable(
@@ -603,11 +609,56 @@ impl RealtimeCore {
 
     /// The broker lost frames of these rooms: tell their members (`sys.gap`),
     /// who resync (ADR 0011 §4).
-    fn deliver_gap(&self, rooms: &[Arc<str>]) {
-        for room_key in rooms {
-            let room = room_key.split_once("::").map_or(&**room_key, |(_, r)| r);
-            let frame = OutFrame::text(sys::gap(room).to_string());
-            self.fan_out(room_key, &frame, &QoS::Reliable);
+    /// `sys.gap` to the room's members: they resync.
+    fn tell_gap(&self, room_key: &str) {
+        let room = room_key.split_once("::").map_or(room_key, |(_, r)| r);
+        let frame = OutFrame::text(sys::gap(room).to_string());
+        self.fan_out(room_key, &frame, &QoS::Reliable);
+    }
+
+    /// This node's subscription to the room dropped and is back (ADR 0011
+    /// §4): a history room is filled from the history since the last
+    /// message delivered here, so members see no gap; otherwise they are
+    /// told. Runs on the room's incoming worker, so the room's newer
+    /// frames wait in its queue until the fill is done (order kept; the
+    /// overlap is skipped by offset).
+    async fn fill_gap(&self, room_key: &Arc<str>) {
+        let keep = match (&self.history, self.outbox.is_some()) {
+            (Some(h), true) => h.rule(room_key).map(|r| r.keep()),
+            _ => None,
+        };
+        let (Some(keep), Some((epoch, offset))) = (keep, self.presence.kept_pos(room_key)) else {
+            self.tell_gap(room_key);
+            return;
+        };
+        let from = Recover {
+            epoch: epoch.to_string(),
+            offset,
+        };
+        let read = match self.broker.history(room_key, &keep, Some(&from)).await {
+            // The history restarted (Redis lost it): all of the new epoch.
+            Ok(r) if r.replay.is_none() && *r.epoch != *epoch => {
+                let from = Recover {
+                    epoch: r.epoch.to_string(),
+                    offset: 0,
+                };
+                self.broker.history(room_key, &keep, Some(&from)).await
+            }
+            other => other,
+        };
+        match read {
+            Ok(r) => match r.replay {
+                Some(frames) => {
+                    for f in &frames {
+                        self.deliver_incoming(f);
+                    }
+                }
+                None => self.tell_gap(room_key), // already trimmed
+            },
+            Err(e) => {
+                tracing::warn!(%room_key, "filling a gap from history failed: {e}");
+                self.tell_gap(room_key);
+            }
         }
     }
 
@@ -627,10 +678,14 @@ impl RealtimeCore {
             // The room's history was lost: offsets restart. Members learn it
             // before the first such message (else clients drop it as seen).
             if let Some(e) = &f.epoch {
-                if self.presence.epoch_changed(&f.room_key, e) {
-                    let room = f.room_key.split_once("::").map_or(&*f.room_key, |(_, r)| r);
-                    let gap = OutFrame::text(sys::gap_epoch(room, e).to_string());
-                    self.fan_out(&f.room_key, &gap, &QoS::Reliable);
+                match self.presence.kept_seen(&f.room_key, e, o) {
+                    KeptSeen::Duplicate => return,
+                    KeptSeen::NewEpoch => {
+                        let room = f.room_key.split_once("::").map_or(&*f.room_key, |(_, r)| r);
+                        let gap = OutFrame::text(sys::gap_epoch(room, e).to_string());
+                        self.fan_out(&f.room_key, &gap, &QoS::Reliable);
+                    }
+                    KeptSeen::New => {}
                 }
             }
             let text = std::str::from_utf8(t.as_bytes()).unwrap_or("{}");
@@ -915,7 +970,11 @@ async fn incoming_worker(
         for msg in msgs {
             match msg {
                 Incoming::Frame(f) => core.deliver_incoming(&f),
-                Incoming::Gap(rooms) => core.deliver_gap(&rooms),
+                Incoming::Gap(rooms) => {
+                    for room in &rooms {
+                        core.fill_gap(room).await;
+                    }
+                }
                 Incoming::Control(c) => core.apply_control(&c),
             }
         }

@@ -1,0 +1,73 @@
+# Running a cluster
+
+Several gateway nodes share rooms through Redis (`gateway.broker.kind:
+redis`, ADR 0011). This page is for operators: what to deploy, what happens
+when something fails, and what the limits are. Configuration reference:
+[CONFIG.md](CONFIG.md) "Cluster broker". Status: **experimental** until the
+first release that drops the label.
+
+## What to deploy
+
+- **Gateway nodes** behind any load balancer (no sticky sessions needed), or
+  give clients the list of nodes (JS SDK: `url: [..]`; each reconnect tries
+  the next node).
+- **One Redis ≥ 6.2** (`GETDEL`), optionally Sentinel-managed. Redis Cluster
+  is not supported yet (keys already use hash tags, so it will not change
+  them).
+  - `maxmemory-policy noeviction` (or `volatile-*`): evicting the gateway's
+    keys forces resyncs (history restarts in a new epoch).
+  - Persistence is optional. Without it, a Redis restart loses history (the
+    clients are told) and the nodes put their sessions and memberships back
+    within ~15 s.
+  - A least-privilege ACL user: [CONFIG.md](CONFIG.md) has the exact command
+    list (verified by the cluster tests).
+- **Probes:** `/healthz` (process alive), `/readyz` (503 while draining or
+  after this node lost its slot — restart it).
+
+## What happens when ...
+
+| Event | Clients | Recovery |
+|---|---|---|
+| A node is killed (`kill -9`, crash) | Its clients reconnect to another node and resume history rooms from their last offset: nothing lost, nothing twice (chaos test) | Within `slot_ttl_s` + ~5 s the other nodes remove its members and send `member_left` once (presence events on); its sessions stop counting toward limits |
+| A node stops gracefully | Close 1001; reconnect elsewhere | Same as above for whatever it could not clean up |
+| Redis restarts without data | History rooms: the nodes refill from the new history and tell clients the history restarted (`sys.gap` with the new epoch); every message published after the restart arrives once. Rooms without history: `sys.gap` (resync). Nobody is disconnected | Nodes reconnect, re-subscribe, reload scripts, and within ~15 s put their sessions and memberships back |
+| Redis pauses or is slow | Publishes wait; past `outbox_max_wait_ms` (1 s) new ones are refused (`UNAVAILABLE`, server API 503). Nothing is lost or delivered twice (chaos test) | Automatic when Redis answers again |
+| Redis is down | New connections 1013 (try again later); Reliable publishes `UNAVAILABLE`; Hot state still flows between members of the same node; ticket logins 503 | Automatic when Redis is back (as above) |
+| A node is cut off from Redis longer than `slot_ttl_s` | Its rooms look empty to the others for a while (`member_left` sent) | When it reconnects it re-registers and restores its sessions and memberships; if another node took its slot meanwhile, `/readyz` turns 503: restart it |
+| A close command between nodes is lost | A replaced session may linger on its node | Closed within ~15 s (the node checks its sessions against Redis) |
+
+## Delivery semantics
+
+- **Per room, one order for everyone:** Ext messages go through Redis, so
+  every node delivers a room's messages in the same order.
+- **Across nodes, no publish order:** a backend that sends message A to node
+  1 and B to node 2 gets them in Redis arrival order, which can differ from
+  the order it sent them when node 1 is slow. Publish a room's messages to
+  one node if their order matters.
+- **The server API's 200 means "queued on that node"**, not "delivered".
+  A node that dies before flushing its queue (normally microseconds) loses
+  what it had queued. Back-ends that need certainty publish to rooms with
+  history and check the offsets their clients report.
+- **Retries never duplicate history messages** (each frame carries a
+  per-node sequence the Redis script checks). Plain room messages can be
+  duplicated only if a connection to Redis breaks after Redis ran a publish
+  but before it answered.
+
+## Capacity (one Redis core, loopback; [BENCHMARKS.md](BENCHMARKS.md))
+
+| Traffic | Limit seen |
+|---|---|
+| Hot state | Same as a single node (delivered locally first) |
+| Ext without history | Fine at 120k publishes/s per node (1.08M deliveries/s); at 240k/s the node's queue to Redis is at its limit |
+| Ext with history | ~120k kept messages/s per Redis core |
+
+Sessions queue: keep `gateway.session_queue_capacity` well above 256 (frames
+from Redis come in batches); the default 1024 is fine.
+
+## Known limits
+
+- Tenant-wide limits (`max_sessions_total`, room limits) are per node.
+- One Redis; no Redis Cluster yet.
+- After Redis restarts empty, a user who reconnects with the same `sid` on
+  another node before the old node restored its sessions (~15 s) can end up
+  with two sessions for that sid until one disconnects.

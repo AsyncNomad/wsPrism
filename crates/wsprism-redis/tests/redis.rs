@@ -85,3 +85,48 @@ async fn racing_reapers_report_each_dead_member_once() {
         .unwrap()
         .is_empty());
 }
+
+/// R5: a batch retried after its reply was lost (the first try did run) is
+/// applied once: one copy published, one offset each.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retried_kept_batch_is_applied_once() {
+    use futures_util::StreamExt;
+    use std::time::Duration;
+    use wsprism_engine::broker::{BrokerFrame, Keep};
+    use wsprism_engine::spi::OutFrame;
+    use wsprism_engine::QoS;
+
+    let Some(url) = redis_url() else { return };
+    let p = prefix("retry");
+    let b = broker(&url, &p).await;
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut sub = client.get_async_pubsub().await.unwrap();
+    sub.subscribe(format!("{p}:r:{{t::h}}")).await.unwrap();
+    let mut stream = sub.into_on_message();
+
+    let keep = Keep::new(100, Duration::from_secs(60), 1 << 20);
+    let batch: Vec<BrokerFrame> = (1..=3)
+        .map(|i| {
+            let mut f = BrokerFrame::new(
+                0,
+                "t::h",
+                QoS::Reliable,
+                OutFrame::text(format!("{{\"n\":{i}}}")),
+            );
+            f.keep = Some(keep);
+            f.seq = i;
+            f
+        })
+        .collect();
+    b.publish(&batch).await.unwrap();
+    b.publish(&batch).await.unwrap(); // the retry
+    let mut got = Vec::new();
+    while let Ok(Some(m)) = tokio::time::timeout(Duration::from_millis(300), stream.next()).await {
+        let f = wsprism_engine::broker::wire::decode(&bytes::Bytes::copy_from_slice(
+            m.get_payload_bytes(),
+        ))
+        .unwrap();
+        got.push(f.offset.unwrap());
+    }
+    assert_eq!(got, [1, 2, 3], "published once, one offset each");
+}
