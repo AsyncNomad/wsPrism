@@ -182,8 +182,11 @@ impl BrokerOutbox {
 
 /// Items handed to the broker per wake-up (one `publish` per run of frames).
 /// One batch is in flight at a time, so this sets the outbox throughput: at
-/// 256 it capped at ~150k publishes/s on loopback Redis (ADR 0011 A15).
-const BATCH: usize = 1024;
+/// 256 it capped at ~150k publishes/s on loopback Redis; at 1024 a 240k/s
+/// load sat at the limit (delivery 0.66-1.0); 4096 keeps up (ADR 0011 A15,
+/// M5). A batch is only as large as what queued meanwhile, so light loads
+/// still go out at once.
+const BATCH: usize = 4096;
 const RETRY_FIRST: Duration = Duration::from_millis(50);
 const RETRY_MAX: Duration = Duration::from_secs(2);
 

@@ -58,7 +58,7 @@ first release that drops the label.
 | Traffic | Limit seen |
 |---|---|
 | Hot state | Same as a single node (delivered locally first) |
-| Ext without history | Fine at 120k publishes/s per node (1.08M deliveries/s); at 240k/s the node's queue to Redis is at its limit |
+| Ext without history | Fine at 240k publishes/s per node (2.16M deliveries/s, p50 ~5 ms) |
 | Ext with history | ~120k kept messages/s per Redis core |
 
 Sessions queue: keep `gateway.session_queue_capacity` well above 256 (frames

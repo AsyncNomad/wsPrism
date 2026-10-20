@@ -366,6 +366,10 @@ fn unavailable(e: redis::RedisError) -> BrokerError {
     BrokerError::Unavailable(format!("redis: {e}"))
 }
 
+/// Most messages one history script call takes: a call blocks Redis while
+/// it runs (~5 µs per message), so a large batch is split (M5).
+const SCRIPT_CHUNK: usize = 512;
+
 /// How long a publish waits for Redis before it counts as failed. A failed
 /// publish is retried, and if the first try did run (the reply was only
 /// late), plain room messages would arrive twice (kept ones are applied
@@ -552,37 +556,39 @@ impl Broker for RedisBroker {
                     .ignore();
             }
         }
-        for (first, frames) in &kept_rooms {
+        for (first, all) in &kept_rooms {
             let Some(keep) = first.keep else { continue };
-            let [seq, epoch, log, bytes] = history_keys(&self.cfg.prefix, &first.room_key);
-            let cmd = pipe
-                .cmd("EVALSHA")
-                .arg(self.publish_kept.get_hash())
-                .arg(5)
-                .arg(seq)
-                .arg(epoch)
-                .arg(log)
-                .arg(bytes)
-                .arg(applied_key(&self.cfg.prefix, &first.room_key))
-                .arg(self.channel(&first.room_key))
-                .arg(keep.size)
-                .arg(keep.ttl.as_millis() as u64)
-                .arg(keep.max_bytes)
-                .arg(random_id())
-                .arg(POSITION_TTL.as_millis() as u64)
-                .arg(&self.node_id);
-            for f in frames {
-                match (f.keep.is_some(), wire::encode_kept(f)) {
-                    (true, Some((head, text))) => {
-                        cmd.arg(head.as_ref()).arg(text.as_ref()).arg(f.seq)
-                    }
-                    _ => match wire::encode(f) {
-                        Some(b) => cmd.arg("").arg(b.as_ref()).arg(f.seq),
-                        None => cmd,
-                    },
-                };
+            for frames in all.chunks(SCRIPT_CHUNK) {
+                let [seq, epoch, log, bytes] = history_keys(&self.cfg.prefix, &first.room_key);
+                let cmd = pipe
+                    .cmd("EVALSHA")
+                    .arg(self.publish_kept.get_hash())
+                    .arg(5)
+                    .arg(seq)
+                    .arg(epoch)
+                    .arg(log)
+                    .arg(bytes)
+                    .arg(applied_key(&self.cfg.prefix, &first.room_key))
+                    .arg(self.channel(&first.room_key))
+                    .arg(keep.size)
+                    .arg(keep.ttl.as_millis() as u64)
+                    .arg(keep.max_bytes)
+                    .arg(random_id())
+                    .arg(POSITION_TTL.as_millis() as u64)
+                    .arg(&self.node_id);
+                for f in frames {
+                    match (f.keep.is_some(), wire::encode_kept(f)) {
+                        (true, Some((head, text))) => {
+                            cmd.arg(head.as_ref()).arg(text.as_ref()).arg(f.seq)
+                        }
+                        _ => match wire::encode(f) {
+                            Some(b) => cmd.arg("").arg(b.as_ref()).arg(f.seq),
+                            None => cmd,
+                        },
+                    };
+                }
+                cmd.ignore();
             }
-            cmd.ignore();
         }
         match pipe.query_async::<()>(&mut conn).await {
             Ok(()) => Ok(()),
