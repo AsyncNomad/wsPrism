@@ -61,6 +61,8 @@ pub struct TestBroker {
     members: Mutex<std::collections::HashMap<Arc<str>, Vec<super::RoomMember>>>,
     /// What the next `reap_dead` returns (see [`TestBroker::dead_member`]).
     dead: Mutex<Vec<super::DeadMember>>,
+    /// False after [`TestBroker::forget_everything`] until `register`.
+    registered: std::sync::atomic::AtomicBool,
     arrivals: AtomicU64,
     epochs: std::sync::atomic::AtomicU64,
 }
@@ -87,6 +89,7 @@ impl TestBroker {
             sessions: Mutex::default(),
             members: Mutex::default(),
             dead: Mutex::default(),
+            registered: std::sync::atomic::AtomicBool::new(true),
             arrivals: AtomicU64::new(0),
             epochs: AtomicU64::new(1),
         })
@@ -212,6 +215,30 @@ impl TestBroker {
             member_id,
             true,
         ));
+    }
+
+    /// As if Redis restarted empty: no sessions, no memberships, and this
+    /// node unknown until it registers again.
+    pub fn forget_everything(&self) {
+        lock(&self.sessions).clear();
+        lock(&self.members).clear();
+        self.registered.store(false, Ordering::SeqCst);
+    }
+
+    /// As if another node replaced `session_key` and the command to close
+    /// it here was lost.
+    pub fn drop_session(&self, user_key: &str, session_key: &str) {
+        if let Some(entries) = lock(&self.sessions).get_mut(user_key) {
+            entries.retain(|(key, _, _)| &**key != session_key);
+        }
+    }
+
+    /// The session keys the table has for `user_key`.
+    pub fn table_sessions(&self, user_key: &str) -> Vec<String> {
+        lock(&self.sessions)
+            .get(user_key)
+            .map(|e| e.iter().map(|(k, _, _)| k.to_string()).collect())
+            .unwrap_or_default()
     }
 
     /// The membership of `room_key` as the broker has it.
@@ -409,6 +436,15 @@ impl super::SharedPresence for TestBroker {
     async fn reap_dead(&self) -> Result<Vec<super::DeadMember>, BrokerError> {
         Ok(std::mem::take(&mut *lock(&self.dead)))
     }
+
+    async fn registered(&self) -> Result<bool, BrokerError> {
+        Ok(self.registered.load(Ordering::SeqCst))
+    }
+
+    async fn register(&self) -> Result<(), BrokerError> {
+        self.registered.store(true, Ordering::SeqCst);
+        Ok(())
+    }
 }
 
 /// One session in the table: key, sid, order of arrival.
@@ -468,6 +504,37 @@ impl super::SharedSessions for TestBroker {
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    async fn missing(
+        &self,
+        sessions: &[(Arc<str>, Arc<str>)],
+    ) -> Result<Vec<Arc<str>>, BrokerError> {
+        let table = lock(&self.sessions);
+        Ok(sessions
+            .iter()
+            .filter(|(user, key)| {
+                !table
+                    .get(user)
+                    .is_some_and(|e| e.iter().any(|(k, _, _)| k == key))
+            })
+            .map(|(_, key)| Arc::clone(key))
+            .collect())
+    }
+
+    async fn restore(
+        &self,
+        sessions: &[(Arc<str>, Arc<str>, Arc<str>)],
+    ) -> Result<(), BrokerError> {
+        let mut table = lock(&self.sessions);
+        for (user, key, sid) in sessions {
+            let entries = table.entry(Arc::clone(user)).or_default();
+            if !entries.iter().any(|(k, _, _)| k == key) {
+                let n = self.arrivals.fetch_add(1, Ordering::SeqCst);
+                entries.push((Arc::clone(key), Arc::clone(sid), n));
+            }
+        }
+        Ok(())
     }
 
     async fn send_control(&self, node: u16, control: &super::Control) -> Result<(), BrokerError> {

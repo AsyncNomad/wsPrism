@@ -202,6 +202,68 @@ impl RealtimeCore {
         }
     }
 
+    /// Check this node against the cluster's tables (ADR 0011 R5):
+    /// - the cluster forgot this node (Redis restarted, or it was cut off
+    ///   long enough to be taken for dead): put its sessions and
+    ///   memberships back;
+    /// - otherwise, close local sessions the session table no longer has
+    ///   (replaced or kicked while the command to close them was lost).
+    pub async fn reconcile(&self) {
+        let (Some(p), Some(table)) = (self.broker.presence(), self.broker.sessions()) else {
+            return;
+        };
+        let local: Vec<(Arc<str>, Arc<str>, Arc<str>)> = self
+            .sessions
+            .local_sessions()
+            .into_iter()
+            .map(|(u, s, sid)| (Arc::from(u), Arc::from(s), Arc::from(sid)))
+            .collect();
+        match p.registered().await {
+            Ok(false) => {
+                let members = self.presence.local_members();
+                tracing::warn!(
+                    sessions = local.len(),
+                    memberships = members.len(),
+                    "cluster forgot this node; restoring its sessions and memberships"
+                );
+                let ops: Vec<PresenceOp> = members
+                    .into_iter()
+                    .map(|(room_key, m)| PresenceOp::Add {
+                        room_key: Arc::from(room_key),
+                        session_key: m.key,
+                        user: m.user,
+                        member_id: m.member_id,
+                        notify: m.notify,
+                    })
+                    .collect();
+                let restored = async {
+                    p.register().await?;
+                    table.restore(&local).await?;
+                    p.apply(&ops).await
+                };
+                if let Err(e) = restored.await {
+                    tracing::warn!("restoring this node in the cluster failed: {e}");
+                }
+            }
+            Ok(true) => {
+                let keys: Vec<(Arc<str>, Arc<str>)> =
+                    local.into_iter().map(|(u, s, _)| (u, s)).collect();
+                match table.missing(&keys).await {
+                    Ok(gone) if !gone.is_empty() => {
+                        tracing::warn!(
+                            sessions = gone.len(),
+                            "closing sessions the cluster replaced"
+                        );
+                        self.close_sessions(&gone, "replaced", "replaced");
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("session check failed: {e}"),
+                }
+            }
+            Err(e) => tracing::warn!("cluster check failed: {e}"),
+        }
+    }
+
     /// The broker (ADR 0011).
     pub fn broker(&self) -> &Arc<dyn Broker> {
         &self.broker
@@ -801,13 +863,22 @@ async fn run_incoming(core: Weak<RealtimeCore>, mut rx: tokio::sync::mpsc::Recei
 /// How often a node looks for dead nodes' members.
 const REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// Every this many reaper ticks, the node checks itself against the
+/// cluster's tables (ADR 0011 R5).
+const RECONCILE_EVERY: u32 = 3;
+
 async fn run_reaper(core: Weak<RealtimeCore>) {
     let mut tick = tokio::time::interval(REAP_INTERVAL);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut n = 0u32;
     loop {
         tick.tick().await;
         let Some(core) = core.upgrade() else { return };
         core.reap_dead().await;
+        n = n.wrapping_add(1);
+        if n.is_multiple_of(RECONCILE_EVERY) {
+            core.reconcile().await;
+        }
     }
 }
 
@@ -1186,6 +1257,7 @@ impl RealtimeCtx {
             conn,
             member_id: 0,
             skip_upto: 0,
+            notify: self.presence_events,
             user: Arc::clone(&self.user),
         };
         let (joined, new) = self.core.presence.try_join(

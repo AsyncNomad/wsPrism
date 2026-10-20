@@ -99,6 +99,7 @@ fn room(members: usize) -> (Arc<RealtimeCore>, Vec<mpsc::Receiver<OutFrame>>) {
             conn,
             member_id: 0,
             skip_upto: 0,
+            notify: false,
             user: user_key.clone().into(),
         };
         core.presence

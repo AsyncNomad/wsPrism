@@ -455,6 +455,7 @@ async fn remote_hot_frames_get_the_local_room_id() {
                 },
                 member_id: 0,
                 skip_upto: 0,
+                notify: false,
                 user: "x".into(),
             },
             &Default::default(),
@@ -581,4 +582,43 @@ async fn membership_is_shared_and_dead_members_are_announced() {
             }
         }
     }
+}
+
+/// R5: a node puts its sessions and memberships back when the cluster
+/// forgot it, and closes sessions the cluster replaced while the command
+/// to close them was lost.
+#[tokio::test]
+async fn reconcile_restores_what_was_lost_and_closes_what_was_replaced() {
+    let n = node(0, OutboxLimits::default()).await;
+    let mut a = client(&n, "t", "a", true);
+    let mut b = client(&n, "t", "b", false);
+    a.ctx.join_room("r").unwrap();
+    b.ctx.join_room("r").unwrap();
+    // As the gateway does at admission (the table is the broker's).
+    let table = n.core.broker().sessions().unwrap();
+    for user in ["a", "b"] {
+        let c = wsprism_engine::broker::SessionClaim::new(
+            &format!("t::{user}"),
+            &format!("t::{user}::s"),
+            "s",
+            10,
+            wsprism_engine::broker::OnFull::Deny,
+        );
+        assert!(table.claim(&c).await.unwrap().admitted);
+    }
+    settle().await;
+
+    // Redis restarted empty.
+    n.broker.forget_everything();
+    assert!(n.broker.room_members("t::r").is_empty());
+    n.core.reconcile().await;
+    assert_eq!(n.broker.room_members("t::r"), ["a", "b"]);
+    assert_eq!(n.broker.table_sessions("t::a"), ["t::a::s"]);
+    assert!(!a.signals.close_requested() && !b.signals.close_requested());
+
+    // b was replaced elsewhere; the close command never arrived.
+    n.broker.drop_session("t::b", "t::b::s");
+    n.core.reconcile().await;
+    assert!(b.signals.close_requested(), "b is closed");
+    assert!(!a.signals.close_requested(), "a is not");
 }

@@ -1,7 +1,7 @@
 //! Operational HTTP endpoints.
 //!
 //! - `/healthz` : liveness
-//! - `/readyz`  : readiness (503 when draining)
+//! - `/readyz`  : readiness (503 when draining or the cluster slot was lost)
 //! - `/metrics` : Prometheus text format
 
 use axum::{
@@ -20,6 +20,9 @@ pub async fn readyz(
 ) -> impl IntoResponse {
     if state.is_draining() {
         (StatusCode::SERVICE_UNAVAILABLE, "draining")
+    } else if !state.realtime().broker().healthy() {
+        // Another node took this node's slot (ADR 0011 R5): restart it.
+        (StatusCode::SERVICE_UNAVAILABLE, "broker slot lost")
     } else {
         (StatusCode::OK, "ready")
     }

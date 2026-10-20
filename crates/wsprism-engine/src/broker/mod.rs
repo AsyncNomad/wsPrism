@@ -265,6 +265,13 @@ pub trait Broker: Send + Sync + 'static {
     fn presence(&self) -> Option<&dyn SharedPresence> {
         None
     }
+
+    /// False once this node lost its slot to another node: its member ids
+    /// may collide, so it should stop taking traffic (`/readyz` 503) and be
+    /// restarted (ADR 0011 R5).
+    fn healthy(&self) -> bool {
+        true
+    }
 }
 
 /// A change to the cluster's room membership, recorded in order through
@@ -356,6 +363,14 @@ pub trait SharedPresence: Send + Sync {
     /// Remove the members of nodes that died; each is returned by exactly
     /// one caller in the cluster.
     async fn reap_dead(&self) -> Result<Vec<DeadMember>, BrokerError>;
+
+    /// Whether the cluster still knows this node. False after Redis lost
+    /// its data or this node was taken for dead (cut off longer than its
+    /// slot TTL): its sessions and memberships must then be put back.
+    async fn registered(&self) -> Result<bool, BrokerError>;
+
+    /// Make the cluster know this node again.
+    async fn register(&self) -> Result<(), BrokerError>;
 }
 
 /// What to do when a user is at the session limit.
@@ -481,6 +496,19 @@ pub trait SharedSessions: Send + Sync {
 
     /// Send `control` to node `node` (this one included).
     async fn send_control(&self, node: u16, control: &Control) -> Result<(), BrokerError>;
+
+    /// Of these (user key, session key) of this node, the ones the table no
+    /// longer has: they were replaced or kicked while the command to close
+    /// them was lost (ADR 0011 R5).
+    async fn missing(
+        &self,
+        sessions: &[(Arc<str>, Arc<str>)],
+    ) -> Result<Vec<Arc<str>>, BrokerError>;
+
+    /// Put this node's sessions (user key, session key, sid) back after the
+    /// table lost them (Redis restarted; ADR 0011 R5).
+    async fn restore(&self, sessions: &[(Arc<str>, Arc<str>, Arc<str>)])
+        -> Result<(), BrokerError>;
 }
 
 /// Small values shared by every node, each read at most once (ADR 0011

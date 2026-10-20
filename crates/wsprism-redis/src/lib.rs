@@ -325,6 +325,8 @@ pub struct RedisBroker {
     reap_room: redis::Script,
     /// This node's slot (set in `start`).
     slot: std::sync::atomic::AtomicU16,
+    /// False once another node took this node's slot.
+    healthy: Arc<std::sync::atomic::AtomicBool>,
     cfg: RedisConfig,
     node_id: String,
     conn: OnceCell<ConnectionManager>,
@@ -362,6 +364,7 @@ impl RedisBroker {
             members: redis::Script::new(MEMBERS),
             reap_room: redis::Script::new(REAP_ROOM),
             slot: std::sync::atomic::AtomicU16::new(0),
+            healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             cfg,
             node_id: random_id(),
             conn: OnceCell::new(),
@@ -457,6 +460,7 @@ impl Broker for RedisBroker {
             self.slot_key(slot),
             self.node_id.clone(),
             self.cfg.slot_ttl,
+            Arc::clone(&self.healthy),
         )));
         let mut shards = Vec::with_capacity(self.cfg.pubsub_connections);
         for i in 0..self.cfg.pubsub_connections {
@@ -628,6 +632,10 @@ impl Broker for RedisBroker {
     fn presence(&self) -> Option<&dyn SharedPresence> {
         Some(self)
     }
+
+    fn healthy(&self) -> bool {
+        self.healthy.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 impl RedisBroker {
@@ -707,6 +715,26 @@ impl SharedPresence for RedisBroker {
                 _ => Err(bad()),
             })
             .collect()
+    }
+
+    async fn registered(&self) -> Result<bool, BrokerError> {
+        redis::cmd("HEXISTS")
+            .arg(format!("{}:nodes", self.cfg.prefix))
+            .arg(&self.node_id)
+            .query_async(&mut self.conn()?)
+            .await
+            .map_err(unavailable)
+    }
+
+    async fn register(&self) -> Result<(), BrokerError> {
+        let _: i64 = redis::cmd("HSET")
+            .arg(format!("{}:nodes", self.cfg.prefix))
+            .arg(&self.node_id)
+            .arg(self.slot.load(std::sync::atomic::Ordering::Relaxed))
+            .query_async(&mut self.conn()?)
+            .await
+            .map_err(unavailable)?;
+        Ok(())
     }
 
     async fn reap_dead(&self) -> Result<Vec<DeadMember>, BrokerError> {
@@ -896,6 +924,53 @@ impl SharedSessions for RedisBroker {
             .collect()
     }
 
+    async fn missing(
+        &self,
+        sessions: &[(Arc<str>, Arc<str>)],
+    ) -> Result<Vec<Arc<str>>, BrokerError> {
+        if sessions.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut pipe = redis::pipe();
+        for (user, key) in sessions {
+            pipe.cmd("HEXISTS").arg(self.user_key(user)).arg(&**key);
+        }
+        let there: Vec<bool> = pipe
+            .query_async(&mut self.conn()?)
+            .await
+            .map_err(unavailable)?;
+        Ok(sessions
+            .iter()
+            .zip(there)
+            .filter(|(_, there)| !there)
+            .map(|((_, key), _)| Arc::clone(key))
+            .collect())
+    }
+
+    async fn restore(
+        &self,
+        sessions: &[(Arc<str>, Arc<str>, Arc<str>)],
+    ) -> Result<(), BrokerError> {
+        if sessions.is_empty() {
+            return Ok(());
+        }
+        let slot = self.slot.load(std::sync::atomic::Ordering::Relaxed);
+        let created = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_micros());
+        let mut pipe = redis::pipe();
+        for (user, key, sid) in sessions {
+            pipe.cmd("HSET")
+                .arg(self.user_key(user))
+                .arg(&**key)
+                .arg(format!("{}|{slot}|{sid}|{created}", self.node_id))
+                .ignore();
+        }
+        pipe.query_async::<()>(&mut self.conn()?)
+            .await
+            .map_err(unavailable)
+    }
+
     async fn send_control(&self, node: u16, control: &Control) -> Result<(), BrokerError> {
         let _: i64 = redis::cmd("PUBLISH")
             .arg(format!("{}:ctl:{node}", self.cfg.prefix))
@@ -979,7 +1054,13 @@ impl SharedKv for RedisBroker {
 
 /// Keep the node slot: renew it every third of its TTL; if it expired
 /// meanwhile (Redis was unreachable), take it back if still free.
-async fn heartbeat(mut conn: ConnectionManager, key: String, node_id: String, ttl: Duration) {
+async fn heartbeat(
+    mut conn: ConnectionManager,
+    key: String,
+    node_id: String,
+    ttl: Duration,
+    healthy: Arc<std::sync::atomic::AtomicBool>,
+) {
     let script = redis::Script::new(
         r"if redis.call('GET', KEYS[1]) == ARGV[1] then
             return redis.call('PEXPIRE', KEYS[1], ARGV[2])
@@ -999,10 +1080,15 @@ async fn heartbeat(mut conn: ConnectionManager, key: String, node_id: String, tt
         {
             Ok(1) => {}
             Ok(2) => tracing::warn!(%key, "redis broker: node slot had expired; claimed again"),
-            Ok(_) => tracing::error!(
-                %key,
-                "redis broker: node slot taken by another node; member ids may collide — restart this node"
-            ),
+            Ok(_) => {
+                // Member ids issued here may now collide with the other
+                // node's: stop taking traffic (`/readyz` 503) until restarted.
+                healthy.store(false, std::sync::atomic::Ordering::Relaxed);
+                tracing::error!(
+                    %key,
+                    "redis broker: node slot taken by another node; member ids may collide — restart this node"
+                );
+            }
             Err(e) => tracing::warn!(%key, "redis broker: slot heartbeat failed: {e}"),
         }
     }

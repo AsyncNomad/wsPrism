@@ -708,3 +708,143 @@ async fn a_dead_nodes_members_leave_once() {
     .await;
     assert_eq!(body["users"], json!(["alice", "bob"]));
 }
+
+/// Delete every key under `prefix` (as if Redis restarted without data).
+async fn wipe(url: &str, prefix: &str) {
+    let client = redis::Client::open(url).unwrap();
+    let mut c = client.get_multiplexed_async_connection().await.unwrap();
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg(format!("{prefix}:*"))
+        .query_async(&mut c)
+        .await
+        .unwrap();
+    if !keys.is_empty() {
+        let _: i64 = redis::cmd("DEL")
+            .arg(keys)
+            .query_async(&mut c)
+            .await
+            .unwrap();
+    }
+}
+
+/// R5: after Redis lost its data, each node puts its sessions and room
+/// memberships back (within ~15 s): presence is whole again and the session
+/// limit still holds.
+#[tokio::test]
+async fn nodes_restore_themselves_after_redis_lost_its_data() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("wipe");
+    let (a_node, b_node) = (node(&url, &p).await, node(&url, &p).await);
+    let mut alice = user(&a_node, "alice").await;
+    join(&mut alice, "r").await;
+    let mut dora = user_in(&b_node, "d", "dora", None).await;
+    send_json(
+        &mut dora,
+        json!({"svc":"room","type":"join","room":"lobby","seq":1}),
+    )
+    .await;
+    next_of(&mut dora, "joined").await;
+    wipe(&url, &p).await;
+    let (_, body) = http(
+        a_node.api,
+        "GET",
+        "/api/v1/rooms/r/presence",
+        Some(KEY),
+        None,
+    )
+    .await;
+    assert_eq!(body["users"], json!([]), "lost");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+    loop {
+        let (_, body) = http(
+            a_node.api,
+            "GET",
+            "/api/v1/rooms/r/presence",
+            Some(KEY),
+            None,
+        )
+        .await;
+        if body["users"] == json!(["alice"]) {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "not restored: {body}"
+        );
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    // dora's session is back in the table: single mode still denies a second.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+    loop {
+        match try_user_in(&a_node, "d", "dora", None).await {
+            Err(e) if e.contains("TOO_MANY_SESSIONS") => break,
+            Ok(ws) => {
+                drop(ws);
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "session table not restored"
+                );
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            Err(e) => panic!("{e}"),
+        }
+    }
+    // Nobody was disconnected by any of this.
+    send_json(
+        &mut alice,
+        json!({"svc":"room","type":"join","room":"r2","seq":2}),
+    )
+    .await;
+    next_of(&mut alice, "joined").await;
+}
+
+/// R5: a session the table no longer has (replaced while the command to
+/// close it was lost) is closed by its node within ~15 s.
+#[tokio::test]
+async fn a_session_replaced_without_notice_is_closed() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("lost");
+    let a_node = node(&url, &p).await;
+    let mut sam = user_in(&a_node, "t", "sam", Some("tab")).await;
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut c = client.get_multiplexed_async_connection().await.unwrap();
+    let _: i64 = redis::cmd("DEL")
+        .arg(format!("{p}:us:{{t::sam}}"))
+        .query_async(&mut c)
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(25);
+    loop {
+        match next_event_within(&mut sam, Duration::from_secs(1)).await {
+            Event::Close(Some(f)) => {
+                assert_eq!(f.reason, "replaced");
+                break;
+            }
+            _ => assert!(tokio::time::Instant::now() < deadline, "not closed"),
+        }
+    }
+}
+
+/// R5: a node whose slot another node took stops being ready.
+#[tokio::test]
+async fn a_node_that_lost_its_slot_is_not_ready() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("steal");
+    let a_node = node_with(&url, &p, 3).await;
+    let _ = user(&a_node, "warm").await; // started: slot 0
+    let ready = |addr| async move { http(addr, "GET", "/readyz", None, None).await.0 };
+    assert_eq!(ready(a_node.addr).await, 200);
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut c = client.get_multiplexed_async_connection().await.unwrap();
+    let _: () = redis::cmd("SET")
+        .arg(format!("{p}:slot:0"))
+        .arg("intruder")
+        .query_async(&mut c)
+        .await
+        .unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while ready(a_node.addr).await == 200 {
+        assert!(tokio::time::Instant::now() < deadline, "still ready");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}

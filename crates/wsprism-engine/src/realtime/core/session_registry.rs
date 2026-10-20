@@ -167,6 +167,20 @@ impl SessionRegistry {
         }
     }
 
+    /// Every session as (user key, session key, sid), e.g. to check them
+    /// against the cluster's session table (ADR 0011 R5).
+    pub fn local_sessions(&self) -> Vec<(String, String, String)> {
+        let mut out = Vec::new();
+        for user in self.user_index.iter() {
+            for key in user.value() {
+                if let Some(e) = self.sessions.get(key) {
+                    out.push((user.key().clone(), key.clone(), e.sid.clone()));
+                }
+            }
+        }
+        out
+    }
+
     /// Snapshot of all active sessions.
     ///
     /// Returns a vector of (session_key, Connection). Intended for best-effort

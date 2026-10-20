@@ -66,6 +66,9 @@ pub struct Member {
     /// Cluster history rooms: kept messages up to this offset already
     /// reached the client (its recovering join's position; callers pass 0).
     pub skip_upto: u64,
+    /// Its room hears when it leaves (tenant `presence_events`); kept for
+    /// the cluster's membership (ADR 0011 R5).
+    pub notify: bool,
 }
 
 /// What a join hands back to the session (protocol v2 `sys.joined`).
@@ -443,6 +446,18 @@ impl Presence {
         true
     }
 
+    /// Every membership on this node: (room key, member), e.g. to restore
+    /// the cluster's membership after Redis lost it (ADR 0011 R5).
+    pub fn local_members(&self) -> Vec<(String, Member)> {
+        let mut out = Vec::new();
+        for room in self.room_to_sessions.iter() {
+            for m in &room.members {
+                out.push((room.key().clone(), m.clone()));
+            }
+        }
+        out
+    }
+
     /// How many sessions are in the room.
     pub fn member_count(&self, room_key: &str) -> usize {
         self.room_to_sessions
@@ -547,6 +562,7 @@ mod tests {
             },
             member_id: 0,
             skip_upto: 0,
+            notify: false,
             user: Arc::from("u"),
         }
     }

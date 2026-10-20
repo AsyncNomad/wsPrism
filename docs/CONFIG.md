@@ -115,6 +115,13 @@ gateway:
   remove its members and send `member_left` for them once (with presence
   events on). A node stopped gracefully is treated the same way for the
   sessions it could not clean up before exiting.
+- **Self-repair** (ADR 0011 R5): every 15 s each node checks itself
+  against Redis. If Redis lost its data (restart without persistence) or
+  the node was cut off longer than `slot_ttl_s` and taken for dead, it puts
+  its sessions and room memberships back — nobody is disconnected. A local
+  session the table no longer has (replaced elsewhere while the command to
+  close it was lost) is closed as `replaced`. If another node took this
+  node's slot, `/readyz` answers 503: restart the node.
 - **Per node:** `max_sessions_total` and the room limits
   (`max_rooms_total`, `max_users_per_room`, `max_rooms_per_user`).
 - **Scope:** one Redis (or Sentinel-managed primary). Keys use Redis Cluster
