@@ -13,6 +13,9 @@
 # Servers are pinned to SERVER_CPUS (default 0-7), the load generator to
 # LOADGEN_CPUS (default 8-23), so they do not compete for cores and every
 # server gets the same budget. Binaries: bench/competitors/fetch.sh.
+# COMPETE_HISTORY=1: every room keeps history (200 messages, 600 s) on both
+# wsPrism (tenants[].history) and Centrifugo (history_size/ttl, recovery),
+# the configuration a chat product ships with (ADR 0011 A14).
 # WSPRISM_LG_EXTRA: extra loadgen flags for the wsPrism targets, e.g.
 # "--distinct-users" (one user per connection, like the other servers'
 # anonymous connections).
@@ -41,6 +44,12 @@ trap 'rm -rf "$WORK"' EXIT
 # The benchmark gateway config, listening inside netlab.
 sed 's|listen: "127.0.0.1:18080"|listen: "10.77.0.1:18080"|' "$ROOT/bench/gateway.yaml" > "$WORK/wsprism.yaml"
 grep -q '10.77.0.1:18080' "$WORK/wsprism.yaml"
+CENTRIFUGO_CONFIG="$ROOT/bench/competitors/centrifugo.json"
+if [[ ${COMPETE_HISTORY:-} == 1 ]]; then
+  sed -i 's|^    policy:|    history: [{ rooms: "*", size: 200, ttl_s: 600 }]\n    policy:|' "$WORK/wsprism.yaml"
+  grep -q 'history:' "$WORK/wsprism.yaml"
+  CENTRIFUGO_CONFIG="$ROOT/bench/competitors/centrifugo-history.json"
+fi
 
 # scenario NAME[:RATE] -> loadgen arguments. RATE (messages/s per publisher)
 # sweeps the load toward saturation.
@@ -64,7 +73,7 @@ target() {
   case "$1" in
     wsprism-ext) echo "env RUST_LOG=warn $GW --config $WORK/wsprism.yaml|--target wsprism --lane ext --url ws://10.77.0.1:18080 ${WSPRISM_LG_EXTRA:-}" ;;
     wsprism-hot) echo "env RUST_LOG=warn $GW --config $WORK/wsprism.yaml|--target wsprism --lane hot --url ws://10.77.0.1:18080 ${WSPRISM_LG_EXTRA:-}" ;;
-    centrifugo) echo "$CENTRIFUGO --config $ROOT/bench/competitors/centrifugo.json|--target centrifugo --url ws://10.77.0.1:9101" ;;
+    centrifugo) echo "$CENTRIFUGO --config $CENTRIFUGO_CONFIG|--target centrifugo --url ws://10.77.0.1:9101" ;;
     sockudo) echo "env RUST_LOG=warn $SOCKUDO --config $ROOT/bench/competitors/sockudo.json|--target pusher --url ws://10.77.0.1:6001" ;;
     *) echo "unknown target: $1" >&2; exit 2 ;;
   esac
