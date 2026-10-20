@@ -455,6 +455,10 @@ pub struct RedisBrokerConfig {
     /// Frames one tenant may have queued.
     #[serde(default = "default_outbox_per_tenant")]
     pub outbox_per_tenant: usize,
+    /// Refuse new frames (`UNAVAILABLE`) while the oldest queued one has
+    /// waited this long, 10-60000 ms: fail fast instead of piling up latency.
+    #[serde(default = "default_outbox_max_wait_ms")]
+    pub outbox_max_wait_ms: u64,
 }
 
 fn default_redis_prefix() -> String {
@@ -471,6 +475,9 @@ fn default_outbox_capacity() -> usize {
 }
 fn default_outbox_per_tenant() -> usize {
     16_384
+}
+fn default_outbox_max_wait_ms() -> u64 {
+    1000
 }
 
 impl RedisBrokerConfig {
@@ -516,6 +523,9 @@ impl RedisBrokerConfig {
             || !(1..=self.outbox_capacity).contains(&self.outbox_per_tenant)
         {
             return bad("outbox_per_tenant must be 1..=outbox_capacity");
+        }
+        if !(10..=60_000).contains(&self.outbox_max_wait_ms) {
+            return bad("outbox_max_wait_ms must be 10-60000");
         }
         Ok(())
     }

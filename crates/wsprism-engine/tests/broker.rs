@@ -505,3 +505,43 @@ async fn a_subscription_gap_is_reported_to_the_room() {
         (Some("gap"), Some("r"))
     );
 }
+
+/// Past saturation the outbox fails fast: once its oldest frame has waited
+/// `max_wait`, new Reliable frames are refused although there is room.
+#[tokio::test]
+async fn a_stuck_outbox_refuses_after_max_wait() {
+    let n = node(
+        0,
+        OutboxLimits::new(10_000, 10_000).max_wait(Duration::from_millis(50)),
+    )
+    .await;
+    let mut a = client(&n, "t", "a", false);
+    a.ctx.join_room("r").unwrap();
+    settle().await;
+    n.broker.pause();
+    // The drain task takes the first frame and hangs on the paused broker;
+    // the second stays queued and ages.
+    a.ctx.publish_room_reliable("r", text("one")).unwrap();
+    settle().await;
+    a.ctx.publish_room_reliable("r", text("two")).unwrap();
+    assert!(
+        a.ctx.publish_room_reliable("r", text("three")).is_ok(),
+        "fresh"
+    );
+    tokio::time::sleep(Duration::from_millis(80)).await;
+    assert!(
+        matches!(
+            a.ctx.publish_room_reliable("r", text("late")),
+            Err(WsPrismError::Unavailable(_))
+        ),
+        "refused once the oldest frame waited too long"
+    );
+    n.broker.resume();
+    for m in ["one", "two", "three"] {
+        assert_eq!(recv_text(&mut a).await, m);
+    }
+    // Drained: accepted again.
+    settle().await;
+    a.ctx.publish_room_reliable("r", text("again")).unwrap();
+    assert_eq!(recv_text(&mut a).await, "again");
+}

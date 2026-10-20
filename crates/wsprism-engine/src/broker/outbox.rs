@@ -19,14 +19,19 @@ pub struct OutboxLimits {
     pub capacity: usize,
     /// Frames one tenant may have queued.
     pub per_tenant: usize,
+    /// Refuse new frames while the oldest queued one has waited this long:
+    /// past saturation, fail fast (`UNAVAILABLE`) instead of letting
+    /// latency grow toward a full queue (hundreds of ms, ADR 0011 A15).
+    pub max_wait: Duration,
 }
 
 impl Default for OutboxLimits {
-    /// 65,536 frames, a quarter of them per tenant.
+    /// 65,536 frames, a quarter of them per tenant, 1 s of waiting.
     fn default() -> Self {
         Self {
             capacity: 65_536,
             per_tenant: 16_384,
+            max_wait: Duration::from_secs(1),
         }
     }
 }
@@ -37,7 +42,14 @@ impl OutboxLimits {
         Self {
             capacity,
             per_tenant: per_tenant.min(capacity),
+            ..Self::default()
         }
+    }
+
+    /// The longest a frame may wait before new ones are refused.
+    pub fn max_wait(mut self, max_wait: Duration) -> Self {
+        self.max_wait = max_wait;
+        self
     }
 }
 
@@ -69,7 +81,8 @@ impl OutboxCounters {
 pub(crate) type Subscribed = Arc<tokio::sync::watch::Sender<bool>>;
 
 enum Item {
-    Frame(BrokerFrame),
+    /// A frame and when it was queued.
+    Frame(BrokerFrame, std::time::Instant),
     Sub(Subscription, Option<Subscribed>),
 }
 
@@ -116,14 +129,17 @@ impl BrokerOutbox {
         {
             let mut q = self.lock();
             let used = q.per_tenant.get(&frame.tenant).copied().unwrap_or(0);
-            if q.frames >= self.limits.capacity || used >= self.limits.per_tenant {
+            let now = std::time::Instant::now();
+            let stale = matches!(q.items.front(), Some(Item::Frame(_, at))
+                if now.duration_since(*at) > self.limits.max_wait);
+            if q.frames >= self.limits.capacity || used >= self.limits.per_tenant || stale {
                 drop(q);
                 self.counters.refused.fetch_add(1, Ordering::Relaxed);
                 return Err(Full);
             }
             q.frames += 1;
             *q.per_tenant.entry(Arc::clone(&frame.tenant)).or_insert(0) += 1;
-            q.items.push_back(Item::Frame(frame));
+            q.items.push_back(Item::Frame(frame, now));
         }
         self.ready.notify_one();
         Ok(())
@@ -143,7 +159,7 @@ impl BrokerOutbox {
         let q = &mut *guard;
         let n = max.min(q.items.len());
         for item in q.items.drain(..n) {
-            if let Item::Frame(f) = &item {
+            if let Item::Frame(f, _) = &item {
                 if let Some(used) = q.per_tenant.get_mut(&f.tenant) {
                     *used -= 1;
                     if *used == 0 {
@@ -177,7 +193,7 @@ pub(crate) async fn run_outbox(outbox: Arc<BrokerOutbox>, broker: Arc<dyn Broker
         }
         for item in items.drain(..) {
             match item {
-                Item::Frame(f) => frames.push(f),
+                Item::Frame(f, _) => frames.push(f),
                 Item::Sub(cmd, done) => {
                     publish(&outbox, &*broker, &mut frames).await;
                     retry(&outbox, 1, || broker.subscription(&cmd)).await;

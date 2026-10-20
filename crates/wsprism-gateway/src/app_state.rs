@@ -390,7 +390,8 @@ fn configured_broker(cfg: &BrokerConfig) -> Result<ConfiguredBroker> {
                 .map_err(|e| WsPrismError::BadRequest(format!("gateway.broker: {e}")))?;
             Ok(Some((
                 Arc::new(broker),
-                OutboxLimits::new(r.outbox_capacity, r.outbox_per_tenant),
+                OutboxLimits::new(r.outbox_capacity, r.outbox_per_tenant)
+                    .max_wait(std::time::Duration::from_millis(r.outbox_max_wait_ms)),
             )))
         }
         #[cfg(not(feature = "redis"))]

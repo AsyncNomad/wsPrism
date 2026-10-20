@@ -39,5 +39,11 @@ print(json.dumps({
         "publish_usec": int(delta("cmdstat_publish.usec")),
         "evalsha_usec": int(delta("cmdstat_evalsha.usec")),
         "used_memory": int(a.get("used_memory", 0)),
+        # usec spent per command (including commands run by scripts)
+        "cmd_usec": {
+            k[len("cmdstat_"):-len(".usec")]: int(delta(k))
+            for k in sorted(set(a) | set(b))
+            if k.startswith("cmdstat_") and k.endswith(".usec") and delta(k) > 0
+        },
     },
 }))

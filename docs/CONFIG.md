@@ -56,6 +56,7 @@ gateway:
     slot_ttl_s: 30                 # node slot lifetime without heartbeat, 3-300
     outbox_capacity: 65536         # frames queued for Redis (all tenants)
     outbox_per_tenant: 16384       # ... and per tenant
+    outbox_max_wait_ms: 1000       # refuse while the oldest queued frame waited this long
 ```
 
 - **Startup:** the node connects and claims a *node slot* (one of 1,024)
@@ -66,9 +67,11 @@ gateway:
   one Redis round trip). Hot state is delivered locally at once and also
   sent to the other nodes.
 - **Redis trouble:** frames wait in the outbox and are retried in order;
-  when the outbox (or a tenant's share) is full, Reliable publishes are
-  refused with `UNAVAILABLE` (server API: 503 + `Retry-After`) and Lossy ones
-  are dropped. If a node's subscription drops, it resubscribes and sends
+  when the outbox (or a tenant's share) is full, or its oldest frame has
+  waited `outbox_max_wait_ms`, Reliable publishes are refused with
+  `UNAVAILABLE` (server API: 503 + `Retry-After`) and Lossy ones are
+  dropped — past saturation the gateway fails fast instead of letting
+  latency grow. If a node's subscription drops, it resubscribes and sends
   `sys.gap` to the affected rooms' members (their apps resync). Hot state
   keeps flowing between local members.
 - **Metrics:** `wsprism_broker_outbox_refused_total`,
