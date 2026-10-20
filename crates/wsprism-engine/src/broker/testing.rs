@@ -134,6 +134,7 @@ impl TestBroker {
         k.top += 1;
         let mut g = f.clone();
         g.offset = Some(k.top);
+        g.epoch = Some(Arc::clone(&k.epoch));
         g.keep = None;
         let size = match &g.body {
             crate::spi::OutFrame::Text(t) => t.as_bytes().len(),

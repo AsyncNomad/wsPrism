@@ -100,6 +100,12 @@ pub fn gap(room: &str) -> Value {
     json!({ "v": 1, "svc": "sys", "type": "gap", "room": room })
 }
 
+/// `sys.gap` because the room's history was lost: offsets restart in
+/// `epoch` (ADR 0011 R5).
+pub fn gap_epoch(room: &str, epoch: &str) -> Value {
+    json!({ "v": 1, "svc": "sys", "type": "gap", "room": room, "epoch": epoch })
+}
+
 /// `sys.left`.
 pub fn left(room: &str, trace_id: &str) -> Value {
     json!({ "v": 1, "svc": "sys", "type": "left", "room": room, "trace_id": trace_id })

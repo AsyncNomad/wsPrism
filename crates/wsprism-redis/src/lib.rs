@@ -80,6 +80,7 @@ if redis.call('EXISTS', KEYS[1], KEYS[2]) < 2 then
   redis.call('SET', KEYS[1], 0, 'PX', pttl)
   redis.call('DEL', KEYS[3], KEYS[4])
 end
+local ep = redis.call('GET', KEYS[2])
 local kept = 0
 for i = 7, #ARGV, 2 do
   if ARGV[i] ~= '' then kept = kept + 1 end
@@ -93,7 +94,8 @@ for i = 7, #ARGV, 2 do
     redis.call('PUBLISH', ch, ARGV[i + 1])
   else
     o = o + 1
-    local s = tostring(o)
+    -- `<offset>:<epoch>`: receivers notice when the history restarted.
+    local s = tostring(o) .. ':' .. ep
     local msg = ARGV[i] .. string.char(#s) .. s .. ARGV[i + 1]
     z[#z + 1] = o
     z[#z + 1] = now .. msg

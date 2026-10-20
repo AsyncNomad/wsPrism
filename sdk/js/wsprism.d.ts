@@ -88,8 +88,8 @@ export interface CloseInfo {
 }
 
 export interface ClientOptions {
-  /** `ws(s)://host/v1/ws` */
-  url: string;
+  /** `ws(s)://host/v1/ws`, or several nodes: reconnects move on to the next one. */
+  url: string | string[];
   tenant: string;
   /** Called before every connection attempt (one-time tickets, fresh JWTs). Must be HTTP token characters (base64url, JWT). */
   getTicket: () => string | Promise<string>;
@@ -115,7 +115,7 @@ export interface Events {
   reconnecting: { attempt: number; delayMs: number };
   rejoined: Joined[];
   /** Messages of `room` may have been lost (cluster): reload its state. */
-  gap: { room: string };
+  gap: { room: string; epoch?: string };
 }
 
 export class WsPrismClient {

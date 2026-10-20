@@ -124,7 +124,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export class WsPrismClient {
   /**
    * @param {object} opts
-   * @param {string} opts.url            ws(s)://host/v1/ws
+   * @param {string | string[]} opts.url  ws(s)://host/v1/ws, or several nodes:
+   *   reconnects move on to the next one (no load balancer needed)
    * @param {string} opts.tenant
    * @param {() => string | Promise<string>} opts.getTicket  called per connection attempt
    * @param {string} [opts.sid]
@@ -134,10 +135,13 @@ export class WsPrismClient {
    * @param {boolean} [opts.refresh=true]  renew expiring credentials in-band (sys.refresh)
    */
   constructor(opts) {
-    if (!opts?.url || !opts?.tenant || typeof opts.getTicket !== "function") {
+    const urls = Array.isArray(opts?.url) ? opts.url : [opts?.url];
+    if (!urls.length || !urls.every((u) => typeof u === "string" && u) || !opts?.tenant || typeof opts.getTicket !== "function") {
       throw new TypeError("url, tenant and getTicket are required");
     }
     this.opts = opts;
+    this.urls = urls;
+    this.urlIndex = 0;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 10000;
     this.reconnect = { enabled: true, minDelayMs: 1000, maxDelayMs: 30000, ...opts.reconnect };
     this.WS = opts.WebSocket ?? globalThis.WebSocket;
@@ -194,7 +198,8 @@ export class WsPrismClient {
     }
     const q = new URLSearchParams({ tenant: this.opts.tenant });
     if (this.opts.sid) q.set("sid", this.opts.sid);
-    const url = `${this.opts.url}${this.opts.url.includes("?") ? "&" : "?"}${q}`;
+    const base = this.urls[this.urlIndex % this.urls.length];
+    const url = `${base}${base.includes("?") ? "&" : "?"}${q}`;
     return new Promise((resolve, reject) => {
       let settled = false;
       const ws = new this.WS(url, [PROTOCOL, AUTH_PREFIX + ticket]);
@@ -260,7 +265,14 @@ export class WsPrismClient {
     // A cluster node may have lost this room's messages (ADR 0011 §4):
     // the app reloads the room's state from its backend.
     if (msg.svc === "sys" && msg.type === "gap") {
-      this.emit("gap", { room: msg.room });
+      // With an epoch: the room's history was lost and offsets restart
+      // there; start counting again (or newer messages would look seen).
+      const info = this.rooms.get(msg.room);
+      if (info && typeof msg.epoch === "string") {
+        info.epoch = msg.epoch;
+        info.offset = 0;
+      }
+      this.emit("gap", { room: msg.room, epoch: msg.epoch });
       return;
     }
     if (msg.svc === "sys" && (msg.type === "member_joined" || msg.type === "member_left")) {
@@ -317,6 +329,7 @@ export class WsPrismClient {
 
   async scheduleReconnect(policy) {
     this.attempt += 1;
+    this.urlIndex += 1; // with several nodes, try the next one
     let delay = 0;
     if (policy === "backoff" || this.attempt > 1) {
       const { minDelayMs, maxDelayMs } = this.reconnect;

@@ -226,7 +226,10 @@ broker tells the members of every room it was subscribed to:
 ```
 
 Messages of that room may have been lost: reload its state from your
-backend (the JS SDK emits a `gap` event).
+backend (the JS SDK emits a `gap` event). With `"epoch"`, the room's
+history itself was lost (Redis restarted empty, or evicted it): offsets
+restart in that epoch, so forget the last offset you saw for the room
+(the SDK does) — else the new, lower offsets look already seen.
 
 ### Presence events (ADR 0010)
 

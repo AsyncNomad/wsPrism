@@ -68,6 +68,9 @@ pub struct BrokerFrame {
     pub keep: Option<Keep>,
     /// The offset the broker gave a kept message (incoming frames).
     pub offset: Option<u64>,
+    /// The history epoch that offset belongs to (incoming kept frames): a
+    /// change means the history was lost and offsets restarted (R5).
+    pub epoch: Option<Arc<str>>,
 }
 
 /// How a history room keeps messages (from the tenant's `history` rule).
@@ -131,6 +134,7 @@ impl BrokerFrame {
             except: None,
             keep: None,
             offset: None,
+            epoch: None,
         }
     }
 

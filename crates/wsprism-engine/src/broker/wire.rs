@@ -13,9 +13,9 @@
 //! u16 except length (0xFFFF = none), except session key
 //! body:
 //!   text / binary: the rest
-//!   kept text: u8 n, n ASCII digits (the offset), the text — the offset
-//!     comes right before the text so the broker (a Redis script) can put
-//!     it in between the two parts from `encode_kept`
+//!   kept text: u8 n, n ASCII bytes `<offset>[:<epoch>]`, the text — the
+//!     offset comes right before the text so the broker (a Redis script)
+//!     can put it in between the two parts from `encode_kept`
 //!   hot: u32 v1 length, v1 payload, u32 v2 length, v2 frame,
 //!        u8 keyed, [u32 sender, u8 svc, u32 key]
 //! ```
@@ -86,7 +86,10 @@ fn put_header(b: &mut BytesMut, f: &BrokerFrame, kind: u8) {
 /// batches).
 pub fn encode(f: &BrokerFrame) -> Option<Bytes> {
     if let (Some(offset), Some((head, text))) = (f.offset, encode_kept(f)) {
-        let digits = offset.to_string();
+        let digits = match &f.epoch {
+            Some(e) => format!("{offset}:{e}"),
+            None => offset.to_string(),
+        };
         let mut b = BytesMut::with_capacity(head.len() + 1 + digits.len() + text.len());
         b.extend_from_slice(&head);
         b.put_u8(digits.len() as u8);
@@ -219,13 +222,19 @@ pub fn decode(bytes: &Bytes) -> Result<BrokerFrame, WireError> {
     let room_key = get_str(&mut b)?.ok_or_else(|| err("no room key"))?;
     let except = get_str(&mut b)?;
     let mut offset = None;
+    let mut epoch = None;
     let body = match kind {
         KIND_KEPT => {
             need(&b, 1)?;
             let n = usize::from(b.get_u8());
             need(&b, n)?;
-            let digits = std::str::from_utf8(&b[..n]).map_err(|_| err("bad offset"))?;
+            let field = std::str::from_utf8(&b[..n]).map_err(|_| err("bad offset"))?;
+            let (digits, e) = match field.split_once(':') {
+                Some((d, e)) => (d, Some(Arc::from(e))),
+                None => (field, None),
+            };
             offset = Some(digits.parse::<u64>().map_err(|_| err("bad offset"))?);
+            epoch = e;
             b.advance(n);
             OutFrame::Text(Utf8Text::try_from_bytes(b).map_err(|_| err("text is not UTF-8"))?)
         }
@@ -252,6 +261,7 @@ pub fn decode(bytes: &Bytes) -> Result<BrokerFrame, WireError> {
     let mut f = BrokerFrame::new(origin, &room_key, qos, body);
     f.except = except;
     f.offset = offset;
+    f.epoch = epoch;
     Ok(f)
 }
 
@@ -313,6 +323,10 @@ mod tests {
         // encode() writes the same bytes for a frame that has its offset.
         f.offset = Some(417);
         assert_eq!(encode(&f).unwrap().to_vec(), wire);
+        // With its epoch.
+        f.epoch = Some(Arc::from("e9"));
+        let g = decode(&encode(&f).unwrap()).unwrap();
+        assert_eq!((g.offset, g.epoch.as_deref()), (Some(417), Some("e9")));
         assert!(decode(&Bytes::from(wire[..head.len() + 2].to_vec())).is_err());
     }
 

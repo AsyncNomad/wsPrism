@@ -624,6 +624,15 @@ impl RealtimeCore {
         // A kept message: the broker gave it its offset; put it in once for
         // every recipient (ADR 0011 §3).
         if let (Some(o), OutFrame::Text(t)) = (f.offset, &f.body) {
+            // The room's history was lost: offsets restart. Members learn it
+            // before the first such message (else clients drop it as seen).
+            if let Some(e) = &f.epoch {
+                if self.presence.epoch_changed(&f.room_key, e) {
+                    let room = f.room_key.split_once("::").map_or(&*f.room_key, |(_, r)| r);
+                    let gap = OutFrame::text(sys::gap_epoch(room, e).to_string());
+                    self.fan_out(&f.room_key, &gap, &QoS::Reliable);
+                }
+            }
             let text = std::str::from_utf8(t.as_bytes()).unwrap_or("{}");
             let frame = OutFrame::text(prepend(&format!("\"offset\":{o}"), text));
             let skip = f.except.as_deref().filter(|_| local);

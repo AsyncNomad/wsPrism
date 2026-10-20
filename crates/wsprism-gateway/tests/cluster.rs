@@ -848,3 +848,47 @@ async fn a_node_that_lost_its_slot_is_not_ready() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
 }
+
+/// R5: when Redis loses a room's history under connected clients, they are
+/// told (gap with the new epoch) before the first message of the new epoch
+/// — otherwise its low offsets would look already seen.
+#[tokio::test]
+async fn a_lost_history_is_announced_before_new_offsets() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("epoch");
+    let a_node = node(&url, &p).await;
+    let mut alice = user(&a_node, "alice").await;
+    let first = join(&mut alice, "chat:1").await["epoch"].clone();
+    for m in ["one", "two"] {
+        send_json(
+            &mut alice,
+            json!({"svc":"chat","type":"send","room":"chat:1","data":{"msg":m}}),
+        )
+        .await;
+        next_of(&mut alice, "msg").await;
+    }
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut c = client.get_multiplexed_async_connection().await.unwrap();
+    let keys: Vec<String> = ["seq", "epoch", "log", "bytes"]
+        .iter()
+        .map(|k| format!("{p}:h:{{t::chat:1}}:{k}"))
+        .collect();
+    let _: i64 = redis::cmd("DEL")
+        .arg(keys)
+        .query_async(&mut c)
+        .await
+        .unwrap();
+    send_json(
+        &mut alice,
+        json!({"svc":"chat","type":"send","room":"chat:1","data":{"msg":"three"}}),
+    )
+    .await;
+    let gap = next_of(&mut alice, "gap").await;
+    assert_eq!(gap["room"], "chat:1");
+    assert!(gap["epoch"].is_string() && gap["epoch"] != first, "{gap}");
+    let m = next_of(&mut alice, "msg").await;
+    assert_eq!(
+        (m["offset"].as_u64(), m["data"]["msg"].as_str()),
+        (Some(1), Some("three"))
+    );
+}

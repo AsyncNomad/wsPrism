@@ -102,6 +102,8 @@ struct Room {
     /// Queued broker: becomes true once this node's subscription to the
     /// room is in effect (a recovering join waits for it, ADR 0011 §3).
     subscribed: Option<Subscribed>,
+    /// The cluster history epoch last seen on this room's kept frames.
+    epoch: std::sync::Mutex<Option<Arc<str>>>,
 }
 
 /// Bits of a member id counted per room (the rest is the node slot).
@@ -116,6 +118,7 @@ impl Room {
             next_member: 1,
             wrapped: false,
             subscribed: None,
+            epoch: std::sync::Mutex::default(),
         }
     }
 
@@ -456,6 +459,26 @@ impl Presence {
             }
         }
         out
+    }
+
+    /// Note `epoch` for `room_key`; true if it replaced a different one
+    /// (the cluster's history for the room was lost; ADR 0011 R5).
+    pub(crate) fn epoch_changed(&self, room_key: &str, epoch: &Arc<str>) -> bool {
+        let Some(room) = self.room_to_sessions.get(room_key) else {
+            return false;
+        };
+        let mut seen = room
+            .epoch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*seen {
+            Some(prev) if **prev == **epoch => false,
+            prev => {
+                let changed = prev.is_some();
+                *seen = Some(Arc::clone(epoch));
+                changed
+            }
+        }
     }
 
     /// How many sessions are in the room.
