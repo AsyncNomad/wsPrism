@@ -661,12 +661,73 @@ impl Drop for BrokerTasks {
 }
 
 /// Frames from the broker to local members, until the core is gone.
+///
+/// The fan-out runs on several worker tasks (one per available core): on a
+/// single node it runs on the publishers' session tasks, and one task for a
+/// whole node's incoming traffic saturated at 2.16M deliveries/s (ADR 0011
+/// A15). A room always goes to the same worker, so its order is kept.
 async fn run_incoming(core: Weak<RealtimeCore>, mut rx: tokio::sync::mpsc::Receiver<Incoming>) {
-    while let Some(msg) = rx.recv().await {
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
+    let txs: Vec<_> = (0..workers)
+        .map(|_| {
+            let (tx, rx) = tokio::sync::mpsc::channel(INCOMING_WORKER_QUEUE);
+            tokio::spawn(incoming_worker(core.clone(), rx));
+            tx
+        })
+        .collect();
+    // In batches: one frame per receive left this task waiting its turn
+    // among every session task between frames (tokio's per-poll budget),
+    // and the broker's queue stayed full while the workers idled (A15).
+    let mut batch = Vec::with_capacity(INCOMING_BATCH);
+    let mut per_worker: Vec<Vec<Incoming>> = (0..workers).map(|_| Vec::new()).collect();
+    while rx.recv_many(&mut batch, INCOMING_BATCH).await > 0 {
+        for msg in batch.drain(..) {
+            match msg {
+                Incoming::Frame(f) => {
+                    per_worker[room_worker(&f.room_key, workers)].push(Incoming::Frame(f));
+                }
+                // Per room, so it stays in order with that room's frames.
+                Incoming::Gap(rooms) => {
+                    for room in rooms {
+                        per_worker[room_worker(&room, workers)].push(Incoming::Gap(vec![room]));
+                    }
+                }
+            }
+        }
+        for (tx, msgs) in txs.iter().zip(per_worker.iter_mut()) {
+            if !msgs.is_empty() && tx.send(std::mem::take(msgs)).await.is_err() {
+                return; // the core is gone
+            }
+        }
+    }
+}
+
+/// Messages taken from the broker per receive.
+const INCOMING_BATCH: usize = 1024;
+/// Batches queued per incoming worker.
+const INCOMING_WORKER_QUEUE: usize = 64;
+
+/// The worker for `room_key` (FNV-1a).
+fn room_worker(room_key: &str, workers: usize) -> usize {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in room_key.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (h % workers as u64) as usize
+}
+
+async fn incoming_worker(
+    core: Weak<RealtimeCore>,
+    mut rx: tokio::sync::mpsc::Receiver<Vec<Incoming>>,
+) {
+    while let Some(msgs) = rx.recv().await {
         let Some(core) = core.upgrade() else { return };
-        match msg {
-            Incoming::Frame(f) => core.deliver_incoming(&f),
-            Incoming::Gap(rooms) => core.deliver_gap(&rooms),
+        for msg in msgs {
+            match msg {
+                Incoming::Frame(f) => core.deliver_incoming(&f),
+                Incoming::Gap(rooms) => core.deliver_gap(&rooms),
+            }
         }
     }
 }
