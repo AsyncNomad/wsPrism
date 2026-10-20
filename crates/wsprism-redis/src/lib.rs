@@ -16,6 +16,11 @@
 //!   heartbeat; member ids carry it.
 //! - **Gaps** (§4): when a subscriber connection drops, it reconnects,
 //!   resubscribes and reports its rooms as a gap (`sys.gap` to members).
+//! - **Sessions** (R4-1): the cluster's session table, one hash per user
+//!   (`<prefix>:us:{tenant::user}`, field = session key, value =
+//!   `node id|slot|sid|created µs`), changed only by `CLAIM`/`OF_USER`
+//!   scripts that also drop entries of dead nodes (their slot key no longer
+//!   holds their node id). Commands to a node go to `<prefix>:ctl:<slot>`.
 //! - **History** (§3, R3-2): a kept message gets its offset, is stored and
 //!   published by one Lua script (`PUBLISH_KEPT`), so offsets, history and
 //!   delivery order agree on every node. Per room (one hash tag):
@@ -43,8 +48,9 @@ use tokio::sync::{mpsc, oneshot, OnceCell};
 use tokio::task::JoinHandle;
 
 use wsprism_engine::broker::{
-    wire, Broker, BrokerError, BrokerFrame, BrokerMode, HistoryRead, Incoming, Keep, SharedKv,
-    Subscription, MAX_NODE_SLOT,
+    wire, Broker, BrokerError, BrokerFrame, BrokerMode, Claimed, Control, Evicted, HistoryRead,
+    Incoming, Keep, OnFull, SessionClaim, SessionEntry, SharedKv, SharedSessions, Subscription,
+    MAX_NODE_SLOT,
 };
 use wsprism_engine::spi::Recover;
 
@@ -197,6 +203,66 @@ impl RedisConfig {
     }
 }
 
+/// KEYS: the user's session hash. ARGV: session key, sid, node id, slot,
+/// max per user, 'kick' or 'deny', slot key prefix. Drops dead nodes'
+/// entries, replaces the same sid, applies the limit, adds the session.
+/// Returns `{admitted, slot, key, reason, slot, key, reason, ...}`.
+const CLAIM: &str = r"
+local live = {}
+local out = {0}
+local entries = redis.call('HGETALL', KEYS[1])
+for i = 1, #entries, 2 do
+  local key, v = entries[i], entries[i + 1]
+  local node, slot, sid, created = string.match(v, '^([^|]*)|(%d+)|(.*)|(%d+)$')
+  if not node or redis.call('GET', ARGV[7] .. slot) ~= node then
+    redis.call('HDEL', KEYS[1], key)
+  elseif sid == ARGV[2] then
+    redis.call('HDEL', KEYS[1], key)
+    out[#out + 1] = slot
+    out[#out + 1] = key
+    out[#out + 1] = 'replaced'
+  else
+    live[#live + 1] = {key, slot, tonumber(created)}
+  end
+end
+if #live >= tonumber(ARGV[5]) then
+  if ARGV[6] ~= 'kick' then return out end
+  local oldest = 1
+  for i = 2, #live do
+    if live[i][3] < live[oldest][3] then oldest = i end
+  end
+  redis.call('HDEL', KEYS[1], live[oldest][1])
+  out[#out + 1] = live[oldest][2]
+  out[#out + 1] = live[oldest][1]
+  out[#out + 1] = 'max_sessions_exceeded'
+end
+local t = redis.call('TIME')
+-- As a string: Lua 5.1 prints numbers past 14 digits as 1.7e+15.
+local created = t[1] .. string.format('%06d', tonumber(t[2]))
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[3] .. '|' .. ARGV[4] .. '|' .. ARGV[2] .. '|' .. created)
+out[1] = 1
+return out
+";
+
+/// KEYS: the user's session hash. ARGV: slot key prefix. The live
+/// sessions as `{slot, key, sid, ...}` (dead nodes' entries dropped).
+const OF_USER: &str = r"
+local out = {}
+local entries = redis.call('HGETALL', KEYS[1])
+for i = 1, #entries, 2 do
+  local key, v = entries[i], entries[i + 1]
+  local node, slot, sid = string.match(v, '^([^|]*)|(%d+)|(.*)|%d+$')
+  if not node or redis.call('GET', ARGV[1] .. slot) ~= node then
+    redis.call('HDEL', KEYS[1], key)
+  else
+    out[#out + 1] = slot
+    out[#out + 1] = key
+    out[#out + 1] = sid
+  end
+end
+return out
+";
+
 /// The four keys of a room's history (one hash tag).
 fn history_keys(prefix: &str, room_key: &str) -> [String; 4] {
     ["seq", "epoch", "log", "bytes"].map(|k| format!("{prefix}:h:{{{room_key}}}:{k}"))
@@ -212,6 +278,10 @@ pub struct RedisBroker {
     client: redis::Client,
     publish_kept: redis::Script,
     read_kept: redis::Script,
+    claim: redis::Script,
+    of_user: redis::Script,
+    /// This node's slot (set in `start`).
+    slot: std::sync::atomic::AtomicU16,
     cfg: RedisConfig,
     node_id: String,
     conn: OnceCell<ConnectionManager>,
@@ -244,6 +314,9 @@ impl RedisBroker {
             client,
             publish_kept: redis::Script::new(PUBLISH_KEPT),
             read_kept: redis::Script::new(READ_KEPT),
+            claim: redis::Script::new(CLAIM),
+            of_user: redis::Script::new(OF_USER),
+            slot: std::sync::atomic::AtomicU16::new(0),
             cfg,
             node_id: random_id(),
             conn: OnceCell::new(),
@@ -344,6 +417,13 @@ impl Broker for RedisBroker {
                 self.incoming_tx.clone(),
             )));
         }
+        // Commands for this node (R4-1).
+        tasks.push(tokio::spawn(run_control(
+            self.client.clone(),
+            format!("{}:ctl:{slot}", self.cfg.prefix),
+            self.incoming_tx.clone(),
+        )));
+        self.slot.store(slot, std::sync::atomic::Ordering::Relaxed);
         drop(tasks);
         let _ = self.shards.set(shards);
         let _ = self.conn.set(conn);
@@ -476,6 +556,157 @@ impl Broker for RedisBroker {
 
     fn kv(&self) -> Option<&dyn SharedKv> {
         Some(self)
+    }
+
+    fn sessions(&self) -> Option<&dyn SharedSessions> {
+        Some(self)
+    }
+}
+
+impl RedisBroker {
+    fn user_key(&self, user_key: &str) -> String {
+        format!("{}:us:{{{user_key}}}", self.cfg.prefix)
+    }
+
+    fn slot_prefix(&self) -> String {
+        format!("{}:slot:", self.cfg.prefix)
+    }
+}
+
+/// `{admitted, (slot, key, reason)*}` from `CLAIM`.
+fn parse_claim(v: &redis::Value) -> Result<Claimed, BrokerError> {
+    let bad = || BrokerError::Rejected("unexpected claim reply".into());
+    let items = strings(v).ok_or_else(bad)?;
+    let (head, rest) = items.split_first().ok_or_else(bad)?;
+    let mut evicted = Vec::new();
+    for e in rest.chunks(3) {
+        let [slot, key, reason] = e else {
+            return Err(bad());
+        };
+        let reason = if reason == "replaced" {
+            "replaced"
+        } else {
+            "max_sessions_exceeded"
+        };
+        evicted.push(Evicted::new(
+            slot.parse().map_err(|_| bad())?,
+            Arc::from(key.as_str()),
+            reason,
+        ));
+    }
+    Ok(Claimed::new(head == "1", evicted))
+}
+
+/// A reply array as strings (integers included).
+fn strings(v: &redis::Value) -> Option<Vec<String>> {
+    let redis::Value::Array(items) = v else {
+        return None;
+    };
+    items
+        .iter()
+        .map(|i| match i {
+            redis::Value::BulkString(b) => Some(String::from_utf8_lossy(b).into_owned()),
+            redis::Value::Int(n) => Some(n.to_string()),
+            redis::Value::SimpleString(s) => Some(s.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[async_trait]
+impl SharedSessions for RedisBroker {
+    async fn claim(&self, c: &SessionClaim) -> Result<Claimed, BrokerError> {
+        let reply: redis::Value = self
+            .claim
+            .key(self.user_key(&c.user_key))
+            .arg(&*c.session_key)
+            .arg(&*c.sid)
+            .arg(&self.node_id)
+            .arg(self.slot.load(std::sync::atomic::Ordering::Relaxed))
+            .arg(c.max_per_user)
+            .arg(if c.on_full == OnFull::KickOldest {
+                "kick"
+            } else {
+                "deny"
+            })
+            .arg(self.slot_prefix())
+            .invoke_async(&mut self.conn()?)
+            .await
+            .map_err(unavailable)?;
+        parse_claim(&reply)
+    }
+
+    async fn release(&self, user_key: &str, session_key: &str) -> Result<(), BrokerError> {
+        let _: i64 = redis::cmd("HDEL")
+            .arg(self.user_key(user_key))
+            .arg(session_key)
+            .query_async(&mut self.conn()?)
+            .await
+            .map_err(unavailable)?;
+        Ok(())
+    }
+
+    async fn of_user(&self, user_key: &str) -> Result<Vec<SessionEntry>, BrokerError> {
+        let reply: redis::Value = self
+            .of_user
+            .key(self.user_key(user_key))
+            .arg(self.slot_prefix())
+            .invoke_async(&mut self.conn()?)
+            .await
+            .map_err(unavailable)?;
+        let bad = || BrokerError::Rejected("unexpected session reply".into());
+        let items = strings(&reply).ok_or_else(bad)?;
+        items
+            .chunks(3)
+            .map(|e| match e {
+                [slot, key, sid] => Ok(SessionEntry::new(
+                    slot.parse().map_err(|_| bad())?,
+                    Arc::from(key.as_str()),
+                    Arc::from(sid.as_str()),
+                )),
+                _ => Err(bad()),
+            })
+            .collect()
+    }
+
+    async fn send_control(&self, node: u16, control: &Control) -> Result<(), BrokerError> {
+        let _: i64 = redis::cmd("PUBLISH")
+            .arg(format!("{}:ctl:{node}", self.cfg.prefix))
+            .arg(wire::encode_control(control).as_ref())
+            .query_async(&mut self.conn()?)
+            .await
+            .map_err(unavailable)?;
+        Ok(())
+    }
+}
+
+/// This node's command channel: subscribe, forward, reconnect. A command
+/// sent while the connection is down is lost (ADR 0011 R4-1; R5 reconciles).
+async fn run_control(client: redis::Client, channel: String, incoming: mpsc::Sender<Incoming>) {
+    let mut wait = RECONNECT_FIRST;
+    loop {
+        let (mut sink, mut stream) = match client.get_async_pubsub().await {
+            Ok(p) => p.split(),
+            Err(e) => {
+                tracing::warn!("redis broker: control connect failed: {e}");
+                tokio::time::sleep(wait).await;
+                wait = (wait * 2).min(RECONNECT_MAX);
+                continue;
+            }
+        };
+        if sink.subscribe(&channel).await.is_err() {
+            tokio::time::sleep(wait).await;
+            continue;
+        }
+        wait = RECONNECT_FIRST;
+        while let Some(msg) = stream.next().await {
+            match wire::decode_control(&Bytes::copy_from_slice(msg.get_payload_bytes())) {
+                Ok(c) => {
+                    let _ = incoming.send(Incoming::Control(c)).await;
+                }
+                Err(e) => tracing::warn!("redis broker: dropped a command: {e}"),
+            }
+        }
     }
 }
 

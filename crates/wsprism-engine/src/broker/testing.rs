@@ -55,6 +55,9 @@ pub struct TestBroker {
     open: watch::Sender<bool>,
     history: Mutex<std::collections::HashMap<Arc<str>, Kept>>,
     kv: Mutex<std::collections::HashMap<String, (bytes::Bytes, std::time::Instant)>>,
+    /// The session table.
+    sessions: Mutex<std::collections::HashMap<Arc<str>, Vec<TableEntry>>>,
+    arrivals: AtomicU64,
     epochs: std::sync::atomic::AtomicU64,
 }
 
@@ -77,6 +80,8 @@ impl TestBroker {
             open: watch::Sender::new(true),
             history: Mutex::default(),
             kv: Mutex::default(),
+            sessions: Mutex::default(),
+            arrivals: AtomicU64::new(0),
             epochs: AtomicU64::new(1),
         })
     }
@@ -320,6 +325,77 @@ impl Broker for TestBroker {
 
     fn kv(&self) -> Option<&dyn super::SharedKv> {
         Some(self)
+    }
+
+    fn sessions(&self) -> Option<&dyn super::SharedSessions> {
+        Some(self)
+    }
+}
+
+/// One session in the table: key, sid, order of arrival.
+type TableEntry = (Arc<str>, Arc<str>, u64);
+
+/// The session table with the Redis script's rules, on one node (every
+/// session is this node's).
+#[async_trait]
+impl super::SharedSessions for TestBroker {
+    async fn claim(&self, c: &super::SessionClaim) -> Result<super::Claimed, BrokerError> {
+        let mut table = lock(&self.sessions);
+        let entries = table.entry(Arc::clone(&c.user_key)).or_default();
+        let mut evicted = Vec::new();
+        entries.retain(|(key, sid, _)| {
+            let same = *sid == c.sid;
+            if same {
+                evicted.push(super::Evicted::new(self.slot, Arc::clone(key), "replaced"));
+            }
+            !same
+        });
+        if entries.len() >= c.max_per_user as usize {
+            match c.on_full {
+                super::OnFull::KickOldest => {
+                    if let Some(i) = (0..entries.len()).min_by_key(|&i| entries[i].2) {
+                        let (key, _, _) = entries.remove(i);
+                        evicted.push(super::Evicted::new(self.slot, key, "max_sessions_exceeded"));
+                    }
+                }
+                _ => return Ok(super::Claimed::new(false, evicted)),
+            }
+        }
+        let n = self.arrivals.fetch_add(1, Ordering::SeqCst);
+        entries.push((Arc::clone(&c.session_key), Arc::clone(&c.sid), n));
+        Ok(super::Claimed::new(true, evicted))
+    }
+
+    async fn release(&self, user_key: &str, session_key: &str) -> Result<(), BrokerError> {
+        let mut table = lock(&self.sessions);
+        if let Some(entries) = table.get_mut(user_key) {
+            entries.retain(|(key, _, _)| &**key != session_key);
+            if entries.is_empty() {
+                table.remove(user_key);
+            }
+        }
+        Ok(())
+    }
+
+    async fn of_user(&self, user_key: &str) -> Result<Vec<super::SessionEntry>, BrokerError> {
+        Ok(lock(&self.sessions)
+            .get(user_key)
+            .map(|entries| {
+                entries
+                    .iter()
+                    .map(|(key, sid, _)| {
+                        super::SessionEntry::new(self.slot, Arc::clone(key), Arc::clone(sid))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    async fn send_control(&self, node: u16, control: &super::Control) -> Result<(), BrokerError> {
+        if node == self.slot {
+            let _ = self.tx.send(Incoming::Control(control.clone())).await;
+        }
+        Ok(())
     }
 }
 

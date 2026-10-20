@@ -81,7 +81,7 @@ pub(crate) async fn run<Tx: SessionTx, Rx: SessionRx>(
     let protocol = id.protocol;
     let (out_tx, mut out_rx) = mpsc::channel(gw.session_queue_capacity);
 
-    let mut session = match Session::admit(&app, id, out_tx)? {
+    let mut session = match Session::admit(&app, id, out_tx).await? {
         Admission::Admitted(session) => session,
         Admission::Rejected(spec) => {
             close::close_session(

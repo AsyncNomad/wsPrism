@@ -161,6 +161,47 @@ impl RealtimeCore {
         Ok(BrokerTasks(tasks))
     }
 
+    /// The broker (ADR 0011).
+    pub fn broker(&self) -> &Arc<dyn Broker> {
+        &self.broker
+    }
+
+    /// This node's slot (0 until the broker started).
+    pub fn node_slot(&self) -> u16 {
+        self.node_slot.load(Ordering::Relaxed)
+    }
+
+    /// Close local sessions: `sys.kicked` with `message`, then 1008 for
+    /// `reason` — e.g. for another node (ADR 0011 R4-1). Their own cleanup
+    /// unregisters them. Returns how many were found here.
+    pub fn close_sessions(&self, keys: &[Arc<str>], reason: &str, message: &str) -> usize {
+        let mut n = 0;
+        for key in keys {
+            if let Some(conn) = self.sessions.get_session(key) {
+                conn.signals
+                    .request_close(CloseRequest::Spec(CloseSpec::new(
+                        close_code::POLICY,
+                        reason,
+                        Some(sys::kicked(message, "").to_string()),
+                    )));
+                n += 1;
+            }
+        }
+        n
+    }
+
+    fn apply_control(&self, c: &crate::broker::Control) {
+        match c {
+            crate::broker::Control::Close {
+                keys,
+                reason,
+                message,
+            } => {
+                self.close_sessions(keys, reason, message);
+            }
+        }
+    }
+
     /// The outbox's counters, if the broker is queued.
     pub fn broker_counters(&self) -> Option<&OutboxCounters> {
         self.outbox.as_deref().map(BrokerOutbox::counters)
@@ -686,6 +727,12 @@ async fn run_incoming(core: Weak<RealtimeCore>, mut rx: tokio::sync::mpsc::Recei
                 Incoming::Frame(f) => {
                     per_worker[room_worker(&f.room_key, workers)].push(Incoming::Frame(f));
                 }
+                // Not tied to a room: handled here.
+                Incoming::Control(c) => {
+                    if let Some(core) = core.upgrade() {
+                        core.apply_control(&c);
+                    }
+                }
                 // Per room, so it stays in order with that room's frames.
                 Incoming::Gap(rooms) => {
                     for room in rooms {
@@ -727,6 +774,7 @@ async fn incoming_worker(
             match msg {
                 Incoming::Frame(f) => core.deliver_incoming(&f),
                 Incoming::Gap(rooms) => core.deliver_gap(&rooms),
+                Incoming::Control(c) => core.apply_control(&c),
             }
         }
     }

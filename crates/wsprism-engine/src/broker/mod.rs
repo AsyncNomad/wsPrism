@@ -163,6 +163,25 @@ pub enum Incoming {
     /// subscription was interrupted and is back. Their members get
     /// `sys.gap` (ADR 0011 §4).
     Gap(Vec<Arc<str>>),
+    /// A command for this node from another (ADR 0011 R4-1).
+    Control(Control),
+}
+
+/// A command one node sends another (ADR 0011 R4-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Control {
+    /// Close these local sessions (internal keys): `sys.kicked` with
+    /// `message`, then the close for `reason` (`replaced`, `disconnected`,
+    /// ...). Unknown keys are ignored.
+    Close {
+        /// Session keys.
+        keys: Vec<Arc<str>>,
+        /// The close reason (sets the close code).
+        reason: String,
+        /// Shown to the clients in `sys.kicked`.
+        message: String,
+    },
 }
 
 /// Why a broker call failed.
@@ -233,6 +252,137 @@ pub trait Broker: Send + Sync + 'static {
     fn kv(&self) -> Option<&dyn SharedKv> {
         None
     }
+
+    /// The cluster's session table (ADR 0011 R4-1), if this broker keeps
+    /// one: then session limits and sid replacement are cluster-wide.
+    fn sessions(&self) -> Option<&dyn SharedSessions> {
+        None
+    }
+}
+
+/// What to do when a user is at the session limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OnFull {
+    /// Refuse the new session.
+    Deny,
+    /// Close the user's oldest session.
+    KickOldest,
+}
+
+/// A new session asking for its place in the cluster's session table.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct SessionClaim {
+    /// `tenant::user`.
+    pub user_key: Arc<str>,
+    /// The new session's internal key (unique per connection).
+    pub session_key: Arc<str>,
+    /// Its client-facing sid: a live session with the same sid is replaced.
+    pub sid: Arc<str>,
+    /// The user's session limit.
+    pub max_per_user: u32,
+    /// What happens at the limit.
+    pub on_full: OnFull,
+}
+
+impl SessionClaim {
+    /// A claim for `session_key` of `user_key` with client sid `sid`.
+    pub fn new(
+        user_key: &str,
+        session_key: &str,
+        sid: &str,
+        max_per_user: u32,
+        on_full: OnFull,
+    ) -> Self {
+        Self {
+            user_key: Arc::from(user_key),
+            session_key: Arc::from(session_key),
+            sid: Arc::from(sid),
+            max_per_user,
+            on_full,
+        }
+    }
+}
+
+/// A session that has to go, and where it lives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Evicted {
+    /// Node slot of its node.
+    pub node: u16,
+    /// Its internal key.
+    pub session_key: Arc<str>,
+    /// `replaced` or `max_sessions_exceeded`.
+    pub reason: &'static str,
+}
+
+impl Evicted {
+    /// `session_key` on node `node`, evicted for `reason`.
+    pub fn new(node: u16, session_key: Arc<str>, reason: &'static str) -> Self {
+        Self {
+            node,
+            session_key,
+            reason,
+        }
+    }
+}
+
+/// The outcome of a [`SessionClaim`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Claimed {
+    /// False = refused (the user is at its limit and `on_full` is `Deny`).
+    pub admitted: bool,
+    /// Sessions to close (on any node), whether or not this one was admitted.
+    pub evicted: Vec<Evicted>,
+}
+
+impl Claimed {
+    /// An outcome.
+    pub fn new(admitted: bool, evicted: Vec<Evicted>) -> Self {
+        Self { admitted, evicted }
+    }
+}
+
+/// One live session in the cluster's table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SessionEntry {
+    /// Node slot of its node.
+    pub node: u16,
+    /// Its internal key.
+    pub session_key: Arc<str>,
+    /// Its client-facing sid.
+    pub sid: Arc<str>,
+}
+
+impl SessionEntry {
+    /// An entry.
+    pub fn new(node: u16, session_key: Arc<str>, sid: Arc<str>) -> Self {
+        Self {
+            node,
+            session_key,
+            sid,
+        }
+    }
+}
+
+/// The cluster's session table and node-to-node commands (ADR 0011 R4-1).
+#[async_trait]
+pub trait SharedSessions: Send + Sync {
+    /// Take a place for a new session: atomically drop entries of dead
+    /// nodes, replace a session with the same sid, apply the limit.
+    async fn claim(&self, claim: &SessionClaim) -> Result<Claimed, BrokerError>;
+
+    /// The session ended (idempotent).
+    async fn release(&self, user_key: &str, session_key: &str) -> Result<(), BrokerError>;
+
+    /// The user's live sessions on every node.
+    async fn of_user(&self, user_key: &str) -> Result<Vec<SessionEntry>, BrokerError>;
+
+    /// Send `control` to node `node` (this one included).
+    async fn send_control(&self, node: u16, control: &Control) -> Result<(), BrokerError>;
 }
 
 /// Small values shared by every node, each read at most once (ADR 0011

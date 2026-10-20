@@ -3,7 +3,10 @@
 //!
 //! ```text
 //! u8  version (1)
-//! u8  kind: 1 text, 2 binary, 3 hot, 4 kept text (history, ADR 0011 §3)
+//! u8  kind: 1 text, 2 binary, 3 hot, 4 kept text (history, ADR 0011 §3),
+//!           6 control (node to node, R4-1: `u8 version, u8 6`, then JSON
+//!           `{"close": [session keys], "reason": "...", "message": "..."}`;
+//!           not a room frame)
 //! u16 origin node slot
 //! u8  qos: 0 lossy, 1 reliable
 //! u16 room key length, room key (UTF-8, `tenant::room`)
@@ -26,7 +29,7 @@ use std::sync::Arc;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-use super::BrokerFrame;
+use super::{BrokerFrame, Control};
 use crate::realtime::types::{HotOut, OutFrame, QoS, Utf8Text};
 
 /// The version this build writes and reads.
@@ -36,6 +39,7 @@ const KIND_TEXT: u8 = 1;
 const KIND_BINARY: u8 = 2;
 const KIND_HOT: u8 = 3;
 const KIND_KEPT: u8 = 4;
+const KIND_CONTROL: u8 = 6;
 const NO_EXCEPT: u16 = u16::MAX;
 
 /// A frame that cannot be read.
@@ -159,6 +163,44 @@ fn take(b: &mut Bytes) -> Result<Bytes, WireError> {
     Ok(b.split_to(n))
 }
 
+/// Encode a node-to-node command.
+pub fn encode_control(c: &Control) -> Bytes {
+    let body = match c {
+        Control::Close {
+            keys,
+            reason,
+            message,
+        } => {
+            let keys: Vec<&str> = keys.iter().map(|k| &**k).collect();
+            serde_json::json!({ "close": keys, "reason": reason, "message": message })
+        }
+    };
+    let mut b = BytesMut::new();
+    b.put_u8(VERSION);
+    b.put_u8(KIND_CONTROL);
+    b.extend_from_slice(body.to_string().as_bytes());
+    b.freeze()
+}
+
+/// Decode a node-to-node command written by [`encode_control`].
+pub fn decode_control(bytes: &Bytes) -> Result<Control, WireError> {
+    if bytes.first() != Some(&VERSION) || bytes.get(1) != Some(&KIND_CONTROL) {
+        return Err(err("not a control message"));
+    }
+    #[derive(serde::Deserialize)]
+    struct Close {
+        close: Vec<String>,
+        reason: String,
+        message: String,
+    }
+    let c: Close = serde_json::from_slice(&bytes[2..]).map_err(|e| err(format!("control: {e}")))?;
+    Ok(Control::Close {
+        keys: c.close.into_iter().map(Arc::from).collect(),
+        reason: c.reason,
+        message: c.message,
+    })
+}
+
 /// Decode a frame written by [`encode`] (this version only).
 pub fn decode(bytes: &Bytes) -> Result<BrokerFrame, WireError> {
     let mut b = bytes.clone();
@@ -272,6 +314,18 @@ mod tests {
         f.offset = Some(417);
         assert_eq!(encode(&f).unwrap().to_vec(), wire);
         assert!(decode(&Bytes::from(wire[..head.len() + 2].to_vec())).is_err());
+    }
+
+    #[test]
+    fn controls_round_trip() {
+        let c = Control::Close {
+            keys: vec![Arc::from("t::u::s#1"), Arc::from("t::u::s#2")],
+            reason: "replaced".into(),
+            message: "replaced".into(),
+        };
+        assert_eq!(decode_control(&encode_control(&c)).unwrap(), c);
+        assert!(decode_control(&Bytes::from_static(b"\x01\x06{")).is_err());
+        assert!(decode(&encode_control(&c)).is_err(), "not a room frame");
     }
 
     #[test]

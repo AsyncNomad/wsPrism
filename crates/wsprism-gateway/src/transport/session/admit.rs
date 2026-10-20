@@ -11,6 +11,7 @@ use super::{Session, SessionIdentity};
 use crate::app_state::AppState;
 use crate::obs::metrics::GatewayMetrics;
 use crate::policy::engine::OnExceed;
+use wsprism_engine::broker::{Control, OnFull, SessionClaim};
 use wsprism_engine::spi::sys;
 use wsprism_engine::spi::{close_code, CloseSpec, OutFrame, RealtimeCore};
 use wsprism_engine::spi::{now_ms, CloseRequest, Connection, CtxIdentity, SessionSignals};
@@ -34,6 +35,8 @@ pub(super) struct SessionCleanup {
     metrics: Arc<GatewayMetrics>,
     /// Tenant `presence_events`: tell remaining members (ADR 0010).
     presence_events: bool,
+    /// The cluster's session table has an entry for this session.
+    shared: bool,
 }
 
 impl Drop for SessionCleanup {
@@ -58,8 +61,100 @@ impl Drop for SessionCleanup {
                 .ws_active_sessions
                 .dec(&[("tenant", &self.tenant_id)]);
         }
+        if self.shared {
+            release_shared(&self.core, &self.user_key, &self.session_key);
+        }
         tracing::debug!(s=%self.session_key, "session raii cleanup done");
     }
+}
+
+/// Drop a session's entry from the cluster's session table, in the
+/// background (idempotent; a lost release is cleaned up later, ADR 0011
+/// R4-1).
+fn release_shared(core: &Arc<RealtimeCore>, user_key: &str, session_key: &str) {
+    let Ok(rt) = tokio::runtime::Handle::try_current() else {
+        return;
+    };
+    let (core, user_key, session_key) =
+        (core.clone(), user_key.to_string(), session_key.to_string());
+    rt.spawn(async move {
+        if let Some(table) = core.broker().sessions() {
+            if let Err(e) = table.release(&user_key, &session_key).await {
+                tracing::warn!("session table release failed: {e}");
+            }
+        }
+    });
+}
+
+/// The cluster's session table decides sid replacement and the user's
+/// session limit (ADR 0011 R4-1). `Err` = refuse the connection with `spec`.
+async fn claim_shared(
+    core: &RealtimeCore,
+    metrics: &GatewayMetrics,
+    claim: SessionClaim,
+    tenant: &str,
+    trace_id: &str,
+    presence_events: bool,
+) -> std::result::Result<(), CloseSpec> {
+    let Some(table) = core.broker().sessions() else {
+        return Ok(());
+    };
+    let claimed = table.claim(&claim).await.map_err(|e| {
+        tracing::warn!("session table unavailable: {e}");
+        CloseSpec::new(
+            close_code::TRY_AGAIN_LATER,
+            "unavailable",
+            Some(
+                sys::error(
+                    ClientCode::Unavailable,
+                    "session store unavailable",
+                    trace_id,
+                )
+                .to_string(),
+            ),
+        )
+    })?;
+    for ev in &claimed.evicted {
+        if ev.node == core.node_slot() {
+            evict_session(
+                core,
+                metrics,
+                Eviction {
+                    tenant,
+                    user_key: &claim.user_key,
+                    victim_key: &ev.session_key,
+                    reason: ev.reason,
+                    trace_id,
+                    presence_events,
+                },
+            );
+        } else {
+            let close = Control::Close {
+                keys: vec![ev.session_key.clone()],
+                reason: ev.reason.to_string(),
+                message: ev.reason.to_string(),
+            };
+            if let Err(e) = table.send_control(ev.node, &close).await {
+                tracing::warn!(
+                    node = ev.node,
+                    "could not reach a node to close a session: {e}"
+                );
+            }
+        }
+    }
+    if claimed.admitted {
+        Ok(())
+    } else {
+        Err(too_many_sessions(trace_id))
+    }
+}
+
+fn too_many_sessions(trace_id: &str) -> CloseSpec {
+    CloseSpec::new(
+        close_code::POLICY,
+        "too_many_sessions",
+        Some(sys::error(ClientCode::TooManySessions, "limit exceeded", trace_id).to_string()),
+    )
 }
 
 /// Who evicts whom, and why.
@@ -100,7 +195,7 @@ fn evict_session(core: &RealtimeCore, metrics: &GatewayMetrics, e: Eviction<'_>)
 impl Session {
     /// Apply session policies and register the connection. On success the
     /// `sys.authed` greeting is already queued.
-    pub(super) fn admit(
+    pub(super) async fn admit(
         app: &AppState,
         id: SessionIdentity,
         out_tx: mpsc::Sender<OutFrame>,
@@ -121,56 +216,83 @@ impl Session {
         let conn_id = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
         let session_key = format!("{}::{}::{}#{:x}", id.tenant, id.user_id, id.sid, conn_id);
 
-        // S4: a reconnect with an in-use sid takes over: the old connection is
-        // evicted before the session limit is evaluated.
-        if let Some(prev) = core.sessions.find_session_by_sid(&user_key, &id.sid) {
-            evict_session(
-                &core,
-                &metrics,
-                Eviction {
-                    tenant: &id.tenant,
-                    user_key: &user_key,
-                    victim_key: &prev,
-                    reason: "replaced",
-                    trace_id: &id.trace_id,
-                    presence_events: policy.presence_events(),
+        let sp = policy.session_policy();
+        let shared = core.broker().sessions().is_some();
+        if shared {
+            let claim = SessionClaim::new(
+                &user_key,
+                &session_key,
+                &id.sid,
+                sp.max_sessions_per_user,
+                match sp.on_exceed {
+                    OnExceed::KickOldest => OnFull::KickOldest,
+                    _ => OnFull::Deny,
                 },
             );
-        }
-
-        let sp = policy.session_policy();
-        if core.sessions.count_user_sessions(&user_key) >= sp.max_sessions_per_user as usize {
-            metrics.policy_decisions.inc(&[
-                ("tenant", &id.tenant),
-                ("lane", "session"),
-                ("decision", "reject"),
-                ("reason", "max_user_sessions"),
-            ]);
-            match sp.on_exceed {
-                OnExceed::Deny => {
-                    return Ok(Admission::Rejected(CloseSpec::new(
-                        close_code::POLICY,
-                        "too_many_sessions",
-                        Some(
-                            sys::error(ClientCode::TooManySessions, "limit exceeded", &id.trace_id)
-                                .to_string(),
-                        ),
-                    )));
+            if let Err(spec) = claim_shared(
+                &core,
+                &metrics,
+                claim,
+                &id.tenant,
+                &id.trace_id,
+                policy.presence_events(),
+            )
+            .await
+            {
+                if spec.reason == "too_many_sessions" {
+                    metrics.policy_decisions.inc(&[
+                        ("tenant", &id.tenant),
+                        ("lane", "session"),
+                        ("decision", "reject"),
+                        ("reason", "max_user_sessions"),
+                    ]);
                 }
-                OnExceed::KickOldest => {
-                    if let Some(victim) = core.sessions.oldest_session(&user_key) {
-                        evict_session(
-                            &core,
-                            &metrics,
-                            Eviction {
-                                tenant: &id.tenant,
-                                user_key: &user_key,
-                                victim_key: &victim,
-                                reason: "max_sessions_exceeded",
-                                trace_id: &id.trace_id,
-                                presence_events: policy.presence_events(),
-                            },
-                        );
+                return Ok(Admission::Rejected(spec));
+            }
+        } else {
+            // S4: a reconnect with an in-use sid takes over: the old connection is
+            // evicted before the session limit is evaluated.
+            if let Some(prev) = core.sessions.find_session_by_sid(&user_key, &id.sid) {
+                evict_session(
+                    &core,
+                    &metrics,
+                    Eviction {
+                        tenant: &id.tenant,
+                        user_key: &user_key,
+                        victim_key: &prev,
+                        reason: "replaced",
+                        trace_id: &id.trace_id,
+                        presence_events: policy.presence_events(),
+                    },
+                );
+            }
+
+            if core.sessions.count_user_sessions(&user_key) >= sp.max_sessions_per_user as usize {
+                metrics.policy_decisions.inc(&[
+                    ("tenant", &id.tenant),
+                    ("lane", "session"),
+                    ("decision", "reject"),
+                    ("reason", "max_user_sessions"),
+                ]);
+                match sp.on_exceed {
+                    OnExceed::Deny => {
+                        return Ok(Admission::Rejected(too_many_sessions(&id.trace_id)));
+                    }
+                    OnExceed::KickOldest => {
+                        if let Some(victim) = core.sessions.oldest_session(&user_key) {
+                            evict_session(
+                                &core,
+                                &metrics,
+                                Eviction {
+                                    tenant: &id.tenant,
+                                    user_key: &user_key,
+                                    victim_key: &victim,
+                                    reason: "max_sessions_exceeded",
+                                    trace_id: &id.trace_id,
+                                    presence_events: policy.presence_events(),
+                                },
+                            );
+                        }
                     }
                 }
             }
@@ -192,6 +314,9 @@ impl Session {
             conn.clone(),
             t_cfg.limits.max_sessions_total,
         ) {
+            if shared {
+                release_shared(&core, &user_key, &session_key);
+            }
             return Ok(Admission::Rejected(CloseSpec::new(
                 close_code::TRY_AGAIN_LATER,
                 "capacity",
@@ -206,6 +331,7 @@ impl Session {
             session_key: session_key.clone(),
             metrics: metrics.clone(),
             presence_events: policy.presence_events(),
+            shared,
         };
         // The queue is empty and only this task consumes it, so this cannot be full.
         out_tx

@@ -21,6 +21,7 @@ use wsprism_protocol::protocol::hot::{encode_hot_frame_v2, HotOutV2};
 
 use crate::app_state::AppState;
 use crate::auth::{Identity, IssueError, Permissions, DEFAULT_TICKET_TTL, MAX_TICKET_TTL};
+use wsprism_engine::broker::Control;
 use wsprism_engine::spi::sys;
 use wsprism_engine::spi::{close_code, CloseSpec, HotOut};
 use wsprism_engine::spi::{CloseRequest, RealtimeCore};
@@ -206,8 +207,47 @@ async fn disconnect(
         return bad_request("reason must be at most 123 bytes");
     }
     let user_key = format!("{tenant}::{}", req.user);
-    let conns = app
-        .realtime()
+    let core = app.realtime();
+    // Cluster: the session table knows every node's sessions (ADR 0011 R4-1).
+    if let Some(table) = core.broker().sessions() {
+        let entries = match table.of_user(&user_key).await {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("session table unavailable: {e}");
+                return (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [(header::RETRY_AFTER, "1")],
+                    Json(json!({"error": "session store unavailable"})),
+                )
+                    .into_response();
+            }
+        };
+        let mut by_node: std::collections::BTreeMap<u16, Vec<Arc<str>>> = Default::default();
+        for e in entries
+            .into_iter()
+            .filter(|e| req.sid.as_deref().is_none_or(|sid| *e.sid == *sid))
+        {
+            by_node.entry(e.node).or_default().push(e.session_key);
+        }
+        let mut closed = 0;
+        for (node, keys) in by_node {
+            closed += keys.len();
+            if node == core.node_slot() {
+                core.close_sessions(&keys, "disconnected", reason);
+            } else {
+                let close = Control::Close {
+                    keys,
+                    reason: "disconnected".into(),
+                    message: reason.to_string(),
+                };
+                if let Err(e) = table.send_control(node, &close).await {
+                    tracing::warn!(node, "could not reach a node to disconnect: {e}");
+                }
+            }
+        }
+        return Json(json!({"closed": closed})).into_response();
+    }
+    let conns = core
         .sessions
         .user_connections(&user_key, req.sid.as_deref());
     let notice = sys::kicked(reason, "").to_string();

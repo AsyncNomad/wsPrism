@@ -29,6 +29,7 @@ fn prefix(name: &str) -> String {
 }
 
 const KEY: &str = "key-c";
+const KEY_D: &str = "key-d";
 
 async fn node(url: &str, prefix: &str) -> ApiGateway {
     node_with(url, prefix, 30).await
@@ -37,6 +38,8 @@ async fn node(url: &str, prefix: &str) -> ApiGateway {
 async fn node_with(url: &str, prefix: &str, slot_ttl_s: u64) -> ApiGateway {
     let d = ring::digest::digest(&ring::digest::SHA256, KEY.as_bytes());
     let hash: String = d.as_ref().iter().map(|b| format!("{b:02x}")).collect();
+    let d2 = ring::digest::digest(&ring::digest::SHA256, KEY_D.as_bytes());
+    let hash_d: String = d2.as_ref().iter().map(|b| format!("{b:02x}")).collect();
     let yaml = format!(
         r#"
 version: 1
@@ -49,6 +52,11 @@ tenants:
     api_keys: [{{ name: backend, sha256: "{hash}" }}]
     policy: {{ ext_allowlist: ["room:*", "chat:*"], hot_allowlist: ["1:*"], presence_events: true }}
     history: [{{ rooms: "chat:*", size: 100, ttl_s: 600 }}, {{ rooms: "small:*", size: 3, ttl_s: 600 }}]
+  - id: d
+    api_keys: [{{ name: backend-d, sha256: "{hash_d}" }}]
+    policy: {{ ext_allowlist: ["room:*"], sessions: {{ mode: single, max_sessions_per_user: 1, on_exceed: deny }} }}
+  - id: k
+    policy: {{ ext_allowlist: ["room:*"], sessions: {{ mode: multi, max_sessions_per_user: 2, on_exceed: kick_oldest }} }}
 "#
     );
     let cfg = wsprism_gateway::config::load_from_str(&yaml).unwrap();
@@ -63,12 +71,29 @@ tenants:
 }
 
 async fn user(gw: &ApiGateway, name: &str) -> Ws {
+    user_in(gw, "t", name, None).await
+}
+
+/// Connect as `name` to `tenant` (optionally with a client sid); retries
+/// until the node has started.
+async fn user_in(gw: &ApiGateway, tenant: &str, name: &str, sid: Option<&str>) -> Ws {
+    try_user_in(gw, tenant, name, sid)
+        .await
+        .unwrap_or_else(|e| panic!("connect: {e}"))
+}
+
+async fn try_user_in(
+    gw: &ApiGateway,
+    tenant: &str,
+    name: &str,
+    sid: Option<&str>,
+) -> Result<Ws, String> {
     let bearer = format!("Bearer dev:{name}");
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     // The node accepts once its broker has started (slot claimed).
     loop {
         match try_connect_with(
-            &ws_url(gw.addr, "t", None),
+            &ws_url(gw.addr, tenant, sid),
             &[
                 ("authorization", &bearer),
                 ("sec-websocket-protocol", "wsprism.v2.json"),
@@ -77,14 +102,15 @@ async fn user(gw: &ApiGateway, name: &str) -> Ws {
         .await
         {
             Ok((mut ws, _)) => match next_event(&mut ws).await {
-                Event::Json(v) if v["type"] == "authed" => return ws,
-                other => panic!("{other:?}"),
+                Event::Json(v) if v["type"] == "authed" => return Ok(ws),
+                other => return Err(format!("{other:?}")),
             },
-            Err(e) if tokio::time::Instant::now() < deadline => {
-                let _ = e;
+            Err(e)
+                if e.contains("Connection refused") && tokio::time::Instant::now() < deadline =>
+            {
                 tokio::time::sleep(Duration::from_millis(50)).await;
             }
-            Err(e) => panic!("connect: {e}"),
+            Err(e) => return Err(e),
         }
     }
 }
@@ -493,4 +519,106 @@ async fn a_burst_keeps_contiguous_offsets() {
     for want in 11..=50 {
         assert_eq!(next_of(&mut a, "msg").await["offset"], want);
     }
+}
+
+/// The next close frame's reason, skipping messages.
+async fn closed_reason(ws: &mut Ws) -> String {
+    loop {
+        match next_event(ws).await {
+            Event::Close(Some(f)) => return f.reason.to_string(),
+            Event::Json(_) | Event::Binary(_) => continue,
+            other => panic!("expected a close, got {other:?}"),
+        }
+    }
+}
+
+/// R4-1: a reconnect with the same sid on another node replaces the old
+/// connection (S4 across nodes).
+#[tokio::test]
+async fn the_same_sid_on_another_node_replaces_the_old_connection() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("sid");
+    let (a_node, b_node) = (node(&url, &p).await, node(&url, &p).await);
+    let mut old = user_in(&a_node, "t", "sam", Some("tab")).await;
+    let mut new = user_in(&b_node, "t", "sam", Some("tab")).await;
+    assert_eq!(closed_reason(&mut old).await, "replaced");
+    // The new one is fine; another sid is not affected.
+    let mut other = user_in(&a_node, "t", "sam", Some("tab2")).await;
+    send_json(
+        &mut new,
+        json!({"svc":"room","type":"join","room":"r","seq":1}),
+    )
+    .await;
+    next_of(&mut new, "joined").await;
+    send_json(
+        &mut other,
+        json!({"svc":"room","type":"join","room":"r","seq":1}),
+    )
+    .await;
+    next_of(&mut other, "joined").await;
+}
+
+/// R4-1: per-user limits hold across nodes - deny...
+#[tokio::test]
+async fn single_session_mode_denies_a_second_node() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("deny");
+    let (a_node, b_node) = (node(&url, &p).await, node(&url, &p).await);
+    let _first = user_in(&a_node, "d", "solo", None).await;
+    let second = try_user_in(&b_node, "d", "solo", None).await;
+    assert!(
+        matches!(&second, Err(e) if e.contains("TOO_MANY_SESSIONS")),
+        "denied on the other node: {:?}",
+        second.as_ref().err()
+    );
+    // Once the first is gone, the user may connect again.
+    drop(_first);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let _again = user_in(&b_node, "d", "solo", None).await;
+}
+
+/// ...and kick_oldest closes the oldest session wherever it is.
+#[tokio::test]
+async fn kick_oldest_reaches_the_oldest_session_on_another_node() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("kick");
+    let (a_node, b_node) = (node(&url, &p).await, node(&url, &p).await);
+    let mut first = user_in(&a_node, "k", "kim", None).await;
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let _second = user_in(&b_node, "k", "kim", None).await;
+    let _third = user_in(&b_node, "k", "kim", None).await; // limit 2
+    assert_eq!(closed_reason(&mut first).await, "max_sessions_exceeded");
+}
+
+/// R4-1: the server API's disconnect closes the user's sessions on every
+/// node; a session of a node that died no longer counts.
+#[tokio::test]
+async fn api_disconnect_and_dead_nodes_span_the_cluster() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("disc");
+    let (a_node, b_node) = (node(&url, &p).await, node(&url, &p).await);
+    let mut on_b = user_in(&b_node, "d", "dora", None).await;
+    let (status, body) = http(
+        a_node.api,
+        "POST",
+        "/api/v1/disconnect",
+        Some(KEY_D),
+        Some(json!({"user": "dora", "reason": "bye"})),
+    )
+    .await;
+    assert_eq!((status, body["closed"].as_u64()), (200, Some(1)), "{body}");
+    assert_eq!(closed_reason(&mut on_b).await, "disconnected");
+
+    // An entry left by a node that died (its slot key is gone) does not
+    // block a single-session user.
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut c = client.get_multiplexed_async_connection().await.unwrap();
+    let _: i64 = redis::cmd("HSET")
+        .arg(format!("{p}:us:{{d::ghost}}"))
+        .arg("d::ghost::s#dead")
+        .arg("deadnode|777|s|1")
+        .query_async(&mut c)
+        .await
+        .unwrap();
+    let _ghost = user_in(&a_node, "d", "ghost", None).await;
 }
