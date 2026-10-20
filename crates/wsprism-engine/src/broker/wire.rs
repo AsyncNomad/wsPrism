@@ -3,13 +3,16 @@
 //!
 //! ```text
 //! u8  version (1)
-//! u8  kind: 1 text, 2 binary, 3 hot
+//! u8  kind: 1 text, 2 binary, 3 hot, 4 kept text (history, ADR 0011 §3)
 //! u16 origin node slot
 //! u8  qos: 0 lossy, 1 reliable
 //! u16 room key length, room key (UTF-8, `tenant::room`)
 //! u16 except length (0xFFFF = none), except session key
 //! body:
 //!   text / binary: the rest
+//!   kept text: u8 n, n ASCII digits (the offset), the text — the offset
+//!     comes right before the text so the broker (a Redis script) can put
+//!     it in between the two parts from `encode_kept`
 //!   hot: u32 v1 length, v1 payload, u32 v2 length, v2 frame,
 //!        u8 keyed, [u32 sender, u8 svc, u32 key]
 //! ```
@@ -32,6 +35,7 @@ pub const VERSION: u8 = 1;
 const KIND_TEXT: u8 = 1;
 const KIND_BINARY: u8 = 2;
 const KIND_HOT: u8 = 3;
+const KIND_KEPT: u8 = 4;
 const NO_EXCEPT: u16 = u16::MAX;
 
 /// A frame that cannot be read.
@@ -50,9 +54,42 @@ fn err(m: impl Into<String>) -> WireError {
     WireError(m.into())
 }
 
+/// A text frame to keep, in two parts: everything before the offset, and
+/// the text after it. The broker writes `head`, the offset (`u8` length +
+/// ASCII digits), then `text`. `None` if `f` is not text.
+pub fn encode_kept(f: &BrokerFrame) -> Option<(Bytes, Bytes)> {
+    let OutFrame::Text(t) = &f.body else {
+        return None;
+    };
+    let mut head = BytesMut::new();
+    put_header(&mut head, f, KIND_KEPT);
+    Some((head.freeze(), Bytes::copy_from_slice(t.as_bytes())))
+}
+
+fn put_header(b: &mut BytesMut, f: &BrokerFrame, kind: u8) {
+    b.put_u8(VERSION);
+    b.put_u8(kind);
+    b.put_u16_le(f.origin);
+    b.put_u8(u8::from(matches!(f.qos, QoS::Reliable)));
+    put_str(b, &f.room_key);
+    match &f.except {
+        Some(e) => put_str(b, e),
+        None => b.put_u16_le(NO_EXCEPT),
+    }
+}
+
 /// Encode a room frame. `None` for frames that never cross nodes (pings,
 /// batches).
 pub fn encode(f: &BrokerFrame) -> Option<Bytes> {
+    if let (Some(offset), Some((head, text))) = (f.offset, encode_kept(f)) {
+        let digits = offset.to_string();
+        let mut b = BytesMut::with_capacity(head.len() + 1 + digits.len() + text.len());
+        b.extend_from_slice(&head);
+        b.put_u8(digits.len() as u8);
+        b.extend_from_slice(digits.as_bytes());
+        b.extend_from_slice(&text);
+        return Some(b.freeze());
+    }
     let (kind, body_len) = match &f.body {
         OutFrame::Text(t) => (KIND_TEXT, t.as_bytes().len()),
         OutFrame::Binary(b) => (KIND_BINARY, b.len()),
@@ -61,15 +98,7 @@ pub fn encode(f: &BrokerFrame) -> Option<Bytes> {
     };
     let except = f.except.as_deref().unwrap_or("");
     let mut b = BytesMut::with_capacity(9 + f.room_key.len() + except.len() + body_len);
-    b.put_u8(VERSION);
-    b.put_u8(kind);
-    b.put_u16_le(f.origin);
-    b.put_u8(u8::from(matches!(f.qos, QoS::Reliable)));
-    put_str(&mut b, &f.room_key);
-    match &f.except {
-        Some(e) => put_str(&mut b, e),
-        None => b.put_u16_le(NO_EXCEPT),
-    }
+    put_header(&mut b, f, kind);
     match &f.body {
         OutFrame::Text(t) => b.extend_from_slice(t.as_bytes()),
         OutFrame::Binary(x) => b.extend_from_slice(x),
@@ -147,7 +176,17 @@ pub fn decode(bytes: &Bytes) -> Result<BrokerFrame, WireError> {
     };
     let room_key = get_str(&mut b)?.ok_or_else(|| err("no room key"))?;
     let except = get_str(&mut b)?;
+    let mut offset = None;
     let body = match kind {
+        KIND_KEPT => {
+            need(&b, 1)?;
+            let n = usize::from(b.get_u8());
+            need(&b, n)?;
+            let digits = std::str::from_utf8(&b[..n]).map_err(|_| err("bad offset"))?;
+            offset = Some(digits.parse::<u64>().map_err(|_| err("bad offset"))?);
+            b.advance(n);
+            OutFrame::Text(Utf8Text::try_from_bytes(b).map_err(|_| err("text is not UTF-8"))?)
+        }
         KIND_TEXT => {
             OutFrame::Text(Utf8Text::try_from_bytes(b).map_err(|_| err("text is not UTF-8"))?)
         }
@@ -170,6 +209,7 @@ pub fn decode(bytes: &Bytes) -> Result<BrokerFrame, WireError> {
     };
     let mut f = BrokerFrame::new(origin, &room_key, qos, body);
     f.except = except;
+    f.offset = offset;
     Ok(f)
 }
 
@@ -214,6 +254,24 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert!(g.except.is_none());
+    }
+
+    #[test]
+    fn kept_text_carries_its_offset_between_the_parts() {
+        let mut f = BrokerFrame::new(2, "t::h", QoS::Reliable, OutFrame::text("{\"m\":1}".into()));
+        let (head, text) = encode_kept(&f).unwrap();
+        // What the broker builds: head, u8 length + digits, text.
+        let mut wire = head.to_vec();
+        wire.push(3);
+        wire.extend_from_slice(b"417");
+        wire.extend_from_slice(&text);
+        let g = decode(&Bytes::from(wire.clone())).unwrap();
+        assert_eq!(g.offset, Some(417));
+        assert_eq!(g.body, f.body);
+        // encode() writes the same bytes for a frame that has its offset.
+        f.offset = Some(417);
+        assert_eq!(encode(&f).unwrap().to_vec(), wire);
+        assert!(decode(&Bytes::from(wire[..head.len() + 2].to_vec())).is_err());
     }
 
     #[test]

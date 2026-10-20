@@ -9,7 +9,7 @@ use wsprism_protocol::protocol::text::Envelope;
 use wsprism_protocol::protocol::ProtocolVersion;
 
 use crate::dispatch::TextService;
-use crate::realtime::core::{MemberSnapshot, Recover};
+use crate::realtime::core::{JoinOutcome, MemberSnapshot, Recover};
 use crate::realtime::RealtimeCtx;
 use crate::sys;
 
@@ -46,7 +46,11 @@ impl RoomService {
         Self
     }
 
-    fn join(ctx: &mut RealtimeCtx, room: Option<String>, data: Option<&RawValue>) -> Result<()> {
+    async fn join(
+        ctx: &mut RealtimeCtx,
+        room: Option<String>,
+        data: Option<&RawValue>,
+    ) -> Result<()> {
         let room = room.unwrap_or_else(|| "default".to_string());
         let recover = match data {
             Some(raw) => serde_json::from_str::<JoinData>(raw.get())
@@ -55,30 +59,17 @@ impl RoomService {
                 .map(Recover::from),
             None => None,
         };
-        ctx.join_room_and_reply(&room, recover.as_ref(), |ctx, out| {
-            let mut msg = match ctx.protocol() {
-                ProtocolVersion::V1 => sys::joined(&room, ctx.trace_id()),
-                ProtocolVersion::V2 => sys::joined_v2(
-                    &room,
-                    out.joined.room_id,
-                    out.joined.member_id,
-                    ctx.trace_id(),
-                ),
-            };
-            // Presence snapshot (tenant presence_events, ADR 0010).
-            if let Some(snapshot) = ctx.room_members(&room) {
-                add_snapshot(&mut msg, &snapshot);
+        match ctx.cluster_history(&room) {
+            Some(keep) => {
+                ctx.join_room_recovering(&room, keep, recover.as_ref(), |ctx, out| {
+                    joined_msg(ctx, &room, out)
+                })
+                .await?
             }
-            // History position and recovery result (ADR 0011 §3).
-            if let Some(pos) = &out.history {
-                msg["epoch"] = (*pos.epoch).into();
-                msg["offset"] = pos.offset.into();
-            }
-            if let Some(recovered) = out.recovered {
-                msg["recovered"] = recovered.into();
-            }
-            msg
-        })?;
+            None => ctx.join_room_and_reply(&room, recover.as_ref(), |ctx, out| {
+                joined_msg(ctx, &room, out)
+            })?,
+        };
         ctx.set_active_room(Some(&room));
         Ok(())
     }
@@ -95,6 +86,32 @@ impl RoomService {
         }
         ctx.reply(sys::left(&room, ctx.trace_id()))
     }
+}
+
+/// The `sys.joined` reply.
+fn joined_msg(ctx: &RealtimeCtx, room: &str, out: &JoinOutcome) -> serde_json::Value {
+    let mut msg = match ctx.protocol() {
+        ProtocolVersion::V1 => sys::joined(room, ctx.trace_id()),
+        ProtocolVersion::V2 => sys::joined_v2(
+            room,
+            out.joined.room_id,
+            out.joined.member_id,
+            ctx.trace_id(),
+        ),
+    };
+    // Presence snapshot (tenant presence_events, ADR 0010).
+    if let Some(snapshot) = ctx.room_members(room) {
+        add_snapshot(&mut msg, &snapshot);
+    }
+    // History position and recovery result (ADR 0011 §3).
+    if let Some(pos) = &out.history {
+        msg["epoch"] = (*pos.epoch).into();
+        msg["offset"] = pos.offset.into();
+    }
+    if let Some(recovered) = out.recovered {
+        msg["recovered"] = recovered.into();
+    }
+    msg
 }
 
 /// `members` (and `members_truncated`) of a `sys.joined`.
@@ -117,7 +134,7 @@ impl TextService for RoomService {
 
     async fn handle(&self, ctx: &mut RealtimeCtx, env: Envelope) -> Result<()> {
         match env.msg_type.as_str() {
-            "join" => Self::join(ctx, env.room, env.data.as_deref()),
+            "join" => Self::join(ctx, env.room, env.data.as_deref()).await,
             "leave" => Self::leave(ctx, env.room),
             _ => Err(WsPrismError::BadRequest("unknown room type".into())),
         }

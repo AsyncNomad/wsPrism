@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 use super::session_registry::Connection;
-use crate::broker::{BrokerOutbox, Subscription, NODE_SLOT_BITS};
+use crate::broker::{BrokerOutbox, Subscribed, Subscription, NODE_SLOT_BITS};
 use wsprism_protocol::error::{Result, WsPrismError};
 
 /// Atomically replace the value with `f(value)` (CAS loop); `None` from `f`
@@ -63,6 +63,9 @@ pub struct Member {
     pub user: Arc<str>,
     /// Assigned by `Presence::try_join` (callers pass 0).
     pub member_id: u32,
+    /// Cluster history rooms: kept messages up to this offset already
+    /// reached the client (its recovering join's position; callers pass 0).
+    pub skip_upto: u64,
 }
 
 /// What a join hands back to the session (protocol v2 `sys.joined`).
@@ -93,6 +96,9 @@ struct Room {
     next_member: u32,
     /// The counter has wrapped: new ids must skip live members' ids.
     wrapped: bool,
+    /// Queued broker: becomes true once this node's subscription to the
+    /// room is in effect (a recovering join waits for it, ADR 0011 §3).
+    subscribed: Option<Subscribed>,
 }
 
 /// Bits of a member id counted per room (the rest is the node slot).
@@ -106,6 +112,7 @@ impl Room {
             members: Vec::new(),
             next_member: 1,
             wrapped: false,
+            subscribed: None,
         }
     }
 
@@ -263,11 +270,13 @@ impl Presence {
                     ..member
                 });
                 let id = room.id;
-                slot.insert(room);
                 // Still under the shard lock: commands keep the real order.
                 if let Some(outbox) = &self.outbox {
-                    outbox.push_sub(Subscription::Subscribe(Arc::from(room_key)));
+                    let done = Arc::new(tokio::sync::watch::Sender::new(false));
+                    room.subscribed = Some(Arc::clone(&done));
+                    outbox.push_sub(Subscription::Subscribe(Arc::from(room_key)), Some(done));
                 }
+                slot.insert(room);
                 (id, member_id)
             }
         };
@@ -351,7 +360,7 @@ impl Presence {
                 if empty {
                     // Under the shard lock, like the Subscribe (B5).
                     if let Some(outbox) = &self.outbox {
-                        outbox.push_sub(Subscription::Unsubscribe(Arc::from(room_key)));
+                        outbox.push_sub(Subscription::Unsubscribe(Arc::from(room_key)), None);
                     }
                 }
                 empty
@@ -399,6 +408,39 @@ impl Presence {
     pub(crate) fn set_node_slot(&self, slot: u16) {
         self.slot_bits
             .store(u32::from(slot) << MEMBER_BITS, Ordering::Relaxed);
+    }
+
+    /// Queued broker: resolves to `true` once this node's subscription to
+    /// the room is in effect. `None` without a queued broker or room.
+    pub(crate) fn subscribed(&self, room_key: &str) -> Option<tokio::sync::watch::Receiver<bool>> {
+        self.room_to_sessions
+            .get(room_key)?
+            .subscribed
+            .as_ref()
+            .map(|s| s.subscribe())
+    }
+
+    /// Point member `session_key` of `room_key` at `conn`, then run `then`
+    /// while still holding the room's write lock (no publish can reach the
+    /// room in between). Returns false if the session is not a member.
+    pub(crate) fn replace_member_conn(
+        &self,
+        room_key: &str,
+        session_key: &str,
+        conn: Connection,
+        skip_upto: u64,
+        then: impl FnOnce(),
+    ) -> bool {
+        let Some(mut room) = self.room_to_sessions.get_mut(room_key) else {
+            return false;
+        };
+        let Some(m) = room.members.iter_mut().find(|m| &*m.key == session_key) else {
+            return false;
+        };
+        m.conn = conn;
+        m.skip_upto = skip_upto;
+        then();
+        true
     }
 
     /// How many sessions are in the room.
@@ -504,6 +546,7 @@ mod tests {
                 signals: super::super::SessionSignals::new(),
             },
             member_id: 0,
+            skip_upto: 0,
             user: Arc::from("u"),
         }
     }

@@ -41,7 +41,8 @@ cargo build --release -p wsprism-loadgen
 | R1 Broker 경계 | ✅ | [ADR 0011](../adr/0011-broker-history-and-cluster.md) 「R1 구현」 |
 | R2 이력·복구 (단일 노드) | ✅ | ADR 0011 「R2 구현」 |
 | R3-1 Redis 노드 간 룸 공유 | ✅ | ADR 0011 「R3-1 구현」 |
-| R3-2 클러스터 이력 → R3-3 공유 티켓 → A15 Redis 처리량 → R4 → R5 | ⏳ 다음 | ADR 0011 |
+| R3-2 클러스터 이력·복구 | ✅ | ADR 0011 「R3-2 구현」 |
+| R3-3 공유 티켓 → A15 Redis 처리량 → R4 → R5 | ⏳ 다음 | ADR 0011 |
 
 - **성능 회귀 판정 (ADR 0011 B2):** `bench/run-icount.sh`(valgrind callgrind, 결정적 명령어 수 — WSL2에는 CPU PMU가 없어 `perf stat -e instructions` 불가)와 `bench/run-mem-users.sh`(유휴 메모리). 기준선은 `bench/results/icount-pre-r1.jsonl`, `mem-pre-r1.jsonl`. 단계마다 같은 스크립트로 다시 재서 ±2%를 본다.
 - **Queued 모드 회귀:** `WSPRISM_TEST_BROKER=queued cargo test -p wsprism-gateway` (CI에도 있음).

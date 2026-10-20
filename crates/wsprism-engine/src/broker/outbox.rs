@@ -65,9 +65,12 @@ impl OutboxCounters {
     }
 }
 
+/// Set to `true` once a `Subscribe` has been applied by the broker.
+pub(crate) type Subscribed = Arc<tokio::sync::watch::Sender<bool>>;
+
 enum Item {
     Frame(BrokerFrame),
-    Sub(Subscription),
+    Sub(Subscription, Option<Subscribed>),
 }
 
 #[derive(Default)]
@@ -129,8 +132,8 @@ impl BrokerOutbox {
     /// Queue a subscription change. Never refused: there is at most one per
     /// room creation or removal, and losing one would leave the node deaf to
     /// (or flooded by) a room.
-    pub(crate) fn push_sub(&self, cmd: Subscription) {
-        self.lock().items.push_back(Item::Sub(cmd));
+    pub(crate) fn push_sub(&self, cmd: Subscription, done: Option<Subscribed>) {
+        self.lock().items.push_back(Item::Sub(cmd, done));
         self.ready.notify_one();
     }
 
@@ -173,9 +176,12 @@ pub(crate) async fn run_outbox(outbox: Arc<BrokerOutbox>, broker: Arc<dyn Broker
         for item in items.drain(..) {
             match item {
                 Item::Frame(f) => frames.push(f),
-                Item::Sub(cmd) => {
+                Item::Sub(cmd, done) => {
                     publish(&outbox, &*broker, &mut frames).await;
                     retry(&outbox, 1, || broker.subscription(&cmd)).await;
+                    if let Some(done) = done {
+                        done.send_replace(true);
+                    }
                 }
             }
         }

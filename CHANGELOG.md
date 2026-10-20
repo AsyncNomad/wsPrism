@@ -53,8 +53,9 @@ the Rust API may break in 0.x minor releases, always listed here.
   crate `wsprism-redis`, default gateway feature `redis`): nodes share rooms
   over Redis pub/sub, member ids carry a per-node slot, Hot state crosses
   nodes with each node's room id, and a dropped subscription is reported to
-  members as `sys.gap`. Not yet: history, shared tickets and cluster-wide
-  control with a cluster broker.
+  members as `sys.gap`. Room history works across nodes (offsets from a
+  Redis Lua script; resume on any node). Not yet: shared tickets and
+  cluster-wide control.
 - Server API publish answers 503 + `Retry-After` when a cluster broker's queue
   is full.
 
@@ -76,8 +77,8 @@ the Rust API may break in 0.x minor releases, always listed here.
 - Example app `examples/chat-and-state` (Node backend + SDK).
 
 ### Known limitations
-- The Redis cluster broker is experimental: history, one-time tickets,
-  presence queries, disconnects and session limits are still per node
-  (ADR 0011 R3-R4).
+- The Redis cluster broker is experimental: one-time tickets, presence
+  queries, disconnects and session limits are still per node (ADR 0011
+  R3-R4).
 - Embedders should build with `codegen-units = 1` like this workspace
   (fan-out micro-benchmark −9–10% otherwise; docs/API.md).

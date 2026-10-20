@@ -20,7 +20,19 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::{mpsc, watch};
 
-use super::{wire, Broker, BrokerError, BrokerFrame, BrokerMode, Incoming, Subscription};
+use super::{
+    wire, Broker, BrokerError, BrokerFrame, BrokerMode, HistoryRead, Incoming, Keep, Subscription,
+};
+use crate::realtime::core::Recover;
+
+/// One room's history, kept like the Redis broker keeps it: offsets from
+/// 1, an epoch, and the count / byte / age limits of the room's rule.
+struct Kept {
+    epoch: Arc<str>,
+    top: u64,
+    entries: std::collections::VecDeque<(std::time::Instant, BrokerFrame, usize)>,
+    bytes: usize,
+}
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -41,6 +53,8 @@ pub struct TestBroker {
     publish_delay_us: AtomicU64,
     subscription_delay_us: AtomicU64,
     open: watch::Sender<bool>,
+    history: Mutex<std::collections::HashMap<Arc<str>, Kept>>,
+    epochs: std::sync::atomic::AtomicU64,
 }
 
 impl TestBroker {
@@ -60,6 +74,8 @@ impl TestBroker {
             publish_delay_us: AtomicU64::new(0),
             subscription_delay_us: AtomicU64::new(0),
             open: watch::Sender::new(true),
+            history: Mutex::default(),
+            epochs: AtomicU64::new(1),
         })
     }
 
@@ -71,6 +87,57 @@ impl TestBroker {
     /// Frames published so far, clearing the record.
     pub fn take_published(&self) -> Vec<BrokerFrame> {
         std::mem::take(&mut *lock(&self.published))
+    }
+
+    /// Forget every room's history (as if Redis lost its data): the next
+    /// message starts a new epoch.
+    pub fn lose_history(&self) {
+        lock(&self.history).clear();
+    }
+
+    fn kept<'a>(
+        &self,
+        map: &'a mut std::collections::HashMap<Arc<str>, Kept>,
+        room: &Arc<str>,
+    ) -> &'a mut Kept {
+        map.entry(Arc::clone(room)).or_insert_with(|| Kept {
+            epoch: Arc::from(format!(
+                "test-{}",
+                self.epochs.fetch_add(1, Ordering::SeqCst)
+            )),
+            top: 0,
+            entries: Default::default(),
+            bytes: 0,
+        })
+    }
+
+    /// Give a kept frame its offset and store it (what the Redis script does).
+    fn keep(&self, f: &BrokerFrame, keep: &Keep) -> BrokerFrame {
+        let mut map = lock(&self.history);
+        let k = self.kept(&mut map, &f.room_key);
+        k.top += 1;
+        let mut g = f.clone();
+        g.offset = Some(k.top);
+        g.keep = None;
+        let size = match &g.body {
+            crate::spi::OutFrame::Text(t) => t.as_bytes().len(),
+            _ => 0,
+        };
+        let now = std::time::Instant::now();
+        k.entries.push_back((now, g.clone(), size));
+        k.bytes += size;
+        while let Some((at, _, n)) = k.entries.front() {
+            if k.entries.len() > keep.size
+                || k.bytes > keep.max_bytes
+                || now.duration_since(*at) > keep.ttl
+            {
+                k.bytes -= *n;
+                k.entries.pop_front();
+            } else {
+                break;
+            }
+        }
+        g
     }
 
     /// Every subscription command applied so far, in order.
@@ -172,6 +239,14 @@ impl Broker for TestBroker {
         }
         lock(&self.published).extend(batch.iter().cloned());
         for f in batch {
+            let kept;
+            let f = match &f.keep {
+                Some(keep) => {
+                    kept = self.keep(f, keep);
+                    &kept
+                }
+                None => f,
+            };
             if lock(&self.subscribed).contains(&f.room_key) {
                 // Through the wire format, as a real broker would.
                 let Some(bytes) = wire::encode(f) else {
@@ -199,6 +274,42 @@ impl Broker for TestBroker {
         }
         lock(&self.commands).push(cmd.clone());
         Ok(())
+    }
+
+    async fn history(
+        &self,
+        room_key: &str,
+        keep: &Keep,
+        from: Option<&Recover>,
+    ) -> Result<HistoryRead, BrokerError> {
+        let mut map = lock(&self.history);
+        let k = self.kept(&mut map, &Arc::from(room_key));
+        let now = std::time::Instant::now();
+        while let Some((at, _, n)) = k.entries.front() {
+            if now.duration_since(*at) > keep.ttl {
+                k.bytes -= *n;
+                k.entries.pop_front();
+            } else {
+                break;
+            }
+        }
+        let replay = from.and_then(|from| {
+            let first = k
+                .entries
+                .front()
+                .and_then(|(_, f, _)| f.offset)
+                .unwrap_or(k.top + 1);
+            (*from.epoch == *k.epoch && from.offset <= k.top && from.offset + 1 >= first).then(
+                || {
+                    k.entries
+                        .iter()
+                        .filter(|(_, f, _)| f.offset.is_some_and(|o| o > from.offset))
+                        .map(|(_, f, _)| f.clone())
+                        .collect()
+                },
+            )
+        });
+        Ok(HistoryRead::new(Arc::clone(&k.epoch), k.top, replay))
     }
 
     fn incoming(&self) -> Option<mpsc::Receiver<Incoming>> {

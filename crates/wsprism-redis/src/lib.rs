@@ -16,6 +16,13 @@
 //!   heartbeat; member ids carry it.
 //! - **Gaps** (§4): when a subscriber connection drops, it reconnects,
 //!   resubscribes and reports its rooms as a gap (`sys.gap` to members).
+//! - **History** (§3, R3-2): a kept message gets its offset, is stored and
+//!   published by one Lua script (`PUBLISH_KEPT`), so offsets, history and
+//!   delivery order agree on every node. Per room (one hash tag):
+//!   `:seq` (last offset), `:epoch`, `:log` (sorted set, score = offset,
+//!   member = `<ms>:<frame>`), `:bytes`. If Redis loses part of them
+//!   (restart, eviction), a new epoch starts: clients resync instead of
+//!   resuming from offsets that mean something else now.
 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]
@@ -36,8 +43,88 @@ use tokio::sync::{mpsc, oneshot, OnceCell};
 use tokio::task::JoinHandle;
 
 use wsprism_engine::broker::{
-    wire, Broker, BrokerError, BrokerFrame, BrokerMode, Incoming, Subscription, MAX_NODE_SLOT,
+    wire, Broker, BrokerError, BrokerFrame, BrokerMode, HistoryRead, Incoming, Keep, Subscription,
+    MAX_NODE_SLOT,
 };
+use wsprism_engine::spi::Recover;
+
+/// How long a quiet room's position (`seq`, `epoch`) outlives its last
+/// message or join: a client may resume that long after (with nothing
+/// missed) without being told to resync.
+const POSITION_TTL: Duration = Duration::from_secs(24 * 3600);
+
+/// KEYS: seq, epoch, log, bytes. ARGV: frame head, text, channel, size,
+/// ttl ms, max bytes, epoch candidate, position ttl ms. Returns the offset.
+const PUBLISH_KEPT: &str = r"
+local size, ttl, maxb, pttl = tonumber(ARGV[4]), tonumber(ARGV[5]), tonumber(ARGV[6]), tonumber(ARGV[8])
+if redis.call('EXISTS', KEYS[1]) == 0 or redis.call('EXISTS', KEYS[2]) == 0 then
+  redis.call('SET', KEYS[2], ARGV[7])
+  redis.call('SET', KEYS[1], 0)
+  redis.call('DEL', KEYS[3], KEYS[4])
+end
+local o = redis.call('INCR', KEYS[1])
+local s = tostring(o)
+local msg = ARGV[1] .. string.char(#s) .. s .. ARGV[2]
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+redis.call('ZADD', KEYS[3], o, now .. ':' .. msg)
+local b = redis.call('INCRBY', KEYS[4], #msg)
+local n = redis.call('ZCARD', KEYS[3])
+while n > 0 do
+  local head = redis.call('ZRANGE', KEYS[3], 0, 0)[1]
+  local sep = string.find(head, ':', 1, true)
+  if n > size or b > maxb or now - tonumber(string.sub(head, 1, sep - 1)) > ttl then
+    redis.call('ZREMRANGEBYRANK', KEYS[3], 0, 0)
+    b = redis.call('DECRBY', KEYS[4], #head - sep)
+    n = n - 1
+  else
+    break
+  end
+end
+redis.call('PEXPIRE', KEYS[3], ttl)
+redis.call('PEXPIRE', KEYS[4], ttl)
+redis.call('PEXPIRE', KEYS[1], pttl)
+redis.call('PEXPIRE', KEYS[2], pttl)
+redis.call('PUBLISH', ARGV[3], msg)
+return o
+";
+
+/// KEYS: seq, epoch, log, bytes. ARGV: since ('' = position only), epoch
+/// asked, ttl ms, epoch candidate, position ttl ms. Returns
+/// `{epoch, top}` or `{epoch, top, ok, {members...}}`.
+const READ_KEPT: &str = r"
+local ttl, pttl = tonumber(ARGV[3]), tonumber(ARGV[5])
+if redis.call('EXISTS', KEYS[1]) == 0 or redis.call('EXISTS', KEYS[2]) == 0 then
+  redis.call('SET', KEYS[2], ARGV[4])
+  redis.call('SET', KEYS[1], 0)
+  redis.call('DEL', KEYS[3], KEYS[4])
+end
+redis.call('PEXPIRE', KEYS[1], pttl)
+redis.call('PEXPIRE', KEYS[2], pttl)
+local ep = redis.call('GET', KEYS[2])
+local top = tonumber(redis.call('GET', KEYS[1]))
+if ARGV[1] == '' then return {ep, top} end
+local since = tonumber(ARGV[1])
+if ARGV[2] ~= ep or since > top then return {ep, top, 0} end
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+while true do
+  local head = redis.call('ZRANGE', KEYS[3], 0, 0)[1]
+  if not head then break end
+  local sep = string.find(head, ':', 1, true)
+  if now - tonumber(string.sub(head, 1, sep - 1)) > ttl then
+    redis.call('ZREMRANGEBYRANK', KEYS[3], 0, 0)
+    redis.call('DECRBY', KEYS[4], #head - sep)
+  else
+    break
+  end
+end
+local first = redis.call('ZRANGE', KEYS[3], 0, 0, 'WITHSCORES')
+local f = top + 1
+if first[2] then f = tonumber(first[2]) end
+if since + 1 < f then return {ep, top, 0} end
+return {ep, top, 1, redis.call('ZRANGEBYSCORE', KEYS[3], '(' .. since, '+inf')}
+";
 
 /// How to reach Redis and how to use it.
 #[derive(Debug, Clone)]
@@ -84,6 +171,11 @@ impl RedisConfig {
     }
 }
 
+/// The four keys of a room's history (one hash tag).
+fn history_keys(prefix: &str, room_key: &str) -> [String; 4] {
+    ["seq", "epoch", "log", "bytes"].map(|k| format!("{prefix}:h:{{{room_key}}}:{k}"))
+}
+
 struct ShardCmd {
     sub: Subscription,
     ack: oneshot::Sender<Result<(), BrokerError>>,
@@ -92,6 +184,8 @@ struct ShardCmd {
 /// See the crate docs.
 pub struct RedisBroker {
     client: redis::Client,
+    publish_kept: redis::Script,
+    read_kept: redis::Script,
     cfg: RedisConfig,
     node_id: String,
     conn: OnceCell<ConnectionManager>,
@@ -122,6 +216,8 @@ impl RedisBroker {
         let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_QUEUE);
         Ok(Self {
             client,
+            publish_kept: redis::Script::new(PUBLISH_KEPT),
+            read_kept: redis::Script::new(READ_KEPT),
             cfg,
             node_id: random_id(),
             conn: OnceCell::new(),
@@ -195,6 +291,13 @@ impl Broker for RedisBroker {
             .await
             .map_err(unavailable)?;
         let slot = self.lease(&mut conn).await?;
+        // Pipelined publishes call the script by hash: load it up front.
+        let _: String = redis::cmd("SCRIPT")
+            .arg("LOAD")
+            .arg(PUBLISH_KEPT)
+            .query_async(&mut conn)
+            .await
+            .map_err(unavailable)?;
         tracing::info!(slot, node = %self.node_id, "redis broker: node slot claimed");
         let mut tasks = lock(&self.tasks);
         tasks.push(tokio::spawn(heartbeat(
@@ -229,14 +332,53 @@ impl Broker for RedisBroker {
             .ok_or_else(|| BrokerError::Unavailable("not started".into()))?;
         let mut pipe = redis::pipe();
         for f in batch {
-            if let Some(bytes) = wire::encode(f) {
-                pipe.cmd("PUBLISH")
-                    .arg(self.channel(&f.room_key))
-                    .arg(bytes.as_ref())
-                    .ignore();
+            match (&f.keep, wire::encode_kept(f)) {
+                (Some(keep), Some((head, text))) => {
+                    let [seq, epoch, log, bytes] = history_keys(&self.cfg.prefix, &f.room_key);
+                    pipe.cmd("EVALSHA")
+                        .arg(self.publish_kept.get_hash())
+                        .arg(4)
+                        .arg(seq)
+                        .arg(epoch)
+                        .arg(log)
+                        .arg(bytes)
+                        .arg(head.as_ref())
+                        .arg(text.as_ref())
+                        .arg(self.channel(&f.room_key))
+                        .arg(keep.size)
+                        .arg(keep.ttl.as_millis() as u64)
+                        .arg(keep.max_bytes)
+                        .arg(random_id())
+                        .arg(POSITION_TTL.as_millis() as u64)
+                        .ignore();
+                }
+                _ => {
+                    if let Some(bytes) = wire::encode(f) {
+                        pipe.cmd("PUBLISH")
+                            .arg(self.channel(&f.room_key))
+                            .arg(bytes.as_ref())
+                            .ignore();
+                    }
+                }
             }
         }
-        pipe.query_async::<()>(&mut conn).await.map_err(unavailable)
+        match pipe.query_async::<()>(&mut conn).await {
+            Ok(()) => Ok(()),
+            // Redis restarted and forgot the script: load it and let the
+            // outbox retry the batch. Commands before the failing one ran
+            // already, so a message may then be delivered twice (a kept one
+            // under a second offset) — rare, and clients drop what they
+            // have already seen by offset only within one offset.
+            Err(e) if e.code() == Some("NOSCRIPT") => {
+                let _: Result<String, _> = redis::cmd("SCRIPT")
+                    .arg("LOAD")
+                    .arg(PUBLISH_KEPT)
+                    .query_async(&mut conn)
+                    .await;
+                Err(BrokerError::Unavailable("script reloaded".into()))
+            }
+            Err(e) => Err(unavailable(e)),
+        }
     }
 
     async fn subscription(&self, cmd: &Subscription) -> Result<(), BrokerError> {
@@ -257,6 +399,35 @@ impl Broker for RedisBroker {
             .map_err(|_| BrokerError::Unavailable("subscriber stopped".into()))?;
         done.await
             .map_err(|_| BrokerError::Unavailable("subscriber stopped".into()))?
+    }
+
+    async fn history(
+        &self,
+        room_key: &str,
+        keep: &Keep,
+        from: Option<&Recover>,
+    ) -> Result<HistoryRead, BrokerError> {
+        let mut conn = self
+            .conn
+            .get()
+            .cloned()
+            .ok_or_else(|| BrokerError::Unavailable("not started".into()))?;
+        let [seq, epoch, log, bytes] = history_keys(&self.cfg.prefix, room_key);
+        let reply: redis::Value = self
+            .read_kept
+            .key(seq)
+            .key(epoch)
+            .key(log)
+            .key(bytes)
+            .arg(from.map_or(String::new(), |f| f.offset.to_string()))
+            .arg(from.map_or("", |f| f.epoch.as_str()))
+            .arg(keep.ttl.as_millis() as u64)
+            .arg(random_id())
+            .arg(POSITION_TTL.as_millis() as u64)
+            .invoke_async(&mut conn)
+            .await
+            .map_err(unavailable)?;
+        parse_read(&reply)
     }
 
     fn incoming(&self) -> Option<mpsc::Receiver<Incoming>> {
@@ -376,6 +547,41 @@ async fn run_shard(
             }
         }
     }
+}
+
+/// `{epoch, top}` or `{epoch, top, ok, {members}}` from `READ_KEPT`.
+fn parse_read(v: &redis::Value) -> Result<HistoryRead, BrokerError> {
+    use redis::Value as V;
+    let bad = || BrokerError::Rejected("unexpected history reply".into());
+    let V::Array(items) = v else {
+        return Err(bad());
+    };
+    let epoch: Arc<str> = match items.first() {
+        Some(V::BulkString(b)) => Arc::from(String::from_utf8_lossy(b).as_ref()),
+        _ => return Err(bad()),
+    };
+    let top = match items.get(1) {
+        Some(V::Int(n)) => u64::try_from(*n).map_err(|_| bad())?,
+        _ => return Err(bad()),
+    };
+    let replay = match (items.get(2), items.get(3)) {
+        (Some(V::Int(1)), Some(V::Array(members))) => {
+            let mut frames = Vec::with_capacity(members.len());
+            for m in members {
+                let V::BulkString(b) = m else {
+                    return Err(bad());
+                };
+                // `<ms>:<frame>`
+                let at = b.iter().position(|&c| c == b':').ok_or_else(bad)?;
+                let frame = wire::decode(&Bytes::copy_from_slice(&b[at + 1..]))
+                    .map_err(|e| BrokerError::Rejected(e.to_string()))?;
+                frames.push(frame);
+            }
+            Some(frames)
+        }
+        _ => None,
+    };
+    Ok(HistoryRead::new(epoch, top, replay))
 }
 
 /// A node id nobody else has: process id, time and per-process randomness.

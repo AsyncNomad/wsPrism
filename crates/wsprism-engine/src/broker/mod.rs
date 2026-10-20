@@ -28,7 +28,7 @@ use tokio::sync::mpsc;
 
 use crate::realtime::types::{OutFrame, QoS};
 
-pub(crate) use outbox::{run_outbox, BrokerOutbox};
+pub(crate) use outbox::{run_outbox, BrokerOutbox, Subscribed};
 pub use outbox::{OutboxCounters, OutboxLimits};
 
 /// How the engine uses a broker (see the module docs).
@@ -63,6 +63,59 @@ pub struct BrokerFrame {
     /// A session of the origin node to skip (e.g. the member a
     /// `member_joined` is about). Ignored by other nodes.
     pub except: Option<Arc<str>>,
+    /// Keep this message in the room's history (ADR 0011 §3): the broker
+    /// gives it the room's next offset. Text frames only.
+    pub keep: Option<Keep>,
+    /// The offset the broker gave a kept message (incoming frames).
+    pub offset: Option<u64>,
+}
+
+/// How a history room keeps messages (from the tenant's `history` rule).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Keep {
+    /// Messages kept.
+    pub size: usize,
+    /// How long one is kept.
+    pub ttl: std::time::Duration,
+    /// Bytes kept.
+    pub max_bytes: usize,
+}
+
+impl Keep {
+    /// Keep `size` messages for `ttl`, at most `max_bytes`.
+    pub fn new(size: usize, ttl: std::time::Duration, max_bytes: usize) -> Self {
+        Self {
+            size,
+            ttl,
+            max_bytes,
+        }
+    }
+}
+
+/// A history room's position and, if asked and possible, what a client
+/// missed ([`Broker::history`]).
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct HistoryRead {
+    /// The history's lifetime id.
+    pub epoch: Arc<str>,
+    /// The latest offset (0 = none yet).
+    pub offset: u64,
+    /// `Some` = the client can resume: these frames (with offsets), in order.
+    /// `None` = it cannot (or did not ask).
+    pub replay: Option<Vec<BrokerFrame>>,
+}
+
+impl HistoryRead {
+    /// Position `epoch`/`offset` with `replay`.
+    pub fn new(epoch: Arc<str>, offset: u64, replay: Option<Vec<BrokerFrame>>) -> Self {
+        Self {
+            epoch,
+            offset,
+            replay,
+        }
+    }
 }
 
 impl BrokerFrame {
@@ -76,6 +129,8 @@ impl BrokerFrame {
             qos,
             body,
             except: None,
+            keep: None,
+            offset: None,
         }
     }
 
@@ -156,6 +211,18 @@ pub trait Broker: Send + Sync + 'static {
 
     /// Apply one subscription change. Queued mode only.
     async fn subscription(&self, cmd: &Subscription) -> Result<(), BrokerError>;
+
+    /// A history room's position (`from` = `None`) or what was missed after
+    /// `from` (ADR 0011 §3). Queued brokers that keep history implement it;
+    /// the engine never calls it otherwise.
+    async fn history(
+        &self,
+        _room_key: &str,
+        _keep: &Keep,
+        _from: Option<&crate::realtime::core::Recover>,
+    ) -> Result<HistoryRead, BrokerError> {
+        Err(BrokerError::Rejected("this broker keeps no history".into()))
+    }
 
     /// The stream of incoming frames. Called once, when the engine starts;
     /// `None` for inline brokers.

@@ -66,6 +66,11 @@ impl SessionSignals {
         self.close.lock().unwrap_or_else(|p| p.into_inner())
     }
 
+    /// True if someone asked this session to close.
+    pub fn close_requested(&self) -> bool {
+        self.lock().is_some()
+    }
+
     /// Ask the session to close (C8). The first request wins; later ones are
     /// ignored and return false. Never blocks on the session.
     pub fn request_close(&self, req: CloseRequest) -> bool {

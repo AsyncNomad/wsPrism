@@ -38,6 +38,11 @@ pub struct HistoryRule {
 }
 
 impl HistoryRule {
+    /// The limits a queued broker applies.
+    pub(crate) fn keep(&self) -> crate::broker::Keep {
+        crate::broker::Keep::new(self.size, self.ttl, self.max_bytes)
+    }
+
     /// Keep the last `size` messages of matching rooms for `ttl`, at most
     /// `max_bytes` per room.
     pub fn new(rooms: RoomPattern, size: usize, ttl: Duration, max_bytes: usize) -> Self {
@@ -220,6 +225,17 @@ impl History {
                 Arc::new(Mutex::new(Ring::new(rule.clone(), self.epochs.next())))
             }),
         ))
+    }
+
+    /// The rule covering `room_key`, if any (queued brokers keep the
+    /// history themselves; this node only needs the limits).
+    pub(crate) fn rule(&self, room_key: &str) -> Option<&HistoryRule> {
+        let (tenant, room) = room_key.split_once("::")?;
+        self.config
+            .tenants
+            .get(tenant)?
+            .iter()
+            .find(|r| r.rooms.matches(room))
     }
 
     /// Forget rooms that have no local members and nothing kept (their next

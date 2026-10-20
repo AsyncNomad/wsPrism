@@ -74,17 +74,27 @@ gateway:
 - **Metrics:** `wsprism_broker_outbox_refused_total`,
   `wsprism_broker_retries_total`, `wsprism_broker_failed_total`.
 - **TLS:** `rediss://` (rustls, system roots).
-- **Least-privilege ACL** (verified by the cluster tests; `wsp` = your
-  prefix):
+- **History** (`tenants[].history`) works across nodes: Redis gives each
+  kept message its offset (one Lua script stores and publishes it), so
+  every node sees the same offsets, and a client can resume on any node.
+  Per room the history takes `max_bytes` of Redis memory at most, plus two
+  small keys that outlive the last message by 24 h (the position). If Redis
+  loses them (restart without persistence, eviction), the room starts a new
+  epoch and clients resync — prefer a Redis with `maxmemory-policy
+  noeviction` (or `volatile-*`) for history.
+- **Session queues:** frames from Redis arrive in batches (up to 256), so
+  keep `gateway.session_queue_capacity` well above that (the default 1024
+  is fine); a small queue closes healthy readers as slow consumers.
+- **Least-privilege ACL** (verified by the cluster tests, including the
+  commands the Lua scripts run; `wsp` = your prefix):
 
   ```
-  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +pexpire +eval +evalsha +script|load +client|setinfo
+  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +del +exists +incr +incrby +decrby +pexpire +time +zadd +zcard +zrange +zrangebyscore +zremrangebyrank +eval +evalsha +script|load +client|setinfo
   ```
 
   (`client|setinfo` is optional: without it the client library's
   identification is refused and logged by Redis, nothing else.)
-- **Not yet (ADR 0011 R3-R4):** room history with a cluster broker (startup
-  fails with `tenants[].history`), shared one-time tickets (a ticket works
+- **Not yet (ADR 0011 R3-R4):** shared one-time tickets (a ticket works
   only on the node that issued it), cluster-wide presence queries,
   disconnects and sid replacement. Session and room limits are per node.
 - **Scope:** one Redis (or Sentinel-managed primary). Keys use Redis Cluster
@@ -117,8 +127,8 @@ tenants:
 Memory: up to `max_bytes` per history room, so budget
 `max_bytes × rooms that match` (bounded by `limits.max_rooms_total`). A room
 with no members and nothing kept is forgotten after `ttl_s`; its next message
-starts a new epoch. History needs a single node for now (a cluster broker
-fails at startup with history rules, ADR 0011 R3).
+starts a new epoch. With the Redis broker, Redis keeps the history (see
+"Cluster broker").
 
 ---
 

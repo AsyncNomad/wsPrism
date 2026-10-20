@@ -47,6 +47,7 @@ tenants:
   - id: t
     api_keys: [{{ name: backend, sha256: "{hash}" }}]
     policy: {{ ext_allowlist: ["room:*", "chat:*"], hot_allowlist: ["1:*"], presence_events: true }}
+    history: [{{ rooms: "chat:*", size: 100, ttl_s: 600 }}]
 "#
     );
     let cfg = wsprism_gateway::config::load_from_str(&yaml).unwrap();
@@ -209,4 +210,131 @@ async fn node_slots_are_kept_alive_and_distinct() {
             .unwrap();
         assert!(owner.is_some(), "slot {slot} expired despite the heartbeat");
     }
+}
+
+/// Cluster history (ADR 0011 R3-2): offsets come from Redis, so they agree
+/// across nodes, and a client that left node A resumes on node B.
+#[tokio::test]
+async fn history_is_shared_and_recovery_works_across_nodes() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("hist");
+    let (a_node, b_node) = (node(&url, &p).await, node(&url, &p).await);
+    let mut alice = user(&a_node, "alice").await;
+    let mut bob = user(&b_node, "bob").await;
+    let ja = join(&mut alice, "chat:1").await;
+    let epoch = ja["epoch"].as_str().expect("epoch").to_string();
+    assert_eq!(ja["offset"], 0);
+    let jb = join(&mut bob, "chat:1").await;
+    assert_eq!(
+        jb["epoch"].as_str(),
+        Some(epoch.as_str()),
+        "one history for the cluster"
+    );
+
+    send_json(
+        &mut bob,
+        json!({"svc":"chat","type":"send","room":"chat:1","data":{"msg":"one"}}),
+    )
+    .await;
+    let on_a = next_of(&mut alice, "msg").await;
+    let on_b = next_of(&mut bob, "msg").await;
+    assert_eq!(
+        (on_a["offset"].as_u64(), on_b["offset"].as_u64()),
+        (Some(1), Some(1))
+    );
+
+    // Alice drops off node A; bob keeps talking on node B.
+    drop(alice);
+    for m in ["two", "three", "four"] {
+        send_json(
+            &mut bob,
+            json!({"svc":"chat","type":"send","room":"chat:1","data":{"msg":m}}),
+        )
+        .await;
+    }
+    for _ in 0..3 {
+        next_of(&mut bob, "msg").await;
+    }
+
+    // She comes back on node B and resumes after offset 1.
+    let mut alice = user(&b_node, "alice").await;
+    send_json(
+        &mut alice,
+        json!({"svc":"room","type":"join","room":"chat:1","seq":2,
+               "data":{"recover":{"epoch": epoch, "offset": 1}}}),
+    )
+    .await;
+    let j = next_of(&mut alice, "joined").await;
+    assert_eq!(j["recovered"], true, "{j}");
+    assert_eq!(j["offset"], 4);
+    let mut got = Vec::new();
+    for _ in 0..3 {
+        let m = next_of(&mut alice, "msg").await;
+        got.push((
+            m["offset"].as_u64().unwrap(),
+            m["data"]["msg"].as_str().unwrap().to_string(),
+        ));
+    }
+    assert_eq!(
+        got,
+        [(2, "two".into()), (3, "three".into()), (4, "four".into())]
+    );
+
+    // Then live, from node A this time.
+    let mut carol = user(&a_node, "carol").await;
+    join(&mut carol, "chat:1").await;
+    send_json(
+        &mut carol,
+        json!({"svc":"chat","type":"send","room":"chat:1","data":{"msg":"five"}}),
+    )
+    .await;
+    let m = next_of(&mut alice, "msg").await;
+    assert_eq!(
+        (m["offset"].as_u64(), m["data"]["msg"].as_str()),
+        (Some(5), Some("five"))
+    );
+}
+
+/// If Redis loses part of a room's history (restart, eviction), a new epoch
+/// starts: a client resyncs instead of resuming from offsets that now mean
+/// something else.
+#[tokio::test]
+async fn lost_history_starts_a_new_epoch() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("lost");
+    let a_node = node(&url, &p).await;
+    let mut alice = user(&a_node, "alice").await;
+    join(&mut alice, "chat:1").await;
+    send_json(
+        &mut alice,
+        json!({"svc":"chat","type":"send","room":"chat:1","data":{"msg":"one"}}),
+    )
+    .await;
+    let m = next_of(&mut alice, "msg").await;
+    let epoch = {
+        let mut probe = user(&a_node, "probe").await;
+        join(&mut probe, "chat:1").await["epoch"].clone()
+    };
+    assert_eq!(m["offset"], 1);
+
+    // Only the counter is lost.
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut c = client.get_multiplexed_async_connection().await.unwrap();
+    let _: i64 = redis::cmd("DEL")
+        .arg(format!("{p}:h:{{t::chat:1}}:seq"))
+        .query_async(&mut c)
+        .await
+        .unwrap();
+
+    let mut bob = user(&a_node, "bob").await;
+    send_json(
+        &mut bob,
+        json!({"svc":"room","type":"join","room":"chat:1","seq":2,
+               "data":{"recover":{"epoch": epoch, "offset": 1}}}),
+    )
+    .await;
+    let j = next_of(&mut bob, "joined").await;
+    assert_eq!(j["recovered"], false, "{j}");
+    assert_ne!(j["epoch"], epoch, "a new epoch");
+    assert_eq!(j["offset"], 0);
 }

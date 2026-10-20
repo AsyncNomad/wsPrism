@@ -180,7 +180,7 @@ fn recovering_joins_racing_publishers_see_each_offset_once_in_order() {
 }
 
 #[test]
-fn history_needs_the_single_node_broker_for_now() {
+fn history_with_a_queued_broker_is_kept_by_the_broker() {
     let broker = wsprism_engine::broker::testing::TestBroker::new(0);
     let core = RealtimeCore::with_broker(broker, Default::default()).unwrap();
     let mut h = HistoryConfig::default();
@@ -188,5 +188,128 @@ fn history_needs_the_single_node_broker_for_now() {
         "t",
         HistoryRule::new(RoomPattern::parse("*"), 10, Duration::from_secs(1), 1024),
     );
-    assert!(core.with_history(h).is_err());
+    let core = core.with_history(h).unwrap();
+    // No ring here: the broker keeps it.
+    drop(core);
+}
+
+/// The cluster path (ADR 0011 R3-2): a queued broker keeps the history and
+/// a recovering join holds the room's frames aside while it reads it. With
+/// publishers racing, each offset still arrives exactly once, in order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cluster_recovering_joins_racing_publishers_see_each_offset_once_in_order() {
+    let broker = wsprism_engine::broker::testing::TestBroker::new(0);
+    let mut h = HistoryConfig::default();
+    h.add(
+        "t",
+        HistoryRule::new(
+            RoomPattern::parse("h:*"),
+            1_000_000,
+            Duration::from_secs(600),
+            1 << 30,
+        ),
+    );
+    let core = Arc::new(
+        RealtimeCore::with_broker(broker, Default::default())
+            .unwrap()
+            .with_history(h)
+            .unwrap(),
+    );
+    let _tasks = core.start().await.unwrap();
+    let room_key = RealtimeCore::room_key("t", "h:1");
+    let (mut first, _first_rx) = session(&core, "first");
+    let keep = first
+        .cluster_history("h:1")
+        .expect("a cluster history room");
+    first
+        .join_room_recovering("h:1", keep, None, |_, _| serde_json::json!({}))
+        .await
+        .unwrap();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let publishers: Vec<_> = (0..2)
+        .map(|_| {
+            let (core, stop, room_key) = (Arc::clone(&core), Arc::clone(&stop), room_key.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    // The outbox may be momentarily full: that is a refusal,
+                    // not a lost message.
+                    let _ = core.publish_room(
+                        &room_key,
+                        Outgoing {
+                            qos: QoS::Reliable,
+                            payload: Payload::TextJson(serde_json::json!({"type": "m"})),
+                        },
+                    );
+                    std::thread::sleep(Duration::from_micros(50));
+                }
+            })
+        })
+        .collect();
+
+    let mut checked = 0;
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let mut round = 0;
+    while checked < 2000 && std::time::Instant::now() < deadline {
+        round += 1;
+        let (mut c, mut rx) = session(&core, &format!("u{round}"));
+        let mut epoch = String::new();
+        c.join_room_recovering("h:1", keep, None, |_, out| {
+            let pos = out.history.as_ref().unwrap();
+            epoch = pos.epoch.to_string();
+            serde_json::json!({"type": "joined", "offset": pos.offset})
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        let mut seen = drain(&mut rx);
+        let start = seen[0]["offset"].as_u64().unwrap();
+        c.leave_room("h:1");
+        tokio::time::sleep(Duration::from_millis(5)).await; // frames in flight land
+        seen.extend(drain(&mut rx));
+        let last = seen
+            .iter()
+            .rev()
+            .find_map(|v| v["offset"].as_u64())
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await; // miss some
+        let recover = Recover {
+            epoch: epoch.clone(),
+            offset: last,
+        };
+        c.join_room_recovering("h:1", keep, Some(&recover), |_, out| {
+            assert_eq!(out.recovered, Some(true));
+            serde_json::json!({"type": "joined"})
+        })
+        .await
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(2)).await;
+        seen.extend(drain(&mut rx));
+        let offsets: Vec<u64> = seen
+            .iter()
+            .filter(|v| v["type"] == "m")
+            .map(|v| v["offset"].as_u64().unwrap())
+            .collect();
+        let expected: Vec<u64> = (start + 1..start + 1 + offsets.len() as u64).collect();
+        assert_eq!(offsets, expected, "round {round}");
+        assert!(
+            !seen.iter().any(|v| v["type"] == "gap"),
+            "no gap expected in round {round}"
+        );
+        checked += offsets.len();
+        core.remove_session_presence(
+            "t",
+            &format!("t::u{round}"),
+            &format!("t::u{round}::s"),
+            false,
+        );
+    }
+    stop.store(true, Ordering::Relaxed);
+    for p in publishers {
+        p.join().unwrap();
+    }
+    assert!(
+        checked >= 2000,
+        "the race was exercised ({checked} messages in {round} rounds)"
+    );
 }

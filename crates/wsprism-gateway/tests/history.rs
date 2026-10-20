@@ -8,7 +8,9 @@ mod common;
 use std::time::Duration;
 
 use common::*;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
+use tokio_tungstenite::tungstenite::Message;
 
 const KEY: &str = "key-h";
 
@@ -31,17 +33,11 @@ tenants:
     )
 }
 
-/// History needs the single-node broker for now (ADR 0011 R3), so these
-/// tests ignore `WSPRISM_TEST_BROKER`.
+/// With `WSPRISM_TEST_BROKER=queued` the history is kept by the queued test
+/// broker (the cluster path, ADR 0011 R3-2) instead of the node.
 async fn gateway(queue: usize, size: usize) -> ApiGateway {
     let cfg = wsprism_gateway::config::load_from_str(&yaml(queue, size)).unwrap();
-    spawn_built_with_api(
-        wsprism_gateway::Gateway::builder()
-            .config(cfg)
-            .build()
-            .unwrap(),
-    )
-    .await
+    spawn_built_with_api(builder().config(cfg).build().unwrap()).await
 }
 
 async fn user(gw: &ApiGateway, name: &str) -> Ws {
@@ -155,6 +151,9 @@ async fn a_returning_client_gets_what_it_missed_in_order() {
     for m in ["m2", "m3", "m4"] {
         say(&mut b, "chat:1", m).await;
     }
+    // Their offsets are given when bob's session handles them; wait, so the
+    // server publish below comes after them.
+    chats(&mut b, 3).await;
     // A server publish while away (no `room` of its own? it has one).
     let (status, _) = http(
         gw.api,
@@ -259,6 +258,13 @@ async fn presence_events_are_not_kept_or_replayed() {
 /// back, and resumes without losing anything.
 #[tokio::test]
 async fn a_slow_consumer_resumes_where_it_was_closed() {
+    // A queued broker hands frames over in bursts, which overflow even a
+    // reader that keeps up with this test's tiny 32-frame queue. Recovery of
+    // more than the queue holds is covered in both modes by
+    // `a_replay_larger_than_the_queue_arrives_whole`.
+    if std::env::var("WSPRISM_TEST_BROKER").as_deref() == Ok("queued") {
+        return;
+    }
     let gw = gateway(32, 1000).await;
     let mut slow = user(&gw, "slow").await;
     let j = join(&mut slow, "chat:1", None).await;
@@ -266,14 +272,27 @@ async fn a_slow_consumer_resumes_where_it_was_closed() {
     let mut fast = user(&gw, "fast").await;
     join(&mut fast, "chat:1", None).await;
 
-    // `slow` stops reading; 200 messages overflow its 32-frame queue.
-    let mut last_fast = 0;
-    for i in 0..200 {
-        say(&mut fast, "chat:1", &format!("m{i}")).await;
+    // `slow` stops reading; bursts overflow its 32-frame queue. `fast`
+    // reads everything on another task, so only `slow` falls behind.
+    let (mut fast_tx, mut fast_rx) = fast.split();
+    tokio::spawn(async move { while fast_rx.next().await.is_some() {} });
+    // Bursts until the gateway closes it (how fast its writer drains into
+    // the socket varies, more so with a queued broker's batching).
+    let slow_open = || gw.state.realtime().sessions.count_user_sessions("t::slow") > 0;
+    let mut sent = 0;
+    while slow_open() && sent < 2000 {
+        for _ in 0..200 {
+            let m = json!({"svc":"chat","type":"send","room":"chat:1","data":{"msg":format!("m{sent}")}});
+            fast_tx.send(Message::Text(m.to_string())).await.unwrap();
+            sent += 1;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
     }
-    for (off, _) in chats(&mut fast, 200).await {
-        last_fast = off;
-    }
+    assert!(!slow_open(), "slow was never closed");
+    let mut probe = user(&gw, "probe").await;
+    let last_fast = join(&mut probe, "chat:1", None).await["offset"]
+        .as_u64()
+        .unwrap();
     // What `slow` got before it was closed.
     let mut last = 0;
     loop {
@@ -297,9 +316,42 @@ async fn a_slow_consumer_resumes_where_it_was_closed() {
     )
     .await;
     assert_eq!(j["recovered"], true, "{j}");
+    // (How many: whatever overflowed; the frames still queued at the close
+    // are sent before the close frame.)
     let n = (last_fast - last) as usize;
-    assert!(n > 32, "more than the queue holds ({n})");
     let offsets: Vec<u64> = chats(&mut s, n).await.into_iter().map(|(o, _)| o).collect();
     assert_eq!(offsets, ((last + 1)..=last_fast).collect::<Vec<_>>());
     no_more_chats(&mut s).await;
+}
+
+/// A replay larger than the session queue (32) arrives whole: it takes one
+/// queue entry.
+#[tokio::test]
+async fn a_replay_larger_than_the_queue_arrives_whole() {
+    let gw = gateway(32, 1000).await;
+    let mut a = user(&gw, "alice").await;
+    let epoch = join(&mut a, "chat:1", None).await["epoch"].clone();
+    drop(a);
+    let mut b = user(&gw, "bob").await;
+    join(&mut b, "chat:1", None).await;
+    for i in 0..100 {
+        // Server publishes: bob need not read (no queue pressure on him).
+        let (status, _) = http(
+            gw.api,
+            "POST",
+            "/api/v1/publish",
+            Some(KEY),
+            Some(json!({"room":"chat:1","data":{"msg":format!("m{i}")}})),
+        )
+        .await;
+        assert_eq!(status, 200);
+    }
+    let mut a = user(&gw, "alice").await;
+    let j = join(&mut a, "chat:1", Some(json!({"epoch": epoch, "offset": 0}))).await;
+    assert_eq!(j["recovered"], true, "{j}");
+    let mut offsets = Vec::new();
+    while offsets.len() < 100 {
+        offsets.push(next_of(&mut a, "publish").await["offset"].as_u64().unwrap());
+    }
+    assert_eq!(offsets, (1..=100).collect::<Vec<_>>());
 }

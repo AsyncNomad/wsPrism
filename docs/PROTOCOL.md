@@ -210,6 +210,9 @@ such a room:
   `recovered` field.
 - This is also how a slow consumer (closed with `slow_consumer`, C1) gets
   back what it missed: the replay is not limited by the session queue.
+- In a cluster, the gateway reads the history from Redis while it holds
+  the room's new messages aside (up to 1,000); if more arrive meanwhile it
+  sends `sys.gap` for the room after the replay.
 - Clients drop messages whose offset they have already seen (the JS SDK does
   this, and resumes automatically on reconnect).
 

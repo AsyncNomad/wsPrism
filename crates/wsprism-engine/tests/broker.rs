@@ -454,6 +454,7 @@ async fn remote_hot_frames_get_the_local_room_id() {
                     signals: SessionSignals::new(),
                 },
                 member_id: 0,
+                skip_upto: 0,
                 user: "x".into(),
             },
             &Default::default(),
