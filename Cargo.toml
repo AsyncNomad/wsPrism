@@ -58,6 +58,12 @@ ipnet = "2"
 # Applies to binaries built from this workspace; embedders set it in their
 # own profile (docs/API.md). End-to-end effect is ~0.1% (fan-out is ~1% of a
 # delivery's cost).
+# Dev/test builds: file and line numbers in backtraces, no full debug info.
+# Test binaries are 2-3x smaller; every code change leaves new copies in
+# target/debug, so this keeps it from growing by tens of GB a day.
+[profile.dev]
+debug = "line-tables-only"
+
 [profile.release]
 codegen-units = 1
 

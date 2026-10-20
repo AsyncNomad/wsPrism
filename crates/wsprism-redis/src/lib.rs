@@ -49,42 +49,39 @@ use wsprism_engine::broker::{
 use wsprism_engine::spi::Recover;
 
 /// How long a quiet room's position (`seq`, `epoch`) outlives its last
-/// message or join: a client may resume that long after (with nothing
-/// missed) without being told to resync.
+/// join or read (and, refreshed every 64th message, its messages): a client
+/// may resume that long after (with nothing missed) without being told to
+/// resync.
 const POSITION_TTL: Duration = Duration::from_secs(24 * 3600);
 
 /// KEYS: seq, epoch, log, bytes. ARGV: frame head, text, channel, size,
 /// ttl ms, max bytes, epoch candidate, position ttl ms. Returns the offset.
 const PUBLISH_KEPT: &str = r"
 local size, ttl, maxb, pttl = tonumber(ARGV[4]), tonumber(ARGV[5]), tonumber(ARGV[6]), tonumber(ARGV[8])
-if redis.call('EXISTS', KEYS[1]) == 0 or redis.call('EXISTS', KEYS[2]) == 0 then
-  redis.call('SET', KEYS[2], ARGV[7])
-  redis.call('SET', KEYS[1], 0)
+if redis.call('EXISTS', KEYS[1], KEYS[2]) < 2 then
+  redis.call('SET', KEYS[2], ARGV[7], 'PX', pttl)
+  redis.call('SET', KEYS[1], 0, 'PX', pttl)
   redis.call('DEL', KEYS[3], KEYS[4])
 end
 local o = redis.call('INCR', KEYS[1])
 local s = tostring(o)
 local msg = ARGV[1] .. string.char(#s) .. s .. ARGV[2]
 local t = redis.call('TIME')
-local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
-redis.call('ZADD', KEYS[3], o, now .. ':' .. msg)
+redis.call('ZADD', KEYS[3], o, (tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)) .. ':' .. msg)
 local b = redis.call('INCRBY', KEYS[4], #msg)
+-- Count and byte limits (age is enforced when reading).
 local n = redis.call('ZCARD', KEYS[3])
-while n > 0 do
-  local head = redis.call('ZRANGE', KEYS[3], 0, 0)[1]
-  local sep = string.find(head, ':', 1, true)
-  if n > size or b > maxb or now - tonumber(string.sub(head, 1, sep - 1)) > ttl then
-    redis.call('ZREMRANGEBYRANK', KEYS[3], 0, 0)
-    b = redis.call('DECRBY', KEYS[4], #head - sep)
-    n = n - 1
-  else
-    break
-  end
+while n > size or (b > maxb and n > 1) do
+  local head = redis.call('ZPOPMIN', KEYS[3])[1]
+  b = redis.call('DECRBY', KEYS[4], #head - string.find(head, ':', 1, true))
+  n = n - 1
 end
 redis.call('PEXPIRE', KEYS[3], ttl)
 redis.call('PEXPIRE', KEYS[4], ttl)
-redis.call('PEXPIRE', KEYS[1], pttl)
-redis.call('PEXPIRE', KEYS[2], pttl)
+if o % 64 == 0 then
+  redis.call('PEXPIRE', KEYS[1], pttl)
+  redis.call('PEXPIRE', KEYS[2], pttl)
+end
 redis.call('PUBLISH', ARGV[3], msg)
 return o
 ";
@@ -94,7 +91,7 @@ return o
 /// `{epoch, top}` or `{epoch, top, ok, {members...}}`.
 const READ_KEPT: &str = r"
 local ttl, pttl = tonumber(ARGV[3]), tonumber(ARGV[5])
-if redis.call('EXISTS', KEYS[1]) == 0 or redis.call('EXISTS', KEYS[2]) == 0 then
+if redis.call('EXISTS', KEYS[1], KEYS[2]) < 2 then
   redis.call('SET', KEYS[2], ARGV[4])
   redis.call('SET', KEYS[1], 0)
   redis.call('DEL', KEYS[3], KEYS[4])

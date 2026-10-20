@@ -4,6 +4,17 @@
 - 관련: [ROADMAP](../ROADMAP.md) M3·M4, [ADR 0006](0006-protocol-v2.md)(v2 프레임·`member_id`), [ADR 0008](0008-m2-lite-integration.md)(티켓·서버 API), [ADR 0010](0010-presence-events.md)(presence), [HARDENING C1](../HARDENING.md)(느린 수신자는 끊고 재동기화)
 - 사용자 결정(2026-10-19): "배포는 나중에, 최대한 대기업급에 가깝게부터"
 
+## A15 측정 결과와 후속 (2026-10-20)
+
+`docs/BENCHMARKS.md` 「클러스터 Broker 비용」. 요약:
+- Redis 이력 없는 Ext는 rooms:120(108만 전달/s)까지 단일 노드와 비슷하다(p99 약 2배, 게이트웨이 CPU +22%). 그러나 **rooms:240에서 전달률 0.6**이다. Redis는 코어의 15%만 썼으므로 원인은 게이트웨이의 수신 팬아웃이 task 하나에 몰린 것으로 추정한다.
+- 이력 Lua는 Redis 한 코어 기준 약 6~7만 발행/s가 천장이다.
+
+사용자 결정(2026-10-20): R4보다 먼저 클러스터 처리량을 개선한다.
+1. **수신 팬아웃 병렬화:** 구독 연결(룸 해시 고정)마다 자기 프레임을 직접 전달한다. 룸 순서는 연결별로 유지된다.
+2. **묶음 Lua:** 송신 큐 묶음 안의 보관 메시지를 Lua 호출 한 번에 처리한다.
+3. **송신 큐 대기 시간 상한:** 포화 직전 지연이 수백 ms로 늘지 않게 한다.
+
 ## R3-3 구현 (2026-10-20): 공유 1회용 티켓
 
 - **Broker의 공유 키-값(B6의 `kv`):** `SharedKv { put_once(key, value, ttl), take(key) }`, `Broker::kv() -> Option<&dyn SharedKv>`. Redis는 `<prefix>:kv:<key>`에 `SET NX PX`와 `GETDEL`(Redis 6.2+)을 쓴다. 원자적이라 여러 노드가 같은 티켓을 동시에 내밀어도 한 곳만 성공한다.

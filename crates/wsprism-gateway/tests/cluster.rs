@@ -48,7 +48,7 @@ tenants:
     auth: [{{ kind: dev }}, {{ kind: ticket }}]
     api_keys: [{{ name: backend, sha256: "{hash}" }}]
     policy: {{ ext_allowlist: ["room:*", "chat:*"], hot_allowlist: ["1:*"], presence_events: true }}
-    history: [{{ rooms: "chat:*", size: 100, ttl_s: 600 }}]
+    history: [{{ rooms: "chat:*", size: 100, ttl_s: 600 }}, {{ rooms: "small:*", size: 3, ttl_s: 600 }}]
 "#
     );
     let cfg = wsprism_gateway::config::load_from_str(&yaml).unwrap();
@@ -409,4 +409,45 @@ async fn tickets_work_on_any_node_once() {
         "{:?}",
         again.err()
     );
+}
+
+/// The Redis script keeps at most `size` messages: resuming before them is
+/// refused, resuming within them works (ADR 0011 R3-2).
+#[tokio::test]
+async fn redis_history_keeps_size_messages() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("size");
+    let a_node = node(&url, &p).await;
+    let mut bob = user(&a_node, "bob").await;
+    let epoch = join(&mut bob, "small:1").await["epoch"].clone();
+    for i in 1..=5 {
+        send_json(
+            &mut bob,
+            json!({"svc":"chat","type":"send","room":"small:1","data":{"msg":format!("m{i}")}}),
+        )
+        .await;
+        next_of(&mut bob, "msg").await;
+    }
+    let mut a = user(&a_node, "alice").await;
+    for (from, ok) in [(1, false), (2, true), (4, true), (5, true)] {
+        send_json(
+            &mut a,
+            json!({"svc":"room","type":"join","room":"small:1","seq":9,
+                   "data":{"recover":{"epoch": epoch, "offset": from}}}),
+        )
+        .await;
+        let j = next_of(&mut a, "joined").await;
+        assert_eq!(j["recovered"], ok, "from {from}: {j}");
+        if ok {
+            for want in from + 1..=5 {
+                assert_eq!(next_of(&mut a, "msg").await["offset"], want);
+            }
+        }
+        send_json(
+            &mut a,
+            json!({"svc":"room","type":"leave","room":"small:1"}),
+        )
+        .await;
+        next_of(&mut a, "left").await;
+    }
 }
