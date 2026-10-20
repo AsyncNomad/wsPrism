@@ -62,7 +62,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Cluster tests
-        run: cargo test -p wsprism-gateway --locked --test cluster --test cluster_gap
+        run: |
+          cargo test -p wsprism-gateway --locked --test cluster --test cluster_gap
+          cargo test -p wsprism-redis --locked
         env:
           WSPRISM_TEST_REDIS: redis://127.0.0.1:6379
 

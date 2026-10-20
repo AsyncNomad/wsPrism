@@ -57,8 +57,9 @@ the Rust API may break in 0.x minor releases, always listed here.
   Redis Lua script; resume on any node) and one-time tickets are shared
   (issued on any node, accepted once on any node). Sessions are
   cluster-wide: sid replacement, per-user limits (exact, one Redis script)
-  and the server API's disconnect span nodes. Not yet: cluster-wide
-  presence queries and leaves of a dead node's members.
+  and the server API's disconnect span nodes. Presence is cluster-wide
+  (queries, join snapshots), and the members of a node that dies are
+  announced as having left, once.
 - Server API publish answers 503 + `Retry-After` when a cluster broker's queue
   is full.
 
@@ -80,7 +81,7 @@ the Rust API may break in 0.x minor releases, always listed here.
 - Example app `examples/chat-and-state` (Node backend + SDK).
 
 ### Known limitations
-- The Redis cluster broker is experimental: presence queries are still per
-  node (ADR 0011 R4-2).
+- The Redis cluster broker is experimental until the chaos tests (ADR 0011
+  R5); tenant-wide session and room limits are per node.
 - Embedders should build with `codegen-units = 1` like this workspace
   (fan-out micro-benchmark −9–10% otherwise; docs/API.md).

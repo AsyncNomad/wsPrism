@@ -21,6 +21,13 @@
 //!   `node id|slot|sid|created µs`), changed only by `CLAIM`/`OF_USER`
 //!   scripts that also drop entries of dead nodes (their slot key no longer
 //!   holds their node id). Commands to a node go to `<prefix>:ctl:<slot>`.
+//! - **Membership** (R4-2): `<prefix>:pr:{tenant::room}` hash, field =
+//!   session key, value = `node id|slot|user|member id|notify`; each node
+//!   lists its rooms in `<prefix>:nr:<node id>` and itself in
+//!   `<prefix>:nodes`. Every node looks for dead nodes (slot key no longer
+//!   theirs) every few seconds; one wins `<prefix>:reap:<node id>` (SET NX)
+//!   and removes their members — a member is reported only by the HDEL
+//!   that removed it, so each `member_left` is sent once (A10).
 //! - **History** (§3, R3-2): a kept message gets its offset, is stored and
 //!   published by one Lua script (`PUBLISH_KEPT`), so offsets, history and
 //!   delivery order agree on every node. Per room (one hash tag):
@@ -48,9 +55,9 @@ use tokio::sync::{mpsc, oneshot, OnceCell};
 use tokio::task::JoinHandle;
 
 use wsprism_engine::broker::{
-    wire, Broker, BrokerError, BrokerFrame, BrokerMode, Claimed, Control, Evicted, HistoryRead,
-    Incoming, Keep, OnFull, SessionClaim, SessionEntry, SharedKv, SharedSessions, Subscription,
-    MAX_NODE_SLOT,
+    wire, Broker, BrokerError, BrokerFrame, BrokerMode, Claimed, Control, DeadMember, Evicted,
+    HistoryRead, Incoming, Keep, OnFull, PresenceOp, RoomMember, SessionClaim, SessionEntry,
+    SharedKv, SharedPresence, SharedSessions, Subscription, MAX_NODE_SLOT,
 };
 use wsprism_engine::spi::Recover;
 
@@ -263,6 +270,40 @@ end
 return out
 ";
 
+/// KEYS: a room's membership hash. ARGV: slot key prefix. Live members as
+/// `{session key, user, member id, ...}` (dead nodes' entries skipped, not
+/// removed: the reaper announces them).
+const MEMBERS: &str = r"
+local out = {}
+local entries = redis.call('HGETALL', KEYS[1])
+for i = 1, #entries, 2 do
+  local node, slot, user, mid = string.match(entries[i + 1], '^([^|]*)|(%d+)|(.*)|(%d+)|[01]$')
+  if node and redis.call('GET', ARGV[1] .. slot) == node then
+    out[#out + 1] = entries[i]
+    out[#out + 1] = user
+    out[#out + 1] = mid
+  end
+end
+return out
+";
+
+/// KEYS: a room's membership hash. ARGV: a dead node's id. Removes its
+/// members; returns `{user, member id, notify, ...}` of those this call
+/// removed (HDEL = 1), so concurrent reapers never report one twice.
+const REAP_ROOM: &str = r"
+local out = {}
+local entries = redis.call('HGETALL', KEYS[1])
+for i = 1, #entries, 2 do
+  local node, user, mid, notify = string.match(entries[i + 1], '^([^|]*)|%d+|(.*)|(%d+)|([01])$')
+  if node == ARGV[1] and redis.call('HDEL', KEYS[1], entries[i]) == 1 then
+    out[#out + 1] = user
+    out[#out + 1] = mid
+    out[#out + 1] = notify
+  end
+end
+return out
+";
+
 /// The four keys of a room's history (one hash tag).
 fn history_keys(prefix: &str, room_key: &str) -> [String; 4] {
     ["seq", "epoch", "log", "bytes"].map(|k| format!("{prefix}:h:{{{room_key}}}:{k}"))
@@ -280,6 +321,8 @@ pub struct RedisBroker {
     read_kept: redis::Script,
     claim: redis::Script,
     of_user: redis::Script,
+    members: redis::Script,
+    reap_room: redis::Script,
     /// This node's slot (set in `start`).
     slot: std::sync::atomic::AtomicU16,
     cfg: RedisConfig,
@@ -316,6 +359,8 @@ impl RedisBroker {
             read_kept: redis::Script::new(READ_KEPT),
             claim: redis::Script::new(CLAIM),
             of_user: redis::Script::new(OF_USER),
+            members: redis::Script::new(MEMBERS),
+            reap_room: redis::Script::new(REAP_ROOM),
             slot: std::sync::atomic::AtomicU16::new(0),
             cfg,
             node_id: random_id(),
@@ -398,6 +443,14 @@ impl Broker for RedisBroker {
             .await
             .map_err(unavailable)?;
         tracing::info!(slot, node = %self.node_id, "redis broker: node slot claimed");
+        // Known to the reapers of other nodes (R4-2).
+        let _: i64 = redis::cmd("HSET")
+            .arg(format!("{}:nodes", self.cfg.prefix))
+            .arg(&self.node_id)
+            .arg(slot)
+            .query_async(&mut conn)
+            .await
+            .map_err(unavailable)?;
         let mut tasks = lock(&self.tasks);
         tasks.push(tokio::spawn(heartbeat(
             conn.clone(),
@@ -518,7 +571,17 @@ impl Broker for RedisBroker {
             })
             .map_err(|_| BrokerError::Unavailable("subscriber stopped".into()))?;
         done.await
-            .map_err(|_| BrokerError::Unavailable("subscriber stopped".into()))?
+            .map_err(|_| BrokerError::Unavailable("subscriber stopped".into()))??;
+        // This node left the room: no longer in its room index (R4-2).
+        if let Subscription::Unsubscribe(room) = cmd {
+            let _: i64 = redis::cmd("SREM")
+                .arg(self.nr_key(&self.node_id))
+                .arg(&**room)
+                .query_async(&mut self.conn()?)
+                .await
+                .map_err(unavailable)?;
+        }
+        Ok(())
     }
 
     async fn history(
@@ -560,6 +623,170 @@ impl Broker for RedisBroker {
 
     fn sessions(&self) -> Option<&dyn SharedSessions> {
         Some(self)
+    }
+
+    fn presence(&self) -> Option<&dyn SharedPresence> {
+        Some(self)
+    }
+}
+
+impl RedisBroker {
+    fn pr_key(&self, room_key: &str) -> String {
+        format!("{}:pr:{{{room_key}}}", self.cfg.prefix)
+    }
+
+    fn nr_key(&self, node_id: &str) -> String {
+        format!("{}:nr:{node_id}", self.cfg.prefix)
+    }
+}
+
+#[async_trait]
+impl SharedPresence for RedisBroker {
+    async fn apply(&self, ops: &[PresenceOp]) -> Result<(), BrokerError> {
+        let slot = self.slot.load(std::sync::atomic::Ordering::Relaxed);
+        let mut pipe = redis::pipe();
+        for op in ops {
+            match op {
+                PresenceOp::Add {
+                    room_key,
+                    session_key,
+                    user,
+                    member_id,
+                    notify,
+                } => {
+                    let value = format!(
+                        "{}|{slot}|{user}|{member_id}|{}",
+                        self.node_id,
+                        u8::from(*notify)
+                    );
+                    pipe.cmd("HSET")
+                        .arg(self.pr_key(room_key))
+                        .arg(&**session_key)
+                        .arg(value)
+                        .ignore();
+                    pipe.cmd("SADD")
+                        .arg(self.nr_key(&self.node_id))
+                        .arg(&**room_key)
+                        .ignore();
+                }
+                PresenceOp::Remove {
+                    room_key,
+                    session_key,
+                } => {
+                    pipe.cmd("HDEL")
+                        .arg(self.pr_key(room_key))
+                        .arg(&**session_key)
+                        .ignore();
+                }
+                _ => {}
+            }
+        }
+        pipe.query_async::<()>(&mut self.conn()?)
+            .await
+            .map_err(unavailable)
+    }
+
+    async fn members(&self, room_key: &str) -> Result<Vec<RoomMember>, BrokerError> {
+        let reply: redis::Value = self
+            .members
+            .key(self.pr_key(room_key))
+            .arg(self.slot_prefix())
+            .invoke_async(&mut self.conn()?)
+            .await
+            .map_err(unavailable)?;
+        let bad = || BrokerError::Rejected("unexpected presence reply".into());
+        strings(&reply)
+            .ok_or_else(bad)?
+            .chunks(3)
+            .map(|m| match m {
+                [key, user, mid] => Ok(RoomMember::new(
+                    Arc::from(key.as_str()),
+                    Arc::from(user.as_str()),
+                    mid.parse().map_err(|_| bad())?,
+                )),
+                _ => Err(bad()),
+            })
+            .collect()
+    }
+
+    async fn reap_dead(&self) -> Result<Vec<DeadMember>, BrokerError> {
+        let mut conn = self.conn()?;
+        let nodes_key = format!("{}:nodes", self.cfg.prefix);
+        let nodes: std::collections::HashMap<String, String> = redis::cmd("HGETALL")
+            .arg(&nodes_key)
+            .query_async(&mut conn)
+            .await
+            .map_err(unavailable)?;
+        let mut dead = Vec::new();
+        for (node, slot) in nodes {
+            if node == self.node_id {
+                continue;
+            }
+            let owner: Option<String> = redis::cmd("GET")
+                .arg(format!("{}{slot}", self.slot_prefix()))
+                .query_async(&mut conn)
+                .await
+                .map_err(unavailable)?;
+            if owner.as_deref() == Some(node.as_str()) {
+                continue; // alive
+            }
+            // One reaper per dead node; it may die too, so the claim expires.
+            let won: Option<String> = redis::cmd("SET")
+                .arg(format!("{}:reap:{node}", self.cfg.prefix))
+                .arg(&self.node_id)
+                .arg("NX")
+                .arg("EX")
+                .arg(60)
+                .query_async(&mut conn)
+                .await
+                .map_err(unavailable)?;
+            if won.is_none() {
+                continue;
+            }
+            let before = dead.len();
+            let rooms: Vec<String> = redis::cmd("SMEMBERS")
+                .arg(self.nr_key(&node))
+                .query_async(&mut conn)
+                .await
+                .map_err(unavailable)?;
+            for room in &rooms {
+                let reply: redis::Value = self
+                    .reap_room
+                    .key(self.pr_key(room))
+                    .arg(&node)
+                    .invoke_async(&mut conn)
+                    .await
+                    .map_err(unavailable)?;
+                for m in strings(&reply).unwrap_or_default().chunks(3) {
+                    if let [user, mid, notify] = m {
+                        dead.push(DeadMember::new(
+                            Arc::from(room.as_str()),
+                            Arc::from(user.as_str()),
+                            mid.parse().unwrap_or(0),
+                            notify == "1",
+                        ));
+                    }
+                }
+            }
+            tracing::warn!(
+                %node,
+                rooms = rooms.len(),
+                members = dead.len() - before,
+                "redis broker: reaped a dead node's members"
+            );
+            let _: () = redis::pipe()
+                .cmd("DEL")
+                .arg(self.nr_key(&node))
+                .ignore()
+                .cmd("HDEL")
+                .arg(&nodes_key)
+                .arg(&node)
+                .ignore()
+                .query_async(&mut conn)
+                .await
+                .map_err(unavailable)?;
+        }
+        Ok(dead)
     }
 }
 

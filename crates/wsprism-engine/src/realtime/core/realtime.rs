@@ -7,7 +7,7 @@
 
 use crate::broker::{
     run_outbox, Broker, BrokerFrame, BrokerMode, BrokerOutbox, Incoming, Keep, MemoryBroker,
-    OutboxCounters, OutboxLimits, MAX_NODE_SLOT,
+    OutboxCounters, OutboxLimits, PresenceOp, MAX_NODE_SLOT,
 };
 use crate::realtime::core::history::{self, History, HistoryConfig, HistoryPos, Recover, Ring};
 use crate::realtime::core::{
@@ -157,8 +157,49 @@ impl RealtimeCore {
             if let Some(rx) = self.broker.incoming() {
                 tasks.push(tokio::spawn(run_incoming(Arc::downgrade(self), rx)));
             }
+            if self.broker.presence().is_some() {
+                tasks.push(tokio::spawn(run_reaper(Arc::downgrade(self))));
+            }
         }
         Ok(BrokerTasks(tasks))
+    }
+
+    /// Record a membership change for the cluster (queued broker that keeps
+    /// membership; ADR 0011 R4-2). Nothing for one node.
+    fn record_presence(&self, op: PresenceOp) {
+        if let (Some(outbox), Some(_)) = (&self.outbox, self.broker.presence()) {
+            outbox.push_presence(op);
+        }
+    }
+
+    /// True if membership changes are recorded (check before building one:
+    /// a single node must not pay for the allocations).
+    fn shares_presence(&self) -> bool {
+        self.outbox.is_some()
+    }
+
+    /// Members of dead nodes: drop them and tell their rooms (once across
+    /// the cluster; ADR 0011 A10).
+    async fn reap_dead(&self) {
+        let Some(p) = self.broker.presence() else {
+            return;
+        };
+        match p.reap_dead().await {
+            Ok(dead) => {
+                for d in dead.iter().filter(|d| d.notify) {
+                    let tenant = d.room_key.split_once("::").map_or("", |(t, _)| t);
+                    self.notify_member(
+                        tenant,
+                        &d.room_key,
+                        "member_left",
+                        &d.user,
+                        d.member_id,
+                        None,
+                    );
+                }
+            }
+            Err(e) => tracing::warn!("cluster presence: reaping dead nodes failed: {e}"),
+        }
     }
 
     /// The broker (ADR 0011).
@@ -561,6 +602,14 @@ impl RealtimeCore {
         notify: bool,
     ) {
         let departed = self.presence.cleanup_session(tenant, user_key, session_key);
+        if self.shares_presence() {
+            for d in &departed {
+                self.record_presence(PresenceOp::Remove {
+                    room_key: Arc::from(d.room_key.as_str()),
+                    session_key: Arc::from(session_key),
+                });
+            }
+        }
         if notify {
             for d in &departed {
                 self.notify_member_left(tenant, d);
@@ -749,6 +798,19 @@ async fn run_incoming(core: Weak<RealtimeCore>, mut rx: tokio::sync::mpsc::Recei
     }
 }
 
+/// How often a node looks for dead nodes' members.
+const REAP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+async fn run_reaper(core: Weak<RealtimeCore>) {
+    let mut tick = tokio::time::interval(REAP_INTERVAL);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        let Some(core) = core.upgrade() else { return };
+        core.reap_dead().await;
+    }
+}
+
 /// Messages taken from the broker per receive.
 const INCOMING_BATCH: usize = 1024;
 /// Batches queued per incoming worker.
@@ -895,6 +957,8 @@ pub struct JoinOutcome {
     pub history: Option<HistoryPos>,
     /// Whether the requested recovery happened (`None` = none requested).
     pub recovered: Option<bool>,
+    /// Who else is in the room (tenants with presence events; ADR 0010).
+    pub members: Option<MemberSnapshot>,
 }
 
 /// Most members listed in a `sys.joined` snapshot (ADR 0010).
@@ -1131,6 +1195,16 @@ impl RealtimeCtx {
             member,
             &self.limits,
         )?;
+        if new && self.core.shares_presence() {
+            // Before this node's member_joined frame (same outbox, ordered).
+            self.core.record_presence(PresenceOp::Add {
+                room_key: Arc::from(rk.as_str()),
+                session_key: Arc::clone(&self.session_key),
+                user: Arc::clone(&self.user),
+                member_id: joined.member_id,
+                notify: self.presence_events,
+            });
+        }
         if new && self.presence_events {
             self.core.notify_member(
                 &self.tenant,
@@ -1176,6 +1250,7 @@ impl RealtimeCtx {
                 joined,
                 history: None,
                 recovered: recover.map(|_| false),
+                members: self.room_members(room),
             };
             self.reply(reply(self, &outcome))?;
             return Ok(joined);
@@ -1189,6 +1264,7 @@ impl RealtimeCtx {
             joined,
             history: Some(r.pos()),
             recovered: recover.map(|_| replay.is_some()),
+            members: self.room_members(room),
         };
         self.reply(reply(self, &outcome))?;
         // One queue slot for the whole replay: a slow consumer, closed
@@ -1202,8 +1278,57 @@ impl RealtimeCtx {
         Ok(joined)
     }
 
+    /// True with a queued (cluster) broker: join rooms with
+    /// [`RealtimeCtx::join_room_cluster`].
+    /// SPI (unstable): for the built-in room service.
+    #[doc(hidden)]
+    pub fn is_clustered(&self) -> bool {
+        self.core.outbox.is_some()
+    }
+
+    /// Until this node's subscription to `rk` is in effect (at most 5 s).
+    async fn wait_subscribed(&self, rk: &str) {
+        if let Some(mut subscribed) = self.core.presence.subscribed(rk) {
+            let _ = tokio::time::timeout(SUBSCRIBE_WAIT, subscribed.wait_for(|s| *s)).await;
+        }
+    }
+
+    /// The `sys.joined` snapshot from the cluster's membership (tenants
+    /// with presence events), or this node's if the broker keeps none.
+    async fn cluster_members(&self, room: &str, rk: &str) -> Option<MemberSnapshot> {
+        if !self.presence_events {
+            return None;
+        }
+        let Some(p) = self.core.broker.presence() else {
+            return self.room_members(room);
+        };
+        match p.members(rk).await {
+            Ok(all) => {
+                let mut others = all
+                    .into_iter()
+                    .filter(|m| *m.session_key != *self.session_key);
+                let members: Vec<MemberInfo> = others
+                    .by_ref()
+                    .take(MAX_SNAPSHOT_MEMBERS)
+                    .map(|m| MemberInfo {
+                        user: m.user,
+                        member_id: m.member_id,
+                    })
+                    .collect();
+                Some(MemberSnapshot {
+                    members,
+                    truncated: others.next().is_some(),
+                })
+            }
+            Err(e) => {
+                tracing::warn!(%room, "cluster presence unavailable, local snapshot: {e}");
+                self.room_members(room)
+            }
+        }
+    }
+
     /// The history limits of `room` if a queued broker keeps its history
-    /// (then join with [`RealtimeCtx::join_room_recovering`]).
+    /// (then join with [`RealtimeCtx::join_room_cluster`]).
     /// SPI (unstable): for the built-in room service.
     #[doc(hidden)]
     pub fn cluster_history(&self, room: &str) -> Option<Keep> {
@@ -1222,13 +1347,29 @@ impl RealtimeCtx {
     /// and the held frames the replay did not cover, in that order.
     /// SPI (unstable): for the built-in room service.
     #[doc(hidden)]
-    pub async fn join_room_recovering(
+    pub async fn join_room_cluster(
         &mut self,
         room: &str,
-        keep: Keep,
+        keep: Option<Keep>,
         recover: Option<&Recover>,
         reply: impl FnOnce(&RealtimeCtx, &JoinOutcome) -> serde_json::Value,
     ) -> Result<Joined> {
+        let Some(keep) = keep else {
+            // No history: join, then the snapshot once this node receives
+            // the room (whoever joins after the read is announced by an
+            // event this node now gets).
+            let joined = self.join_room(room)?;
+            let rk = self.room_key(room).into_owned();
+            self.wait_subscribed(&rk).await;
+            let outcome = JoinOutcome {
+                joined,
+                history: None,
+                recovered: recover.map(|_| false),
+                members: self.cluster_members(room, &rk).await,
+            };
+            self.reply(reply(self, &outcome))?;
+            return Ok(joined);
+        };
         let (tx, mut held) = tokio::sync::mpsc::channel(RECOVERY_HOLD);
         let hold = Connection {
             tx,
@@ -1238,9 +1379,7 @@ impl RealtimeCtx {
         let rk = self.room_key(room).into_owned();
         // History read before this node receives the room would miss what
         // is published in between.
-        if let Some(mut subscribed) = self.core.presence.subscribed(&rk) {
-            let _ = tokio::time::timeout(SUBSCRIBE_WAIT, subscribed.wait_for(|s| *s)).await;
-        }
+        self.wait_subscribed(&rk).await;
         let (history, replay) = match self.core.broker.history(&rk, &keep, recover).await {
             Ok(r) => (
                 Some(HistoryPos {
@@ -1258,6 +1397,7 @@ impl RealtimeCtx {
             joined,
             history: history.clone(),
             recovered: recover.map(|_| replay.is_some()),
+            members: self.cluster_members(room, &rk).await,
         };
         self.reply(reply(self, &outcome))?;
         // The client has everything up to here: replayed, or skipped as
@@ -1334,6 +1474,12 @@ impl RealtimeCtx {
             self.core
                 .presence
                 .leave(self.tenant(), &rk, self.user_key(), self.session_key());
+        if departed.is_some() && self.core.shares_presence() {
+            self.core.record_presence(PresenceOp::Remove {
+                room_key: Arc::from(rk.as_str()),
+                session_key: Arc::clone(&self.session_key),
+            });
+        }
         if let (Some(d), true) = (departed, self.presence_events) {
             self.core.notify_member_left(&self.tenant, &d);
         }

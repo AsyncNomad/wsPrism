@@ -20,6 +20,7 @@ Publish order follows the dependency chain.
    sdk/js/run-tests.sh && examples/chat-and-state/run-tests.sh
    export WSPRISM_TEST_REDIS=$(bench/redis-test.sh)       # cluster tests
    cargo test -p wsprism-gateway --test cluster --test cluster_gap
+   cargo test -p wsprism-redis
    bench/redis-test.sh stop
    ```
 5. **Package dry run** (builds each packaged crate against the others), in a

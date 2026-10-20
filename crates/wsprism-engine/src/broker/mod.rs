@@ -258,6 +258,104 @@ pub trait Broker: Send + Sync + 'static {
     fn sessions(&self) -> Option<&dyn SharedSessions> {
         None
     }
+
+    /// The cluster's room membership (ADR 0011 R4-2), if this broker keeps
+    /// it: then presence queries, join snapshots and leaves of a dead
+    /// node's members are cluster-wide.
+    fn presence(&self) -> Option<&dyn SharedPresence> {
+        None
+    }
+}
+
+/// A change to the cluster's room membership, recorded in order through
+/// the outbox (so it lands before this node's `member_joined` frame).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PresenceOp {
+    /// A session joined a room.
+    Add {
+        /// Internal room key.
+        room_key: Arc<str>,
+        /// Internal session key.
+        session_key: Arc<str>,
+        /// User id (without the tenant).
+        user: Arc<str>,
+        /// Its member id.
+        member_id: u32,
+        /// Tell the room when it leaves (tenant `presence_events`).
+        notify: bool,
+    },
+    /// A session left a room.
+    Remove {
+        /// Internal room key.
+        room_key: Arc<str>,
+        /// Internal session key.
+        session_key: Arc<str>,
+    },
+}
+
+/// One room member in the cluster's membership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct RoomMember {
+    /// Internal session key.
+    pub session_key: Arc<str>,
+    /// User id (without the tenant).
+    pub user: Arc<str>,
+    /// Member id.
+    pub member_id: u32,
+}
+
+impl RoomMember {
+    /// A member.
+    pub fn new(session_key: Arc<str>, user: Arc<str>, member_id: u32) -> Self {
+        Self {
+            session_key,
+            user,
+            member_id,
+        }
+    }
+}
+
+/// A member of a node that died, removed from the membership (exactly
+/// once across the cluster): its room is told it left if `notify`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DeadMember {
+    /// Internal room key.
+    pub room_key: Arc<str>,
+    /// User id.
+    pub user: Arc<str>,
+    /// Member id.
+    pub member_id: u32,
+    /// Send `member_left`.
+    pub notify: bool,
+}
+
+impl DeadMember {
+    /// A dead node's member.
+    pub fn new(room_key: Arc<str>, user: Arc<str>, member_id: u32, notify: bool) -> Self {
+        Self {
+            room_key,
+            user,
+            member_id,
+            notify,
+        }
+    }
+}
+
+/// The cluster's room membership (ADR 0011 R4-2).
+#[async_trait]
+pub trait SharedPresence: Send + Sync {
+    /// Apply membership changes, in order.
+    async fn apply(&self, ops: &[PresenceOp]) -> Result<(), BrokerError>;
+
+    /// A room's live members on every node.
+    async fn members(&self, room_key: &str) -> Result<Vec<RoomMember>, BrokerError>;
+
+    /// Remove the members of nodes that died; each is returned by exactly
+    /// one caller in the cluster.
+    async fn reap_dead(&self) -> Result<Vec<DeadMember>, BrokerError>;
 }
 
 /// What to do when a user is at the session limit.

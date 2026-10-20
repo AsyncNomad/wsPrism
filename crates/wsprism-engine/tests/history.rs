@@ -222,7 +222,7 @@ async fn cluster_recovering_joins_racing_publishers_see_each_offset_once_in_orde
         .cluster_history("h:1")
         .expect("a cluster history room");
     first
-        .join_room_recovering("h:1", keep, None, |_, _| serde_json::json!({}))
+        .join_room_cluster("h:1", Some(keep), None, |_, _| serde_json::json!({}))
         .await
         .unwrap();
 
@@ -254,7 +254,7 @@ async fn cluster_recovering_joins_racing_publishers_see_each_offset_once_in_orde
         round += 1;
         let (mut c, mut rx) = session(&core, &format!("u{round}"));
         let mut epoch = String::new();
-        c.join_room_recovering("h:1", keep, None, |_, out| {
+        c.join_room_cluster("h:1", Some(keep), None, |_, out| {
             let pos = out.history.as_ref().unwrap();
             epoch = pos.epoch.to_string();
             serde_json::json!({"type": "joined", "offset": pos.offset})
@@ -277,7 +277,7 @@ async fn cluster_recovering_joins_racing_publishers_see_each_offset_once_in_orde
             epoch: epoch.clone(),
             offset: last,
         };
-        c.join_room_recovering("h:1", keep, Some(&recover), |_, out| {
+        c.join_room_cluster("h:1", Some(keep), Some(&recover), |_, out| {
             assert_eq!(out.recovered, Some(true));
             serde_json::json!({"type": "joined"})
         })

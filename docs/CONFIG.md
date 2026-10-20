@@ -97,7 +97,7 @@ gateway:
   commands the Lua scripts run; `wsp` = your prefix):
 
   ```
-  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +getdel +del +exists +incr +incrby +decrby +pexpire +time +zadd +zcard +zrange +zrangebyscore +zremrangebyrank +zpopmin +hgetall +hset +hdel +eval +evalsha +script|load +client|setinfo
+  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +getdel +del +exists +incr +incrby +decrby +pexpire +time +zadd +zcard +zrange +zrangebyscore +zremrangebyrank +zpopmin +hgetall +hset +hdel +sadd +srem +smembers +eval +evalsha +script|load +client|setinfo
   ```
 
   (`client|setinfo` is optional: without it the client library's
@@ -109,11 +109,14 @@ gateway:
   The server API's `disconnect` reaches every node. A node that dies takes
   its sessions out of the count. If Redis is down, new connections are
   refused with 1013 (try again later); connected sessions stay.
-- **Not yet (ADR 0011 R4-2):** cluster-wide presence (`GET /rooms/{room}/presence`
-  and the `sys.joined` snapshot list this node's members; joins and leaves
-  on other nodes do arrive as presence events) and `member_left` for the
-  members of a node that died. `max_sessions_total` and room limits are per
-  node.
+- **Presence is cluster-wide** (ADR 0011 R4-2): `GET /rooms/{room}/presence`
+  and the `sys.joined` snapshot list every node's members. When a node
+  dies, the others notice within its `slot_ttl_s` plus a few seconds,
+  remove its members and send `member_left` for them once (with presence
+  events on). A node stopped gracefully is treated the same way for the
+  sessions it could not clean up before exiting.
+- **Per node:** `max_sessions_total` and the room limits
+  (`max_rooms_total`, `max_users_per_room`, `max_rooms_per_user`).
 - **Scope:** one Redis (or Sentinel-managed primary). Keys use Redis Cluster
   hash tags already (`wsp:r:{tenant::room}`), so Cluster support will not
   change them.

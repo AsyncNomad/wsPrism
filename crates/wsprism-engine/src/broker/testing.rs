@@ -57,6 +57,10 @@ pub struct TestBroker {
     kv: Mutex<std::collections::HashMap<String, (bytes::Bytes, std::time::Instant)>>,
     /// The session table.
     sessions: Mutex<std::collections::HashMap<Arc<str>, Vec<TableEntry>>>,
+    /// The membership: room -> session key -> member.
+    members: Mutex<std::collections::HashMap<Arc<str>, Vec<super::RoomMember>>>,
+    /// What the next `reap_dead` returns (see [`TestBroker::dead_member`]).
+    dead: Mutex<Vec<super::DeadMember>>,
     arrivals: AtomicU64,
     epochs: std::sync::atomic::AtomicU64,
 }
@@ -81,6 +85,8 @@ impl TestBroker {
             history: Mutex::default(),
             kv: Mutex::default(),
             sessions: Mutex::default(),
+            members: Mutex::default(),
+            dead: Mutex::default(),
             arrivals: AtomicU64::new(0),
             epochs: AtomicU64::new(1),
         })
@@ -196,6 +202,26 @@ impl TestBroker {
     /// Let held publish calls through.
     pub fn resume(&self) {
         self.open.send_replace(true);
+    }
+
+    /// Pretend a node died with this member: the next reap returns it.
+    pub fn dead_member(&self, room_key: &str, user: &str, member_id: u32) {
+        lock(&self.dead).push(super::DeadMember::new(
+            Arc::from(room_key),
+            Arc::from(user),
+            member_id,
+            true,
+        ));
+    }
+
+    /// The membership of `room_key` as the broker has it.
+    pub fn room_members(&self, room_key: &str) -> Vec<String> {
+        let mut v: Vec<String> = lock(&self.members)
+            .get(room_key)
+            .map(|ms| ms.iter().map(|m| m.user.to_string()).collect())
+            .unwrap_or_default();
+        v.sort();
+        v
     }
 
     /// Deliver `frame` as if another node had published it.
@@ -329,6 +355,59 @@ impl Broker for TestBroker {
 
     fn sessions(&self) -> Option<&dyn super::SharedSessions> {
         Some(self)
+    }
+
+    fn presence(&self) -> Option<&dyn super::SharedPresence> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl super::SharedPresence for TestBroker {
+    async fn apply(&self, ops: &[super::PresenceOp]) -> Result<(), BrokerError> {
+        let mut all = lock(&self.members);
+        for op in ops {
+            match op {
+                super::PresenceOp::Add {
+                    room_key,
+                    session_key,
+                    user,
+                    member_id,
+                    ..
+                } => {
+                    let ms = all.entry(Arc::clone(room_key)).or_default();
+                    ms.retain(|m| m.session_key != *session_key);
+                    ms.push(super::RoomMember::new(
+                        Arc::clone(session_key),
+                        Arc::clone(user),
+                        *member_id,
+                    ));
+                }
+                super::PresenceOp::Remove {
+                    room_key,
+                    session_key,
+                } => {
+                    if let Some(ms) = all.get_mut(room_key) {
+                        ms.retain(|m| m.session_key != *session_key);
+                        if ms.is_empty() {
+                            all.remove(room_key);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn members(&self, room_key: &str) -> Result<Vec<super::RoomMember>, BrokerError> {
+        Ok(lock(&self.members)
+            .get(room_key)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn reap_dead(&self) -> Result<Vec<super::DeadMember>, BrokerError> {
+        Ok(std::mem::take(&mut *lock(&self.dead)))
     }
 }
 

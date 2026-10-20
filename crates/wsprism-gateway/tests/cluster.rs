@@ -622,3 +622,89 @@ async fn api_disconnect_and_dead_nodes_span_the_cluster() {
         .unwrap();
     let _ghost = user_in(&a_node, "d", "ghost", None).await;
 }
+
+/// R4-2: a joiner's snapshot and the server API's presence list cover
+/// every node.
+#[tokio::test]
+async fn presence_spans_nodes() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("pres");
+    let (a_node, b_node) = (node(&url, &p).await, node(&url, &p).await);
+    let mut alice = user(&a_node, "alice").await;
+    join(&mut alice, "r").await;
+    let mut bob = user(&b_node, "bob").await;
+    let j = join(&mut bob, "r").await;
+    let members: Vec<&str> = j["members"]
+        .as_array()
+        .expect("snapshot")
+        .iter()
+        .map(|m| m["user"].as_str().unwrap())
+        .collect();
+    assert_eq!(members, ["alice"], "{j}");
+    let (status, body) = http(
+        a_node.api,
+        "GET",
+        "/api/v1/rooms/r/presence",
+        Some(KEY),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["users"], json!(["alice", "bob"]));
+}
+
+/// R4-2 / A10: the members of a node that died are announced as having
+/// left, once, although every live node looks for dead nodes.
+#[tokio::test]
+async fn a_dead_nodes_members_leave_once() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("dead");
+    let (a_node, b_node) = (node(&url, &p).await, node(&url, &p).await);
+    let mut alice = user(&a_node, "alice").await;
+    join(&mut alice, "r").await;
+    let mut bob = user(&b_node, "bob").await;
+    join(&mut bob, "r").await;
+    // A node that died (no slot key) left "ghost" in the room.
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut c = client.get_multiplexed_async_connection().await.unwrap();
+    let _: () = redis::pipe()
+        .cmd("HSET")
+        .arg(format!("{p}:pr:{{t::r}}"))
+        .arg("t::ghost::s#1")
+        .arg("deadnode|999|ghost|4194305|1")
+        .ignore()
+        .cmd("SADD")
+        .arg(format!("{p}:nr:deadnode"))
+        .arg("t::r")
+        .ignore()
+        .cmd("HSET")
+        .arg(format!("{p}:nodes"))
+        .arg("deadnode")
+        .arg(999)
+        .ignore()
+        .query_async(&mut c)
+        .await
+        .unwrap();
+    for ws in [&mut alice, &mut bob] {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        let mut seen = 0;
+        while tokio::time::Instant::now() < deadline {
+            match next_event_within(ws, Duration::from_millis(500)).await {
+                Event::Json(v) if v["type"] == "member_left" && v["data"]["user"] == "ghost" => {
+                    seen += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(seen, 1, "exactly one member_left");
+    }
+    let (_, body) = http(
+        a_node.api,
+        "GET",
+        "/api/v1/rooms/r/presence",
+        Some(KEY),
+        None,
+    )
+    .await;
+    assert_eq!(body["users"], json!(["alice", "bob"]));
+}

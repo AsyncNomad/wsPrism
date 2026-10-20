@@ -43,7 +43,9 @@ cargo build --release -p wsprism-loadgen
 | R3-1 Redis 노드 간 룸 공유 | ✅ | ADR 0011 「R3-1 구현」 |
 | R3-2 클러스터 이력·복구 | ✅ | ADR 0011 「R3-2 구현」 |
 | R3-3 공유 1회용 티켓 | ✅ | ADR 0011 「R3-3 구현」 |
-| A15 Redis 처리량 측정 → R4 클러스터 제어·presence → R5 카오스 | ⏳ 다음 | ADR 0011 |
+| A15 Redis 처리량 측정·개선 | ✅ | ADR 0011 「A15 측정 결과와 후속」, BENCHMARKS |
+| R4 클러스터 세션·제어·presence | ✅ | ADR 0011 「R4-1」「R4-2」 |
+| R5 카오스(노드 kill -9, Redis 재시작, offset 검사기), 대조 작업 | ⏳ 다음 | ADR 0011 |
 
 - **성능 회귀 판정 (ADR 0011 B2):** `bench/run-icount.sh`(valgrind callgrind, 결정적 명령어 수 — WSL2에는 CPU PMU가 없어 `perf stat -e instructions` 불가)와 `bench/run-mem-users.sh`(유휴 메모리). 기준선은 `bench/results/icount-pre-r1.jsonl`, `mem-pre-r1.jsonl`. 단계마다 같은 스크립트로 다시 재서 ±2%를 본다.
 - **Queued 모드 회귀:** `WSPRISM_TEST_BROKER=queued cargo test -p wsprism-gateway` (CI에도 있음).

@@ -59,17 +59,17 @@ impl RoomService {
                 .map(Recover::from),
             None => None,
         };
-        match ctx.cluster_history(&room) {
-            Some(keep) => {
-                ctx.join_room_recovering(&room, keep, recover.as_ref(), |ctx, out| {
-                    joined_msg(ctx, &room, out)
-                })
-                .await?
-            }
-            None => ctx.join_room_and_reply(&room, recover.as_ref(), |ctx, out| {
+        if ctx.is_clustered() {
+            let keep = ctx.cluster_history(&room);
+            ctx.join_room_cluster(&room, keep, recover.as_ref(), |ctx, out| {
                 joined_msg(ctx, &room, out)
-            })?,
-        };
+            })
+            .await?;
+        } else {
+            ctx.join_room_and_reply(&room, recover.as_ref(), |ctx, out| {
+                joined_msg(ctx, &room, out)
+            })?;
+        }
         ctx.set_active_room(Some(&room));
         Ok(())
     }
@@ -100,8 +100,8 @@ fn joined_msg(ctx: &RealtimeCtx, room: &str, out: &JoinOutcome) -> serde_json::V
         ),
     };
     // Presence snapshot (tenant presence_events, ADR 0010).
-    if let Some(snapshot) = ctx.room_members(room) {
-        add_snapshot(&mut msg, &snapshot);
+    if let Some(snapshot) = &out.members {
+        add_snapshot(&mut msg, snapshot);
     }
     // History position and recovery result (ADR 0011 §3).
     if let Some(pos) = &out.history {

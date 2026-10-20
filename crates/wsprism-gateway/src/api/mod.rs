@@ -270,9 +270,28 @@ async fn presence(
         return r;
     }
     let room_key = RealtimeCore::room_key(&tenant, &room);
+    let core = app.realtime();
+    // Cluster: every node's members (ADR 0011 R4-2).
+    if let Some(p) = core.broker().presence() {
+        return match p.members(&room_key).await {
+            Ok(members) => {
+                let users: std::collections::BTreeSet<String> =
+                    members.into_iter().map(|m| m.user.to_string()).collect();
+                Json(json!({"room": room, "users": users})).into_response()
+            }
+            Err(e) => {
+                tracing::warn!("cluster presence unavailable: {e}");
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [(header::RETRY_AFTER, "1")],
+                    Json(json!({"error": "presence store unavailable"})),
+                )
+                    .into_response()
+            }
+        };
+    }
     let prefix = format!("{tenant}::");
-    let users: Vec<String> = app
-        .realtime()
+    let users: Vec<String> = core
         .presence
         .user_keys_in(&room_key)
         .into_iter()

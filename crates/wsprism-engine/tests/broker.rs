@@ -545,3 +545,40 @@ async fn a_stuck_outbox_refuses_after_max_wait() {
     a.ctx.publish_room_reliable("r", text("again")).unwrap();
     assert_eq!(recv_text(&mut a).await, "again");
 }
+
+/// R4-2: membership changes reach the broker in order (joins, leaves,
+/// disconnects), and a dead node's members are announced as having left.
+#[tokio::test]
+async fn membership_is_shared_and_dead_members_are_announced() {
+    let n = node(0, OutboxLimits::default()).await;
+    let mut a = client(&n, "t", "a", true);
+    let mut b = client(&n, "t", "b", true);
+    a.ctx.join_room("r").unwrap();
+    b.ctx.join_room("r").unwrap();
+    settle().await;
+    assert_eq!(n.broker.room_members("t::r"), ["a", "b"]);
+    b.ctx.leave_room("r");
+    settle().await;
+    assert_eq!(n.broker.room_members("t::r"), ["a"]);
+    b.ctx.join_room("r").unwrap();
+    n.core.remove_session_presence("t", "t::b", "t::b::s", true);
+    settle().await;
+    assert_eq!(n.broker.room_members("t::r"), ["a"]);
+
+    // A node died with "ghost" in the room: a hears it left.
+    while a.rx.try_recv().is_ok() {}
+    n.broker.dead_member("t::r", "ghost", 77);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let left = tokio::time::timeout_at(deadline, a.rx.recv())
+            .await
+            .expect("member_left for the dead node's member");
+        if let Some(OutFrame::Text(t)) = left {
+            let v: serde_json::Value = serde_json::from_slice(t.as_bytes()).unwrap();
+            if v["type"] == "member_left" && v["data"]["user"] == "ghost" {
+                assert_eq!(v["data"]["member_id"], 77);
+                break;
+            }
+        }
+    }
+}

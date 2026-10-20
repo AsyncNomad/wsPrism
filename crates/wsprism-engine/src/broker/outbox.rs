@@ -84,6 +84,7 @@ enum Item {
     /// A frame and when it was queued.
     Frame(BrokerFrame, std::time::Instant),
     Sub(Subscription, Option<Subscribed>),
+    Presence(super::PresenceOp),
 }
 
 #[derive(Default)]
@@ -153,6 +154,12 @@ impl BrokerOutbox {
         self.ready.notify_one();
     }
 
+    /// Queue a membership change (never refused, like subscriptions).
+    pub(crate) fn push_presence(&self, op: super::PresenceOp) {
+        self.lock().items.push_back(Item::Presence(op));
+        self.ready.notify_one();
+    }
+
     /// Move up to `max` items into `out` (in order), freeing their quota.
     fn take(&self, out: &mut Vec<Item>, max: usize) {
         let mut guard = self.lock();
@@ -184,7 +191,10 @@ const RETRY_MAX: Duration = Duration::from_secs(2);
 /// order. Runs until aborted.
 pub(crate) async fn run_outbox(outbox: Arc<BrokerOutbox>, broker: Arc<dyn Broker>) {
     let mut items = Vec::with_capacity(BATCH);
+    // Runs of frames and of membership changes go out as one call each;
+    // switching kinds flushes the other, so the order is kept.
     let mut frames = Vec::with_capacity(BATCH);
+    let mut ops = Vec::new();
     loop {
         outbox.take(&mut items, BATCH);
         if items.is_empty() {
@@ -193,9 +203,17 @@ pub(crate) async fn run_outbox(outbox: Arc<BrokerOutbox>, broker: Arc<dyn Broker
         }
         for item in items.drain(..) {
             match item {
-                Item::Frame(f, _) => frames.push(f),
+                Item::Frame(f, _) => {
+                    apply_presence(&outbox, &*broker, &mut ops).await;
+                    frames.push(f);
+                }
+                Item::Presence(op) => {
+                    publish(&outbox, &*broker, &mut frames).await;
+                    ops.push(op);
+                }
                 Item::Sub(cmd, done) => {
                     publish(&outbox, &*broker, &mut frames).await;
+                    apply_presence(&outbox, &*broker, &mut ops).await;
                     retry(&outbox, 1, || broker.subscription(&cmd)).await;
                     if let Some(done) = done {
                         done.send_replace(true);
@@ -204,6 +222,7 @@ pub(crate) async fn run_outbox(outbox: Arc<BrokerOutbox>, broker: Arc<dyn Broker
             }
         }
         publish(&outbox, &*broker, &mut frames).await;
+        apply_presence(&outbox, &*broker, &mut ops).await;
     }
 }
 
@@ -213,6 +232,20 @@ async fn publish(outbox: &BrokerOutbox, broker: &dyn Broker, frames: &mut Vec<Br
     }
     retry(outbox, frames.len(), || broker.publish(frames)).await;
     frames.clear();
+}
+
+async fn apply_presence(
+    outbox: &BrokerOutbox,
+    broker: &dyn Broker,
+    ops: &mut Vec<super::PresenceOp>,
+) {
+    if ops.is_empty() {
+        return;
+    }
+    if let Some(p) = broker.presence() {
+        retry(outbox, ops.len(), || p.apply(ops)).await;
+    }
+    ops.clear();
 }
 
 /// Call `f` until it succeeds or is rejected (`n` = items it carries).
