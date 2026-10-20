@@ -8,8 +8,11 @@
 //! players both using `key = 0` ("my position") must not overwrite each
 //! other, and neither may the server's state (sender 0) in two rooms.
 
+use std::collections::hash_map::RandomState;
 use std::collections::HashMap;
+use std::hash::{BuildHasher, Hasher};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use tokio::sync::Notify;
@@ -34,10 +37,75 @@ pub enum Put {
     Full,
 }
 
+/// Hashes slot keys with one 64x64->128 multiply per field, seeded per
+/// process (M5). SipHash, the std default, was half of a keyed Hot
+/// delivery's cost (callgrind). Keys are partly client-chosen (`svc`,
+/// `key`), so the seed is random: collisions cannot be computed ahead
+/// (the same idea as foldhash), and a slot holds at most `DEFAULT_SLOT_CAP`
+/// keys anyway.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SlotHash {
+    seed: u64,
+}
+
+impl Default for SlotHash {
+    fn default() -> Self {
+        static SEED: OnceLock<u64> = OnceLock::new();
+        let seed = *SEED.get_or_init(|| RandomState::new().hash_one(0x5157_u64) | 1);
+        Self { seed }
+    }
+}
+
+impl BuildHasher for SlotHash {
+    type Hasher = SlotHasher;
+    fn build_hasher(&self) -> SlotHasher {
+        SlotHasher { h: self.seed }
+    }
+}
+
+/// See [`SlotHash`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SlotHasher {
+    h: u64,
+}
+
+const FOLD: u64 = 0x9E37_79B9_7F4A_7C15;
+
+#[inline]
+fn fold_mul(a: u64, b: u64) -> u64 {
+    let p = u128::from(a) * u128::from(b);
+    (p as u64) ^ ((p >> 64) as u64)
+}
+
+impl Hasher for SlotHasher {
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(u64::from(b));
+        }
+    }
+    #[inline]
+    fn write_u8(&mut self, v: u8) {
+        self.write_u64(u64::from(v));
+    }
+    #[inline]
+    fn write_u32(&mut self, v: u32) {
+        self.write_u64(u64::from(v));
+    }
+    #[inline]
+    fn write_u64(&mut self, v: u64) {
+        self.h = fold_mul(self.h ^ v, FOLD);
+    }
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.h
+    }
+}
+
 /// The latest pending Hot frame per `(sender, svc, key)` for one session.
 #[derive(Debug)]
 pub struct HotSlot {
-    latest: Mutex<HashMap<SlotKey, Arc<HotOut>>>,
+    latest: Mutex<HashMap<SlotKey, Arc<HotOut>, SlotHash>>,
     /// Set by the first `put` after a drain; cleared by the session before
     /// it drains. Only the false -> true transition wakes the session.
     scheduled: AtomicBool,
@@ -49,14 +117,14 @@ impl HotSlot {
     /// A slot holding at most `cap` distinct keys.
     pub fn new(cap: usize) -> Self {
         Self {
-            latest: Mutex::new(HashMap::new()),
+            latest: Mutex::new(HashMap::default()),
             scheduled: AtomicBool::new(false),
             ready: Notify::new(),
             cap,
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, HashMap<SlotKey, Arc<HotOut>>> {
+    fn lock(&self) -> MutexGuard<'_, HashMap<SlotKey, Arc<HotOut>, SlotHash>> {
         // Plain data; a poisoned lock is still usable.
         self.latest.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -179,5 +247,23 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_millis(100), s.ready())
             .await
             .expect("put after drain wakes again");
+    }
+
+    #[test]
+    fn slot_hashes_spread_and_differ_by_field() {
+        let b = SlotHash::default();
+        let hs: std::collections::HashSet<u64> = (0..10_000u32)
+            .map(|k| b.hash_one((1u32, 2u32, 1u8, k)))
+            .collect();
+        assert_eq!(hs.len(), 10_000, "no collisions over consecutive keys");
+        assert_ne!(
+            b.hash_one((1u32, 2u32, 1u8, 7u32)),
+            b.hash_one((2u32, 1u32, 1u8, 7u32))
+        );
+        // hashbrown buckets by the top 7 bits too: they must vary.
+        let tops: std::collections::HashSet<u64> = (0..1000u32)
+            .map(|k| b.hash_one((1u32, 2u32, 1u8, k)) >> 57)
+            .collect();
+        assert!(tops.len() > 100, "{}", tops.len());
     }
 }

@@ -1,0 +1,6 @@
+{"scenario":"ext","build":"m5-slothash","rev":"c60e5ae-dirty","ir":30878746,"units":102400,"ir_per_unit":301.6,"spread_pct":0.01}
+{"scenario":"hot","build":"m5-slothash","rev":"c60e5ae-dirty","ir":19127607,"units":101376,"ir_per_unit":188.7,"spread_pct":0.01}
+{"scenario":"hot_keyed","build":"m5-slothash","rev":"c60e5ae-dirty","ir":26288546,"units":101376,"ir_per_unit":259.3,"spread_pct":0.01}
+{"scenario":"api","build":"m5-slothash","rev":"c60e5ae-dirty","ir":17754282,"units":102400,"ir_per_unit":173.4,"spread_pct":0.00}
+{"scenario":"churn","build":"m5-slothash","rev":"c60e5ae-dirty","ir":395518837,"units":1024,"ir_per_unit":386248.9,"spread_pct":0.70}
+{"scenario":"disconnect","build":"m5-slothash","rev":"c60e5ae-dirty","ir":75118357,"units":1024,"ir_per_unit":73357.8,"spread_pct":0.45}
