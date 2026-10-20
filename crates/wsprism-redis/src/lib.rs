@@ -54,35 +54,64 @@ use wsprism_engine::spi::Recover;
 /// resync.
 const POSITION_TTL: Duration = Duration::from_secs(24 * 3600);
 
-/// KEYS: seq, epoch, log, bytes. ARGV: frame head, text, channel, size,
-/// ttl ms, max bytes, epoch candidate, position ttl ms. Returns the offset.
+/// One room's part of an outbox batch, in order (A15: one script call per
+/// room and batch, not per message — per message only the PUBLISH is left).
+/// KEYS: seq, epoch, log, bytes. ARGV: channel, size, ttl ms, max bytes,
+/// epoch candidate, position ttl ms, then pairs (head, text) per message:
+/// a kept message gets the next offset; head = '' publishes text as is.
+/// Returns the last offset.
 const PUBLISH_KEPT: &str = r"
-local size, ttl, maxb, pttl = tonumber(ARGV[4]), tonumber(ARGV[5]), tonumber(ARGV[6]), tonumber(ARGV[8])
+local ch, size, ttl, maxb, pttl = ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4]), tonumber(ARGV[6])
 if redis.call('EXISTS', KEYS[1], KEYS[2]) < 2 then
-  redis.call('SET', KEYS[2], ARGV[7], 'PX', pttl)
+  redis.call('SET', KEYS[2], ARGV[5], 'PX', pttl)
   redis.call('SET', KEYS[1], 0, 'PX', pttl)
   redis.call('DEL', KEYS[3], KEYS[4])
 end
-local o = redis.call('INCR', KEYS[1])
-local s = tostring(o)
-local msg = ARGV[1] .. string.char(#s) .. s .. ARGV[2]
-local t = redis.call('TIME')
-redis.call('ZADD', KEYS[3], o, (tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)) .. ':' .. msg)
-local b = redis.call('INCRBY', KEYS[4], #msg)
--- Count and byte limits (age is enforced when reading).
-local n = redis.call('ZCARD', KEYS[3])
-while n > size or (b > maxb and n > 1) do
-  local head = redis.call('ZPOPMIN', KEYS[3])[1]
-  b = redis.call('DECRBY', KEYS[4], #head - string.find(head, ':', 1, true))
-  n = n - 1
+local kept = 0
+for i = 7, #ARGV, 2 do
+  if ARGV[i] ~= '' then kept = kept + 1 end
 end
-redis.call('PEXPIRE', KEYS[3], ttl)
-redis.call('PEXPIRE', KEYS[4], ttl)
-if o % 64 == 0 then
+local o = redis.call('INCRBY', KEYS[1], kept) - kept
+local t = redis.call('TIME')
+local now = (tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)) .. ':'
+local z, added = {}, 0
+for i = 7, #ARGV, 2 do
+  if ARGV[i] == '' then
+    redis.call('PUBLISH', ch, ARGV[i + 1])
+  else
+    o = o + 1
+    local s = tostring(o)
+    local msg = ARGV[i] .. string.char(#s) .. s .. ARGV[i + 1]
+    z[#z + 1] = o
+    z[#z + 1] = now .. msg
+    added = added + #msg
+    redis.call('PUBLISH', ch, msg)
+  end
+end
+if kept > 0 then
+  redis.call('ZADD', KEYS[3], unpack(z))
+  local b = redis.call('INCRBY', KEYS[4], added)
+  local n = redis.call('ZCARD', KEYS[3])
+  -- Count and byte limits (age is enforced when reading).
+  if n > size then
+    local gone = redis.call('ZPOPMIN', KEYS[3], n - size)
+    local freed = 0
+    for i = 1, #gone, 2 do
+      freed = freed + #gone[i] - string.find(gone[i], ':', 1, true)
+    end
+    b = redis.call('DECRBY', KEYS[4], freed)
+    n = size
+  end
+  while b > maxb and n > 1 do
+    local head = redis.call('ZPOPMIN', KEYS[3])[1]
+    b = redis.call('DECRBY', KEYS[4], #head - string.find(head, ':', 1, true))
+    n = n - 1
+  end
+  redis.call('PEXPIRE', KEYS[3], ttl)
+  redis.call('PEXPIRE', KEYS[4], ttl)
   redis.call('PEXPIRE', KEYS[1], pttl)
   redis.call('PEXPIRE', KEYS[2], pttl)
 end
-redis.call('PUBLISH', ARGV[3], msg)
 return o
 ";
 
@@ -327,37 +356,51 @@ impl Broker for RedisBroker {
             .get()
             .cloned()
             .ok_or_else(|| BrokerError::Unavailable("not started".into()))?;
+        // Rooms with kept messages: their part of the batch, in order, for
+        // one script call each. Everything else: a PUBLISH each.
+        let mut kept_rooms: Vec<(&BrokerFrame, Vec<&BrokerFrame>)> = Vec::new();
+        let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         let mut pipe = redis::pipe();
         for f in batch {
-            match (&f.keep, wire::encode_kept(f)) {
-                (Some(keep), Some((head, text))) => {
-                    let [seq, epoch, log, bytes] = history_keys(&self.cfg.prefix, &f.room_key);
-                    pipe.cmd("EVALSHA")
-                        .arg(self.publish_kept.get_hash())
-                        .arg(4)
-                        .arg(seq)
-                        .arg(epoch)
-                        .arg(log)
-                        .arg(bytes)
-                        .arg(head.as_ref())
-                        .arg(text.as_ref())
-                        .arg(self.channel(&f.room_key))
-                        .arg(keep.size)
-                        .arg(keep.ttl.as_millis() as u64)
-                        .arg(keep.max_bytes)
-                        .arg(random_id())
-                        .arg(POSITION_TTL.as_millis() as u64)
-                        .ignore();
-                }
-                _ => {
-                    if let Some(bytes) = wire::encode(f) {
-                        pipe.cmd("PUBLISH")
-                            .arg(self.channel(&f.room_key))
-                            .arg(bytes.as_ref())
-                            .ignore();
-                    }
-                }
+            if let Some(&i) = index.get(&*f.room_key) {
+                kept_rooms[i].1.push(f);
+            } else if f.keep.is_some() {
+                index.insert(&f.room_key, kept_rooms.len());
+                kept_rooms.push((f, vec![f]));
+            } else if let Some(bytes) = wire::encode(f) {
+                pipe.cmd("PUBLISH")
+                    .arg(self.channel(&f.room_key))
+                    .arg(bytes.as_ref())
+                    .ignore();
             }
+        }
+        for (first, frames) in &kept_rooms {
+            let Some(keep) = first.keep else { continue };
+            let [seq, epoch, log, bytes] = history_keys(&self.cfg.prefix, &first.room_key);
+            let cmd = pipe
+                .cmd("EVALSHA")
+                .arg(self.publish_kept.get_hash())
+                .arg(4)
+                .arg(seq)
+                .arg(epoch)
+                .arg(log)
+                .arg(bytes)
+                .arg(self.channel(&first.room_key))
+                .arg(keep.size)
+                .arg(keep.ttl.as_millis() as u64)
+                .arg(keep.max_bytes)
+                .arg(random_id())
+                .arg(POSITION_TTL.as_millis() as u64);
+            for f in frames {
+                match (f.keep.is_some(), wire::encode_kept(f)) {
+                    (true, Some((head, text))) => cmd.arg(head.as_ref()).arg(text.as_ref()),
+                    _ => match wire::encode(f) {
+                        Some(b) => cmd.arg("").arg(b.as_ref()),
+                        None => cmd,
+                    },
+                };
+            }
+            cmd.ignore();
         }
         match pipe.query_async::<()>(&mut conn).await {
             Ok(()) => Ok(()),

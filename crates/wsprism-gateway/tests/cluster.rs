@@ -451,3 +451,46 @@ async fn redis_history_keeps_size_messages() {
         next_of(&mut a, "left").await;
     }
 }
+
+/// A burst lands in the broker's batches, so one script call keeps many
+/// messages (A15): offsets stay contiguous and in order, live and replayed.
+#[tokio::test]
+async fn a_burst_keeps_contiguous_offsets() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("burst");
+    let (a_node, b_node) = (node(&url, &p).await, node(&url, &p).await);
+    let mut bob = user(&a_node, "bob").await;
+    let epoch = join(&mut bob, "chat:1").await["epoch"].clone();
+    let mut carol = user(&b_node, "carol").await;
+    join(&mut carol, "chat:1").await;
+    for i in 1..=50 {
+        send_json(
+            &mut bob,
+            json!({"svc":"chat","type":"send","room":"chat:1","data":{"msg":format!("m{i}")}}),
+        )
+        .await;
+    }
+    for ws in [&mut bob, &mut carol] {
+        let mut got = Vec::new();
+        for _ in 0..50 {
+            let m = next_of(ws, "msg").await;
+            got.push((
+                m["offset"].as_u64().unwrap(),
+                m["data"]["msg"].as_str().unwrap().to_string(),
+            ));
+        }
+        let want: Vec<(u64, String)> = (1..=50).map(|i| (i, format!("m{i}"))).collect();
+        assert_eq!(got, want);
+    }
+    let mut a = user(&b_node, "alice").await;
+    send_json(
+        &mut a,
+        json!({"svc":"room","type":"join","room":"chat:1","seq":2,
+               "data":{"recover":{"epoch": epoch, "offset": 10}}}),
+    )
+    .await;
+    assert_eq!(next_of(&mut a, "joined").await["recovered"], true);
+    for want in 11..=50 {
+        assert_eq!(next_of(&mut a, "msg").await["offset"], want);
+    }
+}
