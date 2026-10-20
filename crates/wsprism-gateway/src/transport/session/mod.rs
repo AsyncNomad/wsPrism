@@ -178,7 +178,9 @@ impl Session {
         self.refresh_tx = Some(refresh_tx);
         loop {
             let flow = tokio::select! {
-                Some(outcome) = refresh_rx.recv() => self.apply_refresh(outcome),
+                // Polled only while a refresh is in flight: an idle receiver
+                // still costs a poll on every turn of this loop (M5).
+                Some(outcome) = refresh_rx.recv(), if self.refresh_pending => self.apply_refresh(outcome),
                 // C8: kick / replace / drain requests from other tasks.
                 // C8: kick / replace / drain / slow consumer / idle requests.
                 req = signals.closed() => Flow::Break(Exit::Close(self.close_spec(req))),
