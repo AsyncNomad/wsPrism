@@ -31,6 +31,10 @@ the Rust API may break in 0.x minor releases, always listed here.
   `/tickets`, `/rooms/{room}/presence`) with SHA-256-hashed API keys.
 - `/metrics` is served on the internal listener (`gateway.api.listen`), not
   on the public port, unless `gateway.public_metrics: true`.
+- Room history and recovery (opt-in `tenants[].history`): messages carry an
+  `offset`, `sys.joined` an `epoch` and `offset`, and `room.join` with
+  `data.recover` replays what a client missed, in order, or answers
+  `recovered: false`. Slow consumers closed by C1 resume the same way.
 - Presence events (opt-in `policy.presence_events`): `sys.member_joined` /
   `sys.member_left` on every way in and out, and a member snapshot in `sys.joined`.
 - RPC proxy: allowlisted Ext requests answered by your backend over HTTP,
@@ -61,7 +65,8 @@ the Rust API may break in 0.x minor releases, always listed here.
 ### Clients
 - JavaScript SDK (`sdk/js`, no dependencies, Node 22+ and browsers): tickets
   via subprotocol, request/reply, rooms with rejoin, Hot state with stale
-  frame dropping, reconnection by close-code range.
+  frame dropping, reconnection by close-code range, history rooms resumed
+  on reconnect (`recovered: false` on the rejoined room = resync).
 - Example app `examples/chat-and-state` (Node backend + SDK).
 
 ### Known limitations

@@ -94,6 +94,9 @@ pub enum OutFrame {
     Ping,
     /// Hot frame; the transport picks the bytes for the session's version.
     Hot(Arc<HotOut>),
+    /// Several messages sent in order, taking one queue slot (a history
+    /// replay, ADR 0011 §3). Never nested.
+    Batch(Arc<[OutFrame]>),
 }
 
 impl OutFrame {

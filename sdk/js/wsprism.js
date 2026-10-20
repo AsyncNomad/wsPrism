@@ -269,6 +269,15 @@ export class WsPrismClient {
       });
       return;
     }
+    // History rooms (ADR 0011 §3): remember the position; drop anything
+    // already seen (a replay can overlap what arrived before a reconnect).
+    if (typeof msg.offset === "number" && msg.room !== undefined) {
+      const info = this.rooms.get(msg.room);
+      if (info && info.epoch !== undefined) {
+        if (msg.offset <= info.offset) return;
+        info.offset = msg.offset;
+      }
+    }
     this.emit("message", msg); // includes sys.kicked before a close
   }
 
@@ -330,8 +339,12 @@ export class WsPrismClient {
     const rooms = [...this.rooms.keys()];
     if (rooms.length === 0) return;
     for (const room of rooms) {
+      // Resume history rooms from the last message seen (ADR 0011 §3).
+      const prev = this.rooms.get(room);
+      const recover =
+        prev?.epoch !== undefined ? { epoch: prev.epoch, offset: prev.offset } : undefined;
       try {
-        await this.join(room);
+        await this.join(room, { recover });
       } catch (e) {
         this.rooms.delete(room);
         this.emit("error", e);
@@ -369,9 +382,17 @@ export class WsPrismClient {
     });
   }
 
-  /** Join `room`; resolves with `{room, chan, memberId}`. Re-joined after reconnects. */
-  async join(room) {
-    const r = await this.request("room", "join", { room });
+  /**
+   * Join `room`; resolves with `{room, chan, memberId}` (plus `epoch` and
+   * `offset` in a history room). Re-joined after reconnects; history rooms
+   * resume from the last message seen, and `recovered: false` on the
+   * rejoined room means messages were missed: resync from your backend.
+   */
+  async join(room, { recover } = {}) {
+    const r = await this.request("room", "join", {
+      room,
+      data: recover ? { recover } : undefined,
+    });
     const info = {
       room,
       chan: r.chan,
@@ -380,6 +401,13 @@ export class WsPrismClient {
       members: (r.members ?? []).map((m) => ({ user: m.user, memberId: m.member_id })),
       membersTruncated: r.members_truncated === true,
     };
+    if (typeof r.epoch === "string") {
+      info.epoch = r.epoch;
+      // Recovered: replayed messages follow and advance this; otherwise
+      // start from the room's current position.
+      info.offset = r.recovered === true ? recover.offset : r.offset;
+    }
+    if (typeof r.recovered === "boolean") info.recovered = r.recovered;
     this.rooms.set(room, info);
     this.chanRoom.set(r.chan, room);
     return info;

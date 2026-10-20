@@ -9,6 +9,7 @@ use crate::broker::{
     run_outbox, Broker, BrokerFrame, BrokerMode, BrokerOutbox, Incoming, MemoryBroker,
     OutboxCounters, OutboxLimits, MAX_NODE_SLOT,
 };
+use crate::realtime::core::history::{self, History, HistoryConfig, HistoryPos, Recover, Ring};
 use crate::realtime::core::{
     now_ms, CloseRequest, Connection, Departed, Joined, Member, Presence, Put, SessionRegistry,
 };
@@ -70,6 +71,8 @@ pub struct RealtimeCore {
     /// `Some` iff the broker is queued: room frames go through it.
     outbox: Option<Arc<BrokerOutbox>>,
     node_slot: u16,
+    /// `Some` iff some tenant keeps room history (ADR 0011 §3).
+    history: Option<History>,
 }
 
 impl Default for RealtimeCore {
@@ -89,7 +92,23 @@ impl RealtimeCore {
             broker: Arc::new(MemoryBroker),
             outbox: None,
             node_slot: 0,
+            history: None,
         }
+    }
+
+    /// Keep room history as `config` says (ADR 0011 §3). Single node only
+    /// until the cluster broker can serve history (R3).
+    pub fn with_history(mut self, config: HistoryConfig) -> Result<Self> {
+        if config.is_empty() {
+            return Ok(self);
+        }
+        if self.outbox.is_some() {
+            return Err(WsPrismError::BadRequest(
+                "room history needs the single-node broker for now (ADR 0011 R3)".into(),
+            ));
+        }
+        self.history = Some(History::new(config));
+        Ok(self)
     }
 
     /// A core whose room traffic goes through `broker` (ADR 0011;
@@ -115,6 +134,7 @@ impl RealtimeCore {
             broker,
             outbox,
             node_slot,
+            history: None,
         })
     }
 
@@ -159,6 +179,9 @@ impl RealtimeCore {
     /// keep-alive get a Ping, skipped if their queue is full (C9). Replaces
     /// two timers per session.
     pub fn sweep(&self, idle_timeout_ms: u64, ping_interval_ms: u64) {
+        if let Some(h) = &self.history {
+            h.sweep(&self.presence);
+        }
         let now = now_ms();
         self.sessions.for_each_session(|conn| {
             if conn.signals.expired(now) {
@@ -274,12 +297,70 @@ impl RealtimeCore {
     /// time; Hot frames are delivered locally at once and also published. A
     /// full outbox refuses Reliable Ext frames with `UNAVAILABLE` (Lossy
     /// ones are dropped).
+    ///
+    /// In a history room (ADR 0011 §3), a JSON object message gets the
+    /// room's next `offset` (and `room`, if it has none) and is kept for
+    /// recovery.
     pub fn publish_room(&self, room_key: &str, out: Outgoing) -> Result<usize> {
+        self.publish(room_key, out, None, true)
+    }
+
+    /// Every room publish: `except` skips one session, `record` = keep in
+    /// history (presence events are not: replaying them after a newer
+    /// snapshot would be wrong).
+    fn publish(
+        &self,
+        room_key: &str,
+        out: Outgoing,
+        except: Option<&str>,
+        record: bool,
+    ) -> Result<usize> {
+        let out = match (&self.history, record) {
+            (Some(h), true) => match h.ring(room_key) {
+                Some(ring) => match self.publish_recorded(&ring, room_key, out, except)? {
+                    Ok(n) => return Ok(n),
+                    Err(out) => out,
+                },
+                None => out,
+            },
+            _ => out,
+        };
         let frame = OutFrame::from_payload(&out.payload)?;
-        match &self.outbox {
-            None => Ok(self.fan_out(room_key, &frame, &out.qos)),
-            Some(outbox) => self.route_queued(outbox, room_key, frame, out.qos, None),
+        match (&self.outbox, except) {
+            (None, None) => Ok(self.fan_out(room_key, &frame, &out.qos)),
+            (None, Some(skip)) => Ok(self.fan_out_except(room_key, &frame, &out.qos, skip)),
+            (Some(outbox), _) => self.route_queued(outbox, room_key, frame, out.qos, except),
         }
+    }
+
+    /// A history room's publish: offset, store and fan-out under the ring
+    /// lock (a recovering join takes it too). Hands `out` back if it cannot
+    /// be kept (not a JSON object: Hot, binary, raw text).
+    fn publish_recorded(
+        &self,
+        ring: &std::sync::Mutex<Ring>,
+        room_key: &str,
+        out: Outgoing,
+        except: Option<&str>,
+    ) -> Result<std::result::Result<usize, Outgoing>> {
+        let mut v = match out.payload {
+            Payload::TextJson(v) if v.is_object() => v,
+            Payload::Utf8Bytes(ref b) => match serde_json::from_slice::<serde_json::Value>(b) {
+                Ok(v) if v.is_object() => v,
+                _ => return Ok(Err(out)),
+            },
+            _ => return Ok(Err(out)),
+        };
+        let room = room_key.split_once("::").map_or(room_key, |(_, r)| r);
+        let mut r = history::lock(ring);
+        let text = stamp(&mut v, r.next_offset(), room)?;
+        let bytes = text.len();
+        let frame = OutFrame::text(text);
+        r.push(frame.clone(), bytes);
+        Ok(Ok(match except {
+            None => self.fan_out(room_key, &frame, &out.qos),
+            Some(skip) => self.fan_out_except(room_key, &frame, &out.qos, skip),
+        }))
     }
 
     /// Every local member of the room.
@@ -355,11 +436,7 @@ impl RealtimeCore {
         out: Outgoing,
         except: &str,
     ) -> Result<usize> {
-        let frame = OutFrame::from_payload(&out.payload)?;
-        match &self.outbox {
-            None => Ok(self.fan_out_except(room_key, &frame, &out.qos, except)),
-            Some(outbox) => self.route_queued(outbox, room_key, frame, out.qos, Some(except)),
-        }
+        self.publish(room_key, out, Some(except), true)
     }
 
     /// Remove a closed or evicted session from every room; with `notify`
@@ -410,8 +487,8 @@ impl RealtimeCore {
             payload: Payload::TextJson(sys::member_event(kind, room, user, member_id)),
         };
         let _ = match except {
-            Some(skip) => self.publish_room_except(room_key, out, skip),
-            None => self.publish_room(room_key, out),
+            Some(skip) => self.publish(room_key, out, Some(skip), false),
+            None => self.publish(room_key, out, None, false),
         };
     }
 
@@ -436,6 +513,32 @@ impl RealtimeCore {
             },
         )
     }
+}
+
+/// `v` (a JSON object) as text with `"offset"` (replacing any) and, if it
+/// has none, `"room"` written first. Spliced into the text rather than
+/// inserted into the map: an extra `Map::insert` call site changes how the
+/// compiler inlines every other one in this crate (measured: +2.5% on joins,
+/// +1.7% per chat delivery; ADR 0011 R2).
+fn stamp(v: &mut serde_json::Value, offset: u64, room: &str) -> Result<String> {
+    let encode =
+        |e: serde_json::Error| WsPrismError::BadRequest(format!("json encode failed: {e}"));
+    let mut head = format!("{{\"offset\":{offset}");
+    if let Some(obj) = v.as_object_mut() {
+        obj.remove("offset");
+        if !obj.contains_key("room") {
+            head.push_str(",\"room\":");
+            head.push_str(&serde_json::to_string(room).map_err(encode)?);
+        }
+    }
+    let body = serde_json::to_string(v).map_err(encode)?;
+    // `body` is `{...}`: join after its `{`, with a comma unless it is empty.
+    let rest = &body[1..];
+    if rest != "}" {
+        head.push(',');
+    }
+    head.push_str(rest);
+    Ok(head)
 }
 
 /// The broker tasks of a core ([`RealtimeCore::start`]); dropping this
@@ -560,6 +663,17 @@ pub struct RealtimeCtx {
     hot_echo_to_sender: bool,
     presence_events: bool,
     core: Arc<RealtimeCore>,
+}
+
+/// What [`RealtimeCtx::join_room_and_reply`] did.
+#[derive(Debug, Clone)]
+pub struct JoinOutcome {
+    /// Room id and member id.
+    pub joined: Joined,
+    /// The room's history position, if it keeps history.
+    pub history: Option<HistoryPos>,
+    /// Whether the requested recovery happened (`None` = none requested).
+    pub recovered: Option<bool>,
 }
 
 /// Most members listed in a `sys.joined` snapshot (ADR 0010).
@@ -811,6 +925,56 @@ impl RealtimeCtx {
         Ok(joined)
     }
 
+    /// Join `room` and answer the request with `reply(ctx, outcome)`; in a
+    /// history room, resume from `recover` (ADR 0011 §3): the reply, then the
+    /// missed messages in order, all before any newer message of the room.
+    /// Without history, or when resuming is impossible, `recovered` is
+    /// false (the client resyncs from its own backend).
+    /// SPI (unstable): for the built-in room service.
+    #[doc(hidden)]
+    pub fn join_room_and_reply(
+        &mut self,
+        room: &str,
+        recover: Option<&Recover>,
+        reply: impl FnOnce(&RealtimeCtx, &JoinOutcome) -> serde_json::Value,
+    ) -> Result<Joined> {
+        crate::limits::validate_room_name(room)?;
+        let ring = match &self.core.history {
+            Some(h) => h.ring(&RealtimeCore::room_key(self.tenant(), room)),
+            None => None,
+        };
+        let Some(ring) = ring else {
+            let joined = self.join_room(room)?;
+            let outcome = JoinOutcome {
+                joined,
+                history: None,
+                recovered: recover.map(|_| false),
+            };
+            self.reply(reply(self, &outcome))?;
+            return Ok(joined);
+        };
+        // Held until the replay is queued: no publish to this room can
+        // slip in between (or be replayed and delivered live as well).
+        let mut r = history::lock(&ring);
+        let joined = self.join_room(room)?;
+        let replay = recover.and_then(|from| r.since(from));
+        let outcome = JoinOutcome {
+            joined,
+            history: Some(r.pos()),
+            recovered: recover.map(|_| replay.is_some()),
+        };
+        self.reply(reply(self, &outcome))?;
+        // One queue slot for the whole replay: a slow consumer, closed
+        // because its queue overflowed, missed more than the queue holds and
+        // must still be able to resume. Bounded by the history's limits.
+        if let Some(frames) = replay.filter(|f| !f.is_empty()) {
+            let batch = OutFrame::Batch(frames.into());
+            self.core
+                .deliver(&self.session_key, &self.conn, batch, &QoS::Reliable);
+        }
+        Ok(joined)
+    }
+
     /// The room a Hot frame targets and this session's membership in it:
     /// v2 names the room id (`chan`) and must be a room this session joined
     /// (ADR 0006 R5, R7); v1 targets the active room.
@@ -967,6 +1131,25 @@ mod tests {
             qos: QoS::Reliable,
             payload: Payload::TextJson(serde_json::json!(s)),
         }
+    }
+
+    #[test]
+    fn stamp_puts_offset_first_and_room_only_if_missing() {
+        let st = |v: serde_json::Value| {
+            let mut v = v;
+            let t = stamp(&mut v, 7, "chat:1").unwrap();
+            (
+                t.clone(),
+                serde_json::from_str::<serde_json::Value>(&t).unwrap(),
+            )
+        };
+        let (t, _) = st(serde_json::json!({}));
+        assert_eq!(t, r#"{"offset":7,"room":"chat:1"}"#);
+        let (t, v) = st(serde_json::json!({"type": "m", "offset": 99}));
+        assert_eq!(t, r#"{"offset":7,"room":"chat:1","type":"m"}"#);
+        assert_eq!(v["offset"], 7, "a payload's own offset is replaced");
+        let (t, _) = st(serde_json::json!({"room": "other", "a": "\"q"}));
+        assert_eq!(t, r#"{"offset":7,"a":"\"q","room":"other"}"#);
     }
 
     #[tokio::test]

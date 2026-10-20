@@ -4,7 +4,7 @@
 상세 결과는 [BENCHMARKS.md](../BENCHMARKS.md) 「검증 V」, 설계는 [hot-lane-over-webtransport.md](hot-lane-over-webtransport.md) §7.
 
 - 브랜치: `v/validation` (push 안 함 — 로컬 커밋만)
-- 마지막 갱신: 2026-10-19 (ADR 0011 R1까지)
+- 마지막 갱신: 2026-10-20 (ADR 0011 R2까지)
 
 ## 환경 준비 (새 셸·새 세션)
 
@@ -39,8 +39,8 @@ cargo build --release -p wsprism-loadgen
 | 배포 전 전체 리뷰 반영 | ✅ | [HARDENING](../HARDENING.md) 「배포 전 전체 리뷰」 |
 | JWKS·대역 내 토큰 갱신 | ✅ | [ADR 0012](../adr/0012-jwks-and-token-refresh.md) |
 | R1 Broker 경계 | ✅ | [ADR 0011](../adr/0011-broker-history-and-cluster.md) 「R1 구현」 |
-| R2 이력·복구 | ⏳ 다음 | ADR 0011 §3 |
-| R3~R5 Redis·클러스터·카오스 | 대기 (`redis` 크레이트·`redis:7` 이미지 다운로드 승인 필요) | ADR 0011 §9~11 |
+| R2 이력·복구 (단일 노드) | ✅ | ADR 0011 「R2 구현」 |
+| R3~R5 Redis·클러스터·카오스 | ⏳ 다음 — (`redis` 크레이트·`redis:7` 이미지 다운로드 승인 필요) | ADR 0011 §9~11 |
 
 - **성능 회귀 판정 (ADR 0011 B2):** `bench/run-icount.sh`(valgrind callgrind, 결정적 명령어 수 — WSL2에는 CPU PMU가 없어 `perf stat -e instructions` 불가)와 `bench/run-mem-users.sh`(유휴 메모리). 기준선은 `bench/results/icount-pre-r1.jsonl`, `mem-pre-r1.jsonl`. 단계마다 같은 스크립트로 다시 재서 ±2%를 본다.
 - **Queued 모드 회귀:** `WSPRISM_TEST_BROKER=queued cargo test -p wsprism-gateway` (CI에도 있음).

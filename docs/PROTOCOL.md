@@ -183,6 +183,36 @@ refresh at a time and at most one per second per connection (`RATE_LIMITED`).
 `sys.refresh` is not subject to the tenant allowlist; the connection rate
 limit applies.
 
+### History and recovery (ADR 0011 §3)
+
+Rooms covered by a tenant's `history` rule keep their recent messages. In
+such a room:
+
+- Every room message (chat, service publishes, server API publishes) carries
+  `"offset": n` — increasing by one per message — and `"room"` (added if the
+  message had none). A message's own top-level `offset` is replaced. Presence
+  events, Hot frames and non-JSON messages carry no offset and are not kept.
+- `sys.joined` carries the history position: `"epoch"` (the history's
+  lifetime id) and `"offset"` (the latest message; 0 = none yet).
+- To resume after a disconnect, join with the last position seen:
+
+```json
+{"v":1,"svc":"room","type":"join","room":"chat:1","seq":3,"data":{"recover":{"epoch":"9f2c...","offset":41}}}
+{"v":1,"svc":"sys","type":"joined","room":"chat:1","reply_to":3,"epoch":"9f2c...","offset":44,"recovered":true}
+```
+
+  With `"recovered": true`, the missed messages (offsets 42-44) follow the
+  reply, in order, before any newer message. With `"recovered": false` the
+  gap cannot be filled — the epoch changed (restart, or the room was idle
+  with no members past its `ttl_s`), the messages were already dropped
+  (`size`, `max_bytes`, `ttl_s`), or the room keeps no history — and the
+  client must resync from its own backend. A join without `recover` has no
+  `recovered` field.
+- This is also how a slow consumer (closed with `slow_consumer`, C1) gets
+  back what it missed: the replay is not limited by the session queue.
+- Clients drop messages whose offset they have already seen (the JS SDK does
+  this, and resumes automatically on reconnect).
+
 ### Presence events (ADR 0010)
 
 Tenants with `policy.presence_events: true` tell room members about

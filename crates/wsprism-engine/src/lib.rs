@@ -42,8 +42,8 @@ pub mod spi {
     pub use crate::dispatch::Dispatcher;
     pub use crate::realtime::core::{
         now_ms, BrokerTasks, CloseRequest, Connection, CtxIdentity, Departed, EgressCounters,
-        HotSlot, Member, Presence, Put, RealtimeCore, SessionRegistry, SessionSignals, SlotKey,
-        DEFAULT_SLOT_CAP,
+        HistoryConfig, HistoryPos, HistoryRule, HotSlot, JoinOutcome, Member, Presence, Put,
+        RealtimeCore, Recover, SessionRegistry, SessionSignals, SlotKey, DEFAULT_SLOT_CAP,
     };
     pub use crate::realtime::types::{close_code, CloseSpec, HotOut, OutFrame, Utf8Text};
 

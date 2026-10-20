@@ -65,7 +65,11 @@ pub fn builder() -> wsprism_gateway::GatewayBuilder {
 /// hanging forever.
 pub async fn spawn(yaml: &str) -> Gateway {
     let cfg = config::load_from_str(yaml).expect("test config must parse");
-    let built = builder().config(cfg).build().expect("gateway");
+    spawn_built(builder().config(cfg).build().expect("gateway")).await
+}
+
+/// Serve an already built gateway.
+pub async fn spawn_built(built: Built) -> Gateway {
     let state = built.__state().clone();
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
     listener.set_nonblocking(true).expect("nonblocking");

@@ -40,6 +40,33 @@ clients and the server API alike). `limits.max_rooms_per_user` defaults to
 **64** (`0` = unlimited): every joined room costs memory in several indices,
 so an unbounded default would let one client grow it without limit.
 
+## Room history (`tenants[].history`, ADR 0011 §3)
+
+Rooms matching a rule keep their recent messages so clients can resume after
+a disconnect (see PROTOCOL.md "History and recovery"). The first matching
+rule applies; rooms matching none keep nothing (the default).
+
+```yaml
+tenants:
+  - id: acme
+    history:
+      - { rooms: "chat:*", size: 200, ttl_s: 600 }       # defaults: 200, 600 s
+      - { rooms: "orders", size: 1000, ttl_s: 3600, max_bytes: 4194304 }
+```
+
+| Field | Default | Range | Meaning |
+|---|---|---|---|
+| `rooms` | — | room name or `prefix*` | Rooms the rule covers |
+| `size` | 200 | 1-10000 | Messages kept per room |
+| `ttl_s` | 600 | 1-86400 | Seconds a message is kept |
+| `max_bytes` | 1048576 | 1 KiB-64 MiB | Bytes kept per room (oldest go first) |
+
+Memory: up to `max_bytes` per history room, so budget
+`max_bytes × rooms that match` (bounded by `limits.max_rooms_total`). A room
+with no members and nothing kept is forgotten after `ttl_s`; its next message
+starts a new epoch. History needs a single node for now (a cluster broker
+fails at startup with history rules, ADR 0011 R3).
+
 ---
 
 ## Allowlists must name existing services

@@ -345,6 +345,8 @@ async fn unavailable_is_retried_in_order_and_rejected_is_dropped() {
 /// never sees a command out of order.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn subscriptions_follow_rooms_exactly_under_races() {
+    // Many rooms for 8 sessions, so rooms are created and dropped often.
+    const ROOMS: u32 = 20;
     let n = node(0, OutboxLimits::default());
     n.broker.set_subscription_delay(Duration::from_micros(200));
     let mut handles = Vec::new();
@@ -352,7 +354,7 @@ async fn subscriptions_follow_rooms_exactly_under_races() {
         let mut c = client(&n, "t", &format!("u{t}"), false);
         handles.push(tokio::spawn(async move {
             for i in 0..300u32 {
-                let room = format!("r{}", (i * 7 + t) % 5);
+                let room = format!("r{}", (i * 7 + t) % ROOMS);
                 c.ctx.join_room(&room).unwrap();
                 if i % 3 != 0 {
                     c.ctx.leave_room(&room);
@@ -369,7 +371,7 @@ async fn subscriptions_follow_rooms_exactly_under_races() {
         clients.push(h.await.unwrap());
     }
     // Wait for the commands to drain.
-    let expected: std::collections::HashSet<String> = (0..5)
+    let expected: std::collections::HashSet<String> = (0..ROOMS)
         .map(|r| format!("t::r{r}"))
         .filter(|rk| n.core.presence.member_count(rk) > 0)
         .collect();
@@ -379,15 +381,12 @@ async fn subscriptions_follow_rooms_exactly_under_races() {
     }
     assert_eq!(n.broker.subscribed(), expected);
     assert_eq!(n.broker.anomalies(), 0);
-    assert!(n
-        .broker
-        .commands()
-        .iter()
-        .any(|c| matches!(c, Subscription::Unsubscribe(_))));
+    // (Whether a room emptied during the race depends on scheduling; the
+    // phase below unsubscribes every room deterministically.)
 
     // Everyone leaves: every room is unsubscribed.
     for c in &mut clients {
-        for r in 0..5 {
+        for r in 0..ROOMS {
             c.ctx.leave_room(&format!("r{r}"));
         }
     }
@@ -397,6 +396,11 @@ async fn subscriptions_follow_rooms_exactly_under_races() {
     }
     assert!(n.broker.subscribed().is_empty());
     assert_eq!(n.broker.anomalies(), 0);
+    assert!(n
+        .broker
+        .commands()
+        .iter()
+        .any(|c| matches!(c, Subscription::Unsubscribe(_))));
 }
 
 #[tokio::test]

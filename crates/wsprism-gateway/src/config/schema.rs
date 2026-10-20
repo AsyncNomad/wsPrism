@@ -323,6 +323,69 @@ pub struct TenantConfig {
     /// Forward matching Ext requests to a backend (ADR 0008 §6).
     #[serde(default)]
     pub rpc: Option<RpcConfig>,
+    /// Rooms that keep recent messages for recovery (ADR 0011 §3); the
+    /// first rule matching a room applies.
+    #[serde(default)]
+    pub history: Vec<HistoryRuleConfig>,
+}
+
+/// One `tenants[].history` rule.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct HistoryRuleConfig {
+    /// Room pattern: exact name or `prefix*`.
+    pub rooms: String,
+    /// Messages kept per room (1-10000).
+    #[serde(default = "default_history_size")]
+    pub size: usize,
+    /// Seconds a message is kept (1-86400).
+    #[serde(default = "default_history_ttl_s")]
+    pub ttl_s: u64,
+    /// Bytes kept per room (1 KiB - 64 MiB); the oldest messages go first.
+    #[serde(default = "default_history_max_bytes")]
+    pub max_bytes: usize,
+}
+
+fn default_history_size() -> usize {
+    200
+}
+fn default_history_ttl_s() -> u64 {
+    600
+}
+fn default_history_max_bytes() -> usize {
+    1 << 20
+}
+
+impl HistoryRuleConfig {
+    pub fn validate(&self) -> Result<()> {
+        let name = self.rooms.strip_suffix('*').unwrap_or(&self.rooms);
+        if !name.is_empty() {
+            wsprism_engine::validate_room_name(name).map_err(|e| {
+                WsPrismError::BadRequest(format!(
+                    "history.rooms {:?}: {}",
+                    self.rooms,
+                    e.client_message()
+                ))
+            })?;
+        }
+        if !(1..=10_000).contains(&self.size) {
+            return Err(WsPrismError::BadRequest(
+                "history.size must be between 1 and 10000".into(),
+            ));
+        }
+        if !(1..=86_400).contains(&self.ttl_s) {
+            return Err(WsPrismError::BadRequest(
+                "history.ttl_s must be between 1 and 86400".into(),
+            ));
+        }
+        if !(1024..=64 << 20).contains(&self.max_bytes) {
+            return Err(WsPrismError::BadRequest(
+                "history.max_bytes must be between 1024 and 67108864".into(),
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// The server API listener.
@@ -671,6 +734,9 @@ impl TenantConfig {
         }
         if let Some(rpc) = &self.rpc {
             rpc.validate().map_err(in_tenant)?;
+        }
+        for h in &self.history {
+            h.validate().map_err(in_tenant)?;
         }
         if self.limits.max_frame_bytes == 0 {
             return Err(WsPrismError::BadRequest(

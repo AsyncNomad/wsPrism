@@ -1,0 +1,6 @@
+{"scenario":"ext","build":"r2","rev":"a3da841-dirty","ir":30877003,"units":102400,"ir_per_unit":301.5,"spread_pct":0.03}
+{"scenario":"hot","build":"r2","rev":"a3da841-dirty","ir":19127728,"units":101376,"ir_per_unit":188.7,"spread_pct":0.00}
+{"scenario":"hot_keyed","build":"r2","rev":"a3da841-dirty","ir":55143591,"units":101376,"ir_per_unit":544.0,"spread_pct":0.01}
+{"scenario":"api","build":"r2","rev":"a3da841-dirty","ir":17778918,"units":102400,"ir_per_unit":173.6,"spread_pct":0.00}
+{"scenario":"churn","build":"r2","rev":"a3da841-dirty","ir":393282922,"units":1024,"ir_per_unit":384065.4,"spread_pct":0.27}
+{"scenario":"disconnect","build":"r2","rev":"a3da841-dirty","ir":74944764,"units":1024,"ir_per_unit":73188.2,"spread_pct":0.48}

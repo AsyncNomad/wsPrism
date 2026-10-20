@@ -71,7 +71,7 @@ function jwt(sub, ttlS) {
   return `${head}.${createHmac("sha256", JWT_SECRET).update(head).digest("base64url")}`;
 }
 
-async function gateway({ rpcUrl, presence } = {}) {
+async function gateway({ rpcUrl, presence, history } = {}) {
   const [ws, api] = [await freePort(), await freePort()];
   const digest = createHash("sha256").update(API_KEY).digest("hex");
   const dir = mkdtempSync(join(tmpdir(), "wsprism-sdk-"));
@@ -88,7 +88,7 @@ tenants:
   - id: t
     auth: [{ kind: ticket }]
     api_keys: [{ name: test, sha256: "${digest}" }]
-${rpcUrl ? `    rpc: { url: "${rpcUrl}", allow: ["game:*"], timeout_ms: 2000 }\n` : ""}    policy:
+${history ? '    history: [{ rooms: "chat:*", size: 100, ttl_s: 60 }]\n' : ""}${rpcUrl ? `    rpc: { url: "${rpcUrl}", allow: ["game:*"], timeout_ms: 2000 }\n` : ""}    policy:
       ext_allowlist: ["room:*", "chat:*"${rpcUrl ? ', "game:*"' : ""}]
       hot_allowlist: ["1:*"]
 ${presence ? "      presence_events: true\n" : ""}  - id: j
@@ -378,4 +378,36 @@ test("expiring credentials are renewed in-band, without reconnecting", async (t)
   assert.ok(issued >= 2, "fresh credential fetched for renewal");
   assert.equal((await a.request("room", "join", { room: "hall" })).type, "joined");
   a.close();
+});
+
+test("history rooms resume after a reconnect, in order, without duplicates", async (t) => {
+  const hgw = await gateway({ history: true });
+  const a = client(hgw, "ivy", { reconnect: { minDelayMs: 50, maxDelayMs: 100 } });
+  t.after(() => a.close());
+  await a.connect();
+  const j = await a.join("chat:h");
+  assert.equal(typeof j.epoch, "string");
+  assert.equal(j.offset, 0);
+
+  const seen = [];
+  a.on("message", (m) => {
+    if (m.svc === "server") seen.push(m.offset);
+  });
+  const publish = (n) => hgw.api("POST", "/api/v1/publish", { room: "chat:h", data: { n } });
+  await publish(1);
+  await publish(2);
+  while (seen.length < 2) await sleep(10);
+
+  // The connection drops; the room keeps going without us.
+  const rejoined = next(a, "rejoined", () => true, 5000);
+  a.ws.close(4100, "test drop");
+  await next(a, "close");
+  for (const n of [3, 4, 5]) await publish(n);
+  const rooms = await rejoined;
+  assert.equal(rooms[0].recovered, true);
+  while (seen.length < 5) await sleep(10);
+  await publish(6);
+  while (seen.length < 6) await sleep(10);
+  await sleep(100);
+  assert.deepEqual(seen, [1, 2, 3, 4, 5, 6]);
 });

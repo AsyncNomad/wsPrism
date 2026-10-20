@@ -53,6 +53,12 @@ export interface Joined {
   members: Member[];
   /** More members than the snapshot holds (1000). */
   membersTruncated: boolean;
+  /** History rooms: the history's lifetime id (ADR 0011 §3). */
+  epoch?: string;
+  /** History rooms: the last offset seen (advances with each message). */
+  offset?: number;
+  /** After a rejoin that asked to resume: `false` = messages were missed, resync. */
+  recovered?: boolean;
 }
 export interface Presence {
   type: "joined" | "left";

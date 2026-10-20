@@ -20,8 +20,8 @@ use crate::{
 };
 use wsprism_engine::services::{ChatService, HotRelayService, RoomService};
 use wsprism_engine::spi::Dispatcher;
-use wsprism_engine::spi::RealtimeCore;
-use wsprism_engine::RoomLimits;
+use wsprism_engine::spi::{HistoryConfig, HistoryRule, RealtimeCore};
+use wsprism_engine::{RoomLimits, RoomPattern};
 // Sprint 5
 use crate::transport::client_ip::TrustedProxies;
 use crate::transport::handshake::HandshakeDefender;
@@ -132,10 +132,27 @@ impl AppState {
         }
 
         // 2) Create core components
-        let realtime = Arc::new(match ext.broker {
-            None => RealtimeCore::new(),
-            Some((broker, limits)) => RealtimeCore::with_broker(broker, limits)?,
-        });
+        let mut history = HistoryConfig::default();
+        for t in &cfg.tenants {
+            for h in &t.history {
+                history.add(
+                    &t.id,
+                    HistoryRule::new(
+                        RoomPattern::parse(&h.rooms),
+                        h.size,
+                        std::time::Duration::from_secs(h.ttl_s),
+                        h.max_bytes,
+                    ),
+                );
+            }
+        }
+        let realtime = Arc::new(
+            match ext.broker {
+                None => RealtimeCore::new(),
+                Some((broker, limits)) => RealtimeCore::with_broker(broker, limits)?,
+            }
+            .with_history(history)?,
+        );
         let mut dispatcher = Dispatcher::new();
 
         // 3) Register built-in services (Sprint 3)

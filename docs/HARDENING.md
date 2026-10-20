@@ -125,6 +125,7 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 - **통합**: 모든 송신 경로(`send_to_user`, `send_to_session`, `publish_room*`)가 `deliver` 하나를 거치며 `out.qos`를 따른다. (이전엔 `send_to_user`/`send_to_session`이 QoS를 무시하고 항상 lossy.) `publish_room_lossy`/`_reliable`은 QoS를 강제하는 래퍼로 유지.
 - **API 변화**: `QoS::Reliable { timeout_ms }` → `QoS::Reliable`(단위 variant), `publish_room_reliable`은 더 이상 `async`가 아니다.
 - **메트릭 변화**: `wsprism_egress_send_fail_total` 제거 → `wsprism_egress_slow_consumer_closes_total`(reliable 메시지 때문에 끊은 수신자 수). 대시보드가 있다면 갱신 필요.
+- **복구와의 정합 (2026-10-20, ADR 0011 R2)**: 이력 룸(`tenants[].history`)에서는 끊긴 수신자가 재접속하면서 마지막 offset부터 이어 받는다("끊고 재동기화" → "끊고 자동 복구"). 다시 보내는 메시지는 큐 한 칸(`OutFrame::Batch`)으로 들어가므로, 큐보다 많이 놓쳤어도 복구할 수 있다. 이력이 없는 룸은 여전히 클라이언트가 자기 백엔드에서 다시 맞춘다.
 
 #### C4 결정 기록
 

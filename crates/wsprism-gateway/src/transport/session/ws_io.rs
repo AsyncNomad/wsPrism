@@ -51,6 +51,8 @@ fn to_message(frame: OutFrame, protocol: ProtocolVersion) -> Message {
             ProtocolVersion::V1 => h.v1.to_vec(),
             ProtocolVersion::V2 => h.v2.to_vec(),
         }),
+        // Expanded by `WsTx::feed` before conversion; never nested.
+        OutFrame::Batch(_) => Message::Ping(Vec::new()),
     }
 }
 
@@ -67,13 +69,20 @@ fn is_message_too_long(e: axum::Error) -> bool {
 
 impl SessionTx for WsTx {
     async fn send(&mut self, frame: OutFrame) -> Result<(), ()> {
-        self.sink
-            .send(to_message(frame, self.protocol))
-            .await
-            .map_err(|_| ())
+        self.feed(frame).await?;
+        self.flush().await
     }
 
     async fn feed(&mut self, frame: OutFrame) -> Result<(), ()> {
+        if let OutFrame::Batch(frames) = frame {
+            for f in frames.iter() {
+                self.sink
+                    .feed(to_message(f.clone(), self.protocol))
+                    .await
+                    .map_err(|_| ())?;
+            }
+            return Ok(());
+        }
         self.sink
             .feed(to_message(frame, self.protocol))
             .await
