@@ -115,8 +115,17 @@ impl AppState {
             );
         }
 
+        // The cluster broker, if any (ADR 0011): tickets use its shared
+        // storage, rooms its fan-out.
+        let broker = match ext.broker {
+            Some(b) => Some(b),
+            None => configured_broker(&cfg.gateway.broker)?,
+        };
+
         // Authentication chains.
-        let tickets = Arc::new(TicketStore::default());
+        let tickets = Arc::new(TicketStore::for_broker(
+            broker.as_ref().map(|(b, _)| Arc::clone(b)),
+        ));
         let backend = Backend::new()?;
         let mut tenant_auth = HashMap::new();
         for t in &cfg.tenants {
@@ -148,10 +157,6 @@ impl AppState {
                 );
             }
         }
-        let broker = match ext.broker {
-            Some(b) => Some(b),
-            None => configured_broker(&cfg.gateway.broker)?,
-        };
         let realtime = Arc::new(
             match broker {
                 None => RealtimeCore::new(),

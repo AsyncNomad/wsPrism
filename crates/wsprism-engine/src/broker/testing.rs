@@ -54,6 +54,7 @@ pub struct TestBroker {
     subscription_delay_us: AtomicU64,
     open: watch::Sender<bool>,
     history: Mutex<std::collections::HashMap<Arc<str>, Kept>>,
+    kv: Mutex<std::collections::HashMap<String, (bytes::Bytes, std::time::Instant)>>,
     epochs: std::sync::atomic::AtomicU64,
 }
 
@@ -75,6 +76,7 @@ impl TestBroker {
             subscription_delay_us: AtomicU64::new(0),
             open: watch::Sender::new(true),
             history: Mutex::default(),
+            kv: Mutex::default(),
             epochs: AtomicU64::new(1),
         })
     }
@@ -314,5 +316,35 @@ impl Broker for TestBroker {
 
     fn incoming(&self) -> Option<mpsc::Receiver<Incoming>> {
         lock(&self.rx).take()
+    }
+
+    fn kv(&self) -> Option<&dyn super::SharedKv> {
+        Some(self)
+    }
+}
+
+#[async_trait]
+impl super::SharedKv for TestBroker {
+    async fn put_once(
+        &self,
+        key: &str,
+        value: bytes::Bytes,
+        ttl: Duration,
+    ) -> Result<bool, BrokerError> {
+        let mut kv = lock(&self.kv);
+        let now = std::time::Instant::now();
+        if kv.get(key).is_some_and(|(_, until)| *until > now) {
+            return Ok(false);
+        }
+        kv.insert(key.to_string(), (value, now + ttl));
+        Ok(true)
+    }
+
+    async fn take(&self, key: &str) -> Result<Option<bytes::Bytes>, BrokerError> {
+        let now = std::time::Instant::now();
+        Ok(lock(&self.kv)
+            .remove(key)
+            .filter(|(_, until)| *until > now)
+            .map(|(v, _)| v))
     }
 }

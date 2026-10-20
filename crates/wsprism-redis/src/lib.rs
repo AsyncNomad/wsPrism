@@ -43,8 +43,8 @@ use tokio::sync::{mpsc, oneshot, OnceCell};
 use tokio::task::JoinHandle;
 
 use wsprism_engine::broker::{
-    wire, Broker, BrokerError, BrokerFrame, BrokerMode, HistoryRead, Incoming, Keep, Subscription,
-    MAX_NODE_SLOT,
+    wire, Broker, BrokerError, BrokerFrame, BrokerMode, HistoryRead, Incoming, Keep, SharedKv,
+    Subscription, MAX_NODE_SLOT,
 };
 use wsprism_engine::spi::Recover;
 
@@ -432,6 +432,50 @@ impl Broker for RedisBroker {
 
     fn incoming(&self) -> Option<mpsc::Receiver<Incoming>> {
         lock(&self.incoming_rx).take()
+    }
+
+    fn kv(&self) -> Option<&dyn SharedKv> {
+        Some(self)
+    }
+}
+
+impl RedisBroker {
+    fn conn(&self) -> Result<ConnectionManager, BrokerError> {
+        self.conn
+            .get()
+            .cloned()
+            .ok_or_else(|| BrokerError::Unavailable("not started".into()))
+    }
+
+    fn kv_key(&self, key: &str) -> String {
+        format!("{}:kv:{key}", self.cfg.prefix)
+    }
+}
+
+/// `SET NX PX` / `GETDEL` (Redis 6.2+): a value is read at most once, by
+/// whichever node asks first (ADR 0011 §6).
+#[async_trait]
+impl SharedKv for RedisBroker {
+    async fn put_once(&self, key: &str, value: Bytes, ttl: Duration) -> Result<bool, BrokerError> {
+        let set: Option<String> = redis::cmd("SET")
+            .arg(self.kv_key(key))
+            .arg(value.as_ref())
+            .arg("NX")
+            .arg("PX")
+            .arg((ttl.as_millis() as u64).max(1))
+            .query_async(&mut self.conn()?)
+            .await
+            .map_err(unavailable)?;
+        Ok(set.is_some())
+    }
+
+    async fn take(&self, key: &str) -> Result<Option<Bytes>, BrokerError> {
+        let v: Option<Vec<u8>> = redis::cmd("GETDEL")
+            .arg(self.kv_key(key))
+            .query_async(&mut self.conn()?)
+            .await
+            .map_err(unavailable)?;
+        Ok(v.map(Bytes::from))
     }
 }
 

@@ -45,6 +45,7 @@ gateway:
   broker: {{ kind: redis, url: "{url}", prefix: "{prefix}", pubsub_connections: 2, slot_ttl_s: {slot_ttl_s} }}
 tenants:
   - id: t
+    auth: [{{ kind: dev }}, {{ kind: ticket }}]
     api_keys: [{{ name: backend, sha256: "{hash}" }}]
     policy: {{ ext_allowlist: ["room:*", "chat:*"], hot_allowlist: ["1:*"], presence_events: true }}
     history: [{{ rooms: "chat:*", size: 100, ttl_s: 600 }}]
@@ -337,4 +338,75 @@ async fn lost_history_starts_a_new_epoch() {
     assert_eq!(j["recovered"], false, "{j}");
     assert_ne!(j["epoch"], epoch, "a new epoch");
     assert_eq!(j["offset"], 0);
+}
+
+/// One-time tickets are shared (ADR 0011 §6): issued by node A, redeemed on
+/// node B, and only once anywhere. Redis holds a hash, never the ticket.
+#[tokio::test]
+async fn tickets_work_on_any_node_once() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("tk");
+    let (a_node, b_node) = (node(&url, &p).await, node(&url, &p).await);
+    let _ = user(&a_node, "warm").await; // both nodes started
+    let _ = user(&b_node, "warm").await;
+    let (status, body) = http(
+        a_node.api,
+        "POST",
+        "/api/v1/tickets",
+        Some(KEY),
+        Some(json!({"user": "tia", "permissions": {"subscribe": ["chat:*"]}})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let ticket = body["ticket"].as_str().unwrap().to_string();
+
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut c = client.get_multiplexed_async_connection().await.unwrap();
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg(format!("{p}:kv:*"))
+        .query_async(&mut c)
+        .await
+        .unwrap();
+    assert_eq!(keys.len(), 1);
+    assert!(
+        !keys[0].contains(&ticket[4..]),
+        "the key is a hash: {keys:?}"
+    );
+
+    let connect = |gw: &ApiGateway| {
+        let url = ws_url(gw.addr, "t", None);
+        let bearer = format!("Bearer {ticket}");
+        async move {
+            try_connect_with(
+                &url,
+                &[
+                    ("authorization", &bearer),
+                    ("sec-websocket-protocol", "wsprism.v2.json"),
+                ],
+            )
+            .await
+        }
+    };
+    let (mut ws, _) = connect(&b_node).await.expect("redeemed on the other node");
+    match next_event(&mut ws).await {
+        Event::Json(v) if v["type"] == "authed" => assert_eq!(v["data"]["user"], "tia"),
+        other => panic!("{other:?}"),
+    }
+    // Its permissions came along.
+    send_json(
+        &mut ws,
+        json!({"svc":"room","type":"join","room":"lobby","seq":1}),
+    )
+    .await;
+    assert_eq!(
+        next_of(&mut ws, "error").await["data"]["code"],
+        "NOT_ALLOWED"
+    );
+
+    let again = connect(&a_node).await;
+    assert!(
+        matches!(&again, Err(e) if e.contains("401")),
+        "{:?}",
+        again.err()
+    );
 }

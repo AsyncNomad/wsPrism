@@ -289,13 +289,19 @@ async fn tickets(
         permissions,
         expires_at: None,
     };
-    match app.tickets().issue(&tenant, identity, ttl) {
+    match app.tickets().issue(&tenant, identity, ttl).await {
         Ok(ticket) => {
             Json(json!({"ticket": ticket, "expires_in_s": ttl.as_secs()})).into_response()
         }
         Err(IssueError::Full) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({"error": "too many outstanding tickets"})),
+        )
+            .into_response(),
+        Err(IssueError::Unavailable) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(header::RETRY_AFTER, "1")],
+            Json(json!({"error": "ticket store unavailable"})),
         )
             .into_response(),
         Err(IssueError::Random) => (

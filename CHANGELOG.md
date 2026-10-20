@@ -54,8 +54,9 @@ the Rust API may break in 0.x minor releases, always listed here.
   over Redis pub/sub, member ids carry a per-node slot, Hot state crosses
   nodes with each node's room id, and a dropped subscription is reported to
   members as `sys.gap`. Room history works across nodes (offsets from a
-  Redis Lua script; resume on any node). Not yet: shared tickets and
-  cluster-wide control.
+  Redis Lua script; resume on any node) and one-time tickets are shared
+  (issued on any node, accepted once on any node). Not yet: cluster-wide
+  presence queries, disconnects and sid replacement.
 - Server API publish answers 503 + `Retry-After` when a cluster broker's queue
   is full.
 
@@ -77,8 +78,8 @@ the Rust API may break in 0.x minor releases, always listed here.
 - Example app `examples/chat-and-state` (Node backend + SDK).
 
 ### Known limitations
-- The Redis cluster broker is experimental: one-time tickets, presence
-  queries, disconnects and session limits are still per node (ADR 0011
-  R3-R4).
+- The Redis cluster broker is experimental: presence queries,
+  disconnects, sid replacement and session limits are still per node
+  (ADR 0011 R4).
 - Embedders should build with `codegen-units = 1` like this workspace
   (fan-out micro-benchmark −9–10% otherwise; docs/API.md).

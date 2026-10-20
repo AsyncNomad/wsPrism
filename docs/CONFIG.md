@@ -82,6 +82,11 @@ gateway:
   loses them (restart without persistence, eviction), the room starts a new
   epoch and clients resync — prefer a Redis with `maxmemory-policy
   noeviction` (or `volatile-*`) for history.
+- **One-time tickets** are stored in Redis (`SET NX PX`, redeemed with
+  `GETDEL`): issued by any node's server API, accepted once on any node.
+  Redis holds the ticket's SHA-256, never the ticket. If Redis is down,
+  ticket logins get 503 + `Retry-After` and issuing answers 503 (fail
+  closed).
 - **Session queues:** frames from Redis arrive in batches (up to 256), so
   keep `gateway.session_queue_capacity` well above that (the default 1024
   is fine); a small queue closes healthy readers as slow consumers.
@@ -89,14 +94,13 @@ gateway:
   commands the Lua scripts run; `wsp` = your prefix):
 
   ```
-  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +del +exists +incr +incrby +decrby +pexpire +time +zadd +zcard +zrange +zrangebyscore +zremrangebyrank +eval +evalsha +script|load +client|setinfo
+  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +getdel +del +exists +incr +incrby +decrby +pexpire +time +zadd +zcard +zrange +zrangebyscore +zremrangebyrank +eval +evalsha +script|load +client|setinfo
   ```
 
   (`client|setinfo` is optional: without it the client library's
   identification is refused and logged by Redis, nothing else.)
-- **Not yet (ADR 0011 R3-R4):** shared one-time tickets (a ticket works
-  only on the node that issued it), cluster-wide presence queries,
-  disconnects and sid replacement. Session and room limits are per node.
+- **Not yet (ADR 0011 R4):** cluster-wide presence queries, disconnects
+  and sid replacement. Session and room limits are per node.
 - **Scope:** one Redis (or Sentinel-managed primary). Keys use Redis Cluster
   hash tags already (`wsp:r:{tenant::room}`), so Cluster support will not
   change them.

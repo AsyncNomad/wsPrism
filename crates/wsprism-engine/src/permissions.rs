@@ -25,6 +25,15 @@ impl RoomPattern {
         }
     }
 
+    /// The pattern as written (`lobby`, `match:*`).
+    pub fn to_pattern(&self) -> String {
+        if self.prefix {
+            format!("{}*", self.text)
+        } else {
+            self.text.clone()
+        }
+    }
+
     /// True if `room` matches this pattern.
     pub fn matches(&self, room: &str) -> bool {
         if self.prefix {
@@ -63,6 +72,15 @@ impl Permissions {
             subscribe: parse(subscribe),
             publish: parse(publish),
         }
+    }
+
+    /// The pattern lists, as [`Permissions::from_lists`] takes them.
+    pub fn to_lists(&self) -> (Option<Vec<String>>, Option<Vec<String>>) {
+        let list = |v: &Option<Vec<RoomPattern>>| {
+            v.as_ref()
+                .map(|ps| ps.iter().map(RoomPattern::to_pattern).collect())
+        };
+        (list(&self.subscribe), list(&self.publish))
     }
 
     /// May the user join `room`?

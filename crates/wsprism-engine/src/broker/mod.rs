@@ -227,6 +227,28 @@ pub trait Broker: Send + Sync + 'static {
     /// The stream of incoming frames. Called once, when the engine starts;
     /// `None` for inline brokers.
     fn incoming(&self) -> Option<mpsc::Receiver<Incoming>>;
+
+    /// Storage shared by every node (one-time tickets, ADR 0011 §6), if
+    /// this broker has it.
+    fn kv(&self) -> Option<&dyn SharedKv> {
+        None
+    }
+}
+
+/// Small values shared by every node, each read at most once (ADR 0011
+/// §6: one-time tickets). Keys are the caller's; the broker namespaces them.
+#[async_trait]
+pub trait SharedKv: Send + Sync {
+    /// Store `value` under `key` for `ttl`, unless the key exists (false).
+    async fn put_once(
+        &self,
+        key: &str,
+        value: bytes::Bytes,
+        ttl: std::time::Duration,
+    ) -> Result<bool, BrokerError>;
+
+    /// Remove and return the value under `key` (atomic: one caller wins).
+    async fn take(&self, key: &str) -> Result<Option<bytes::Bytes>, BrokerError>;
 }
 
 /// The single-node broker (default): inline, so the engine never calls it.
