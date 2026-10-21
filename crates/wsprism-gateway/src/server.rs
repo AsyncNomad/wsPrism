@@ -4,6 +4,8 @@
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::net::TcpListener;
@@ -15,6 +17,12 @@ use crate::router;
 /// Serve until `shutdown` completes, then drain (see [`drain`]); also the
 /// server API (ADR 0008 §3) on `api` if given.
 /// The API listener stops with the process; it is not drained.
+///
+/// A cluster node whose slot another node took (it was cut off longer than
+/// `slot_ttl_s`; the other node may issue the same member ids) drains on its
+/// own and returns an error: it must not keep serving with that slot
+/// (fencing, first step; pre-release review). The binary then exits with a
+/// failure for the orchestrator to restart it.
 pub async fn serve_with_api(
     listener: TcpListener,
     api: Option<TcpListener>,
@@ -39,14 +47,51 @@ pub async fn serve_with_api(
     let app = router::build_router(state.clone());
     let _sweeper = AbortOnDrop(tokio::spawn(sweeper(state.clone())));
     let socket = &state.cfg().gateway.socket;
+    let fenced = Arc::new(AtomicBool::new(false));
+    let stop = {
+        let (state, fenced) = (state.clone(), Arc::clone(&fenced));
+        async move {
+            tokio::select! {
+                () = shutdown => {}
+                () = slot_lost(state) => fenced.store(true, Ordering::Relaxed),
+            }
+        }
+    };
     axum::serve(
         listener,
         // ConnectInfo feeds the handshake defender's per-IP limiter.
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .tcp_nodelay(socket.tcp_nodelay)
-    .with_graceful_shutdown(drain(state.clone(), shutdown))
-    .await
+    .with_graceful_shutdown(drain(state.clone(), stop))
+    .await?;
+    if fenced.load(Ordering::Relaxed) {
+        return Err(std::io::Error::other(
+            "another node took this node's cluster slot (cut off from Redis longer than \
+             slot_ttl_s); stopped serving: restart this node",
+        ));
+    }
+    Ok(())
+}
+
+/// How often the node checks that it still owns its cluster slot (the
+/// broker's heartbeat finds out; this only reads its flag).
+const FENCE_CHECK: Duration = Duration::from_millis(250);
+
+/// Completes when the broker reports that this node lost its slot (never
+/// for one node).
+async fn slot_lost(state: AppState) {
+    let mut tick = tokio::time::interval(FENCE_CHECK);
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tick.tick().await;
+        if !state.realtime().broker().healthy() {
+            tracing::error!(
+                "this node's cluster slot was taken by another node: closing every session and stopping"
+            );
+            return;
+        }
+    }
 }
 
 /// How often the sweeper visits every session (idle check granularity and

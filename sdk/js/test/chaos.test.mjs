@@ -1,7 +1,8 @@
 // Chaos tests (ADR 0011 R5): two gateway nodes on Redis, SDK clients in a
 // history room, a backend publishing through the server API — then a node
-// is killed (-9), the nodes are restarted one by one (rolling update),
-// Redis restarts empty, or Redis pauses. An offset checker
+// is killed (-9), the nodes are restarted one by one (rolling update), a
+// node is frozen past its slot TTL and its slot is taken (fencing), Redis
+// restarts empty or from an older snapshot, or Redis pauses. An offset checker
 // judges what every client received: no duplicate, no reordering, and no
 // gap unless the gateway announced one (sys.gap / recovered:false).
 //
@@ -267,6 +268,39 @@ test("rolling update: each node restarted in turn, nothing lost or repeated", { 
     assert.deepEqual(stretches[0], Array.from({ length: total }, (_, i) => i + 1), `${r.name}: every offset once`);
   }
   assert.ok(recs.every((r) => r.reconnects > 0), "every client moved at least once");
+});
+
+test("a node frozen past its slot TTL whose slot was taken stops; its clients move on", { skip }, async (t) => {
+  // Fencing (pre-release review): a node cut off (here: SIGSTOP) longer than
+  // slot_ttl_s is taken for dead; a new node may lease its slot and issue
+  // the same member ids. When the old node wakes up it must not keep
+  // serving with that slot.
+  const nodes = await cluster("fence");
+  const recs = Array.from({ length: 6 }, (_, i) => recorder(nodes, `f${i}`, i % 2));
+  t.after(() => recs.forEach((r) => r.client.close()));
+  await joinAll(recs);
+  await publish(nodes, 1, 50);
+  await until(() => recs.every((r) => lastOffset(r) === 50), 20000, "first 50", recs);
+
+  const frozen = nodes[0];
+  frozen.proc.kill("SIGSTOP");
+  frozen.alive = false; // the backend skips it meanwhile
+  await sleep(4500); // slot_ttl_s is 3
+  const newcomer = await startNode(frozen.prefix); // leases the free slot 0
+  nodes.push(newcomer);
+  const exited = new Promise((r) => frozen.proc.once("exit", (code) => r(code)));
+  frozen.proc.kill("SIGCONT");
+  const code = await Promise.race([exited, sleep(15000).then(() => "still running")]);
+  assert.notEqual(code, "still running", "the fenced node stopped");
+  assert.notEqual(code, 0, "and said it failed");
+
+  await publish(nodes, 51, 100);
+  await until(() => recs.every((r) => lastOffset(r) === 100), 30000, "everyone at 100", recs);
+  for (const r of recs) {
+    const stretches = check(r);
+    assert.deepEqual(stretches.flat(), Array.from({ length: 100 }, (_, i) => i + 1), `${r.name}: every offset once`);
+  }
+  assert.ok(recs.filter((r) => r.reconnects > 0).length >= 3, "the fenced node's clients moved");
 });
 
 function docker(...args) {
