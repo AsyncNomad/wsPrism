@@ -13,6 +13,7 @@ Depend on **`wsprism`** only. It re-exports the stable API of the other crates:
 | `wsprism-gateway` | The server: config, handshake, transports, auth, server API, the `wsprism-gateway` binary | No (through `wsprism`) |
 | `wsprism-engine` | Rooms, delivery, Hot state, service traits | No, unless you build your own server or transport on its `spi` |
 | `wsprism-protocol` | Wire formats (envelopes, Hot frames, close codes, error codes) | Only for a client or tool that speaks the protocol without the server |
+| `wsprism-redis` | The Redis cluster broker (`gateway.broker.kind: redis`, experimental) | No: enabled by the `redis` feature (default). `default-features = false` on `wsprism` builds without Redis |
 
 All crates are released together with the same version number.
 

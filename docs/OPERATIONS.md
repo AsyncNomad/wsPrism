@@ -38,8 +38,8 @@ log pipelines (Loki, Elasticsearch, Cloud Logging, ...):
 ## Stopping and updating
 
 SIGTERM (or Ctrl-C) drains: `/readyz` turns 503, new connections and
-server API publishes are refused (503), sessions are closed with 1001
-(clients reconnect), and a cluster node hands its queued frames to Redis,
+server API publishes are refused (503), sessions are closed (v2 4103
+`draining`: reconnect after a backoff; v1 1001), and a cluster node hands its queued frames to Redis,
 all within `gateway.drain_grace_ms` (default 2000). Then the process
 exits. Give your orchestrator a longer stop timeout than that.
 
@@ -50,7 +50,9 @@ Several nodes: restart them one at a time ([CLUSTER.md](CLUSTER.md)
 
 `Dockerfile` at the repository root builds a distroless image (non-root,
 no shell) with `WSPRISM_LOG_FORMAT=json`; mount the configuration at
-`/etc/wsprism/wsprism.yaml`. `deploy/compose/` runs two nodes and Redis
+`/etc/wsprism/wsprism.yaml`, with `gateway.listen` and `gateway.api.listen`
+on `0.0.0.0` (a loopback address is unreachable from outside the
+container). `deploy/compose/` runs two nodes and Redis
 with one configuration file whose differences come from the environment.
 The image has no shell or curl: use your orchestrator's HTTP probes on
 `/healthz` and `/readyz`.

@@ -81,7 +81,7 @@ INFO wsprism_gateway::gateway: wsprism-gateway serving listen=0.0.0.0:8080 api=1
 
 ```bash
 curl http://localhost:8080/healthz   # ok
-curl http://localhost:8080/readyz    # ready (503 while draining)
+curl http://localhost:8080/readyz    # ready (503 while draining, or when a cluster node lost its slot)
 curl http://127.0.0.1:8081/metrics   # Prometheus metrics (internal listener gateway.api.listen; not on the public port)
 ```
 
@@ -90,13 +90,16 @@ curl http://127.0.0.1:8081/metrics   # Prometheus metrics (internal listener gat
 - **URL:** `ws://<host>:<port>/v1/ws?tenant=<id>[&sid=<session id>]`
 - **The ticket** is sent through one of the tenant's `policy.ticket_sources` (default: header, subprotocol). The query string (`?ticket=`) is off by default because proxies log URLs.
   - Native clients: `Authorization: Bearer <ticket>`
-  - Browsers: subprotocols `wsprism.v1` + `wsprism.auth.<ticket>`
-- Browser origins must be listed in the tenant's `policy.allowed_origins`.
+  - Browsers: subprotocols `wsprism.v2.json` + `wsprism.auth.<ticket>` (v1 clients: `wsprism.v1`)
+- Browser origins must be listed in the tenant's `policy.allowed_origins`. In the example configuration only `starter_plan` allows one (`https://app.example.com`): add your page's origin (e.g. `http://localhost:3000`) to try it locally.
 
 ```js
-// Browser. The example tenants have no `auth`, so the development stub applies (only ticket "dev").
-// Real deployments choose one-time tickets, JWT or a backend proxy (docs/CONFIG.md).
-const ws = new WebSocket("ws://localhost:8080/v1/ws?tenant=starter_plan", ["wsprism.v1", "wsprism.auth.dev"]);
+// JS SDK (sdk/js). The example tenants have no `auth`, so the development stub applies:
+// ticket "dev" (user dev) or "dev.<id>" (user <id>). Real deployments use one-time tickets, JWT or a backend proxy (docs/CONFIG.md).
+import { WsPrismClient } from "./sdk/js/wsprism.js";
+const client = new WsPrismClient({ url: "ws://localhost:8080/v1/ws", tenant: "starter_plan", getTicket: async () => "dev.alice" });
+await client.connect();
+await client.join("lobby");
 ```
 
 ### 5. Send Messages (Protocol)
@@ -154,7 +157,7 @@ Most frameworks force you to choose between "Easy JSON" or "Fast Binary." wsPris
 - **🏢 Multi-Tenancy:** Single instance support for multiple isolated tenants (projects) with independent policies.
 - **🛡️ Policy Engine:** "Secure by Default." Define strict allowlists, rate limits, and payload sizes per tenant.
 - **🧠 Deterministic QoS:** Prioritized message delivery. "Lossy" channels for game state, "Reliable" channels for chat.
-- **🔌 Transport Agnostic:** The business logic is decoupled from the transport layer (WebSocket today, QUIC/TCP tomorrow).
+- **🔌 Transport Agnostic:** The business logic is decoupled from the transport layer (WebSocket today, WebTransport under evaluation).
 - **📜 History & Recovery:** Per-room message history (offset/epoch); reconnecting clients get what they missed, in order.
 - **🌐 Cluster (experimental):** Nodes share rooms, sessions, presence and history through Redis. Node kills, rolling updates and Redis restarts are chaos-tested ([`docs/CLUSTER.md`](docs/CLUSTER.md)).
 - **🔧 Operations:** JSON logs (session `trace_id`, secrets masked), `${VAR}` in config values, Prometheus metrics, lossless graceful drain, Docker image ([`docs/OPERATIONS.md`](docs/OPERATIONS.md)).
@@ -186,7 +189,8 @@ graph TD
         Router -->|Ext Lane - Text| Service_Chat[Native Service · WASM planned]
     end
     
-    Service_Chat -.->|WebHook / RPC| Backend[Your Backend API]
+    Service_Chat -.->|RPC proxy over HTTP| Backend[Your Backend API]
+    Backend -.->|Server API: publish, tickets, disconnect| Transport
 ```
 
 ---

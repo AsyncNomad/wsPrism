@@ -35,8 +35,10 @@ gateway:
 - Secrets: prefer the `*_env` settings (`secret_env`, `url_env`), which
   read the variable where it is used.
 
-The annotated reference is the repository's [`wsprism.yaml`](../wsprism.yaml);
-every option is documented there.
+The annotated reference is the repository's [`wsprism.yaml`](../wsprism.yaml)
+(gateway, limits, policies, handshake limits). Authentication, the server
+API, RPC, history and the cluster broker are documented in the sections
+below.
 
 ## Minimal example
 
@@ -52,9 +54,11 @@ tenants:
 
 ## Reloading
 
-There is **no hot reload yet**: configuration changes need a restart (drain
-first; see `drain_grace_ms`). Hot reload of tenant policies is planned for
-roadmap milestone M6.
+There is **no hot reload**: configuration changes need a restart. A
+graceful stop drains (`drain_grace_ms`), and with several nodes a rolling
+restart changes the configuration without downtime
+([CLUSTER.md](CLUSTER.md) "Rolling update"). Hot reload of tenant policies
+is planned after 0.1.0.
 
 ---
 
@@ -108,24 +112,28 @@ gateway:
 - **History** (`tenants[].history`) works across nodes: Redis gives each
   kept message its offset (one Lua script stores and publishes it), so
   every node sees the same offsets, and a client can resume on any node.
-  Per room the history takes `max_bytes` of Redis memory at most, plus two
-  small keys that outlive the last message by 24 h (the position). If Redis
-  loses them (restart without persistence, eviction), the room starts a new
-  epoch and clients resync — prefer a Redis with `maxmemory-policy
-  noeviction` (or `volatile-*`) for history.
+  Per room the history takes `max_bytes` of Redis memory at most, plus one
+  small hash (`:st`, the position) that outlives the last message by 24 h.
+  If Redis loses it (restart without data, eviction), or comes back with an
+  older state (restored snapshot, promoted replica: detected by the Redis
+  `run_id`), the room starts a new epoch and clients are told
+  (`sys.gap` with the epoch) — prefer `maxmemory-policy noeviction` (or
+  `volatile-*`) for history.
 - **One-time tickets** are stored in Redis (`SET NX PX`, redeemed with
   `GETDEL`): issued by any node's server API, accepted once on any node.
   Redis holds the ticket's SHA-256, never the ticket. If Redis is down,
   ticket logins get 503 + `Retry-After` and issuing answers 503 (fail
   closed).
-- **Session queues:** frames from Redis arrive in batches (up to 256), so
-  keep `gateway.session_queue_capacity` well above that (the default 1024
-  is fine); a small queue closes healthy readers as slow consumers.
+- **Session queues:** frames from Redis are handed to the rooms in batches
+  (up to 1024 per receive, spread over the rooms in them), so a session in
+  a busy room can get many at once; keep `gateway.session_queue_capacity`
+  at its default (1024, enough at 2.16M deliveries/s in the benchmarks) or
+  above. A small queue closes healthy readers as slow consumers.
 - **Least-privilege ACL** (verified by the cluster tests, including the
   commands the Lua scripts run; `wsp` = your prefix):
 
   ```
-  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +getdel +del +pexpire +time +zadd +zcard +zrange +zrangebyscore +zremrangebyrank +zpopmin +hmget +hgetall +hset +hincrby +hdel +hexists +sadd +srem +smembers +eval +evalsha +script|load +client|setinfo
+  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +getdel +del +pexpire +time +zadd +zcard +zrange +zrangebyscore +zremrangebyrank +zpopmin +hget +hmget +hgetall +hset +hincrby +hdel +hexists +sadd +srem +smembers +info +eval +evalsha +script|load +client|setinfo
   ```
 
   (`client|setinfo` is optional: without it the client library's
@@ -137,24 +145,26 @@ gateway:
   The server API's `disconnect` reaches every node. A node that dies takes
   its sessions out of the count. If Redis is down, new connections are
   refused with 1013 (try again later); connected sessions stay.
-- **Presence is cluster-wide** (ADR 0011 R4-2): `GET /rooms/{room}/presence`
+- **Presence is cluster-wide** (ADR 0011 R4-2): `GET /api/v1/rooms/{room}/presence`
   and the `sys.joined` snapshot list every node's members. When a node
   dies, the others notice within its `slot_ttl_s` plus a few seconds,
   remove its members and send `member_left` for them once (with presence
   events on). A node stopped gracefully is treated the same way for the
   sessions it could not clean up before exiting.
 - **Self-repair** (ADR 0011 R5): every 15 s each node checks itself
-  against Redis. If Redis lost its data (restart without persistence) or
-  the node was cut off longer than `slot_ttl_s` and taken for dead, it puts
-  its sessions and room memberships back — nobody is disconnected. A local
+  against Redis. If Redis lost its data, came back from an older snapshot,
+  or the node was cut off longer than `slot_ttl_s` and taken for dead, it
+  puts its sessions and room memberships back — nobody is disconnected. A local
   session the table no longer has (replaced elsewhere while the command to
   close it was lost) is closed as `replaced`. If another node took this
   node's slot, `/readyz` answers 503: restart the node.
 - **Per node:** `max_sessions_total` and the room limits
   (`max_rooms_total`, `max_users_per_room`, `max_rooms_per_user`).
-- **Scope:** one Redis (or Sentinel-managed primary). Keys use Redis Cluster
-  hash tags already (`wsp:r:{tenant::room}`), so Cluster support will not
-  change them.
+- **Scope:** one Redis at one address. There is no Sentinel or Redis
+  Cluster support yet: after a failover the nodes must reach the new
+  primary at the same address (a proxy or a virtual IP in front). Keys use
+  Redis Cluster hash tags already (`wsp:r:{tenant::room}`), so Cluster
+  support will not change them.
 
 ---
 
@@ -314,10 +324,10 @@ must be at least as long as the hash (32 / 48 / 64 bytes); a trailing
 newline in `secret_file` is ignored. Keys are loaded at startup, so
 `--check-config` reports a missing or malformed key. **The session is
 closed when the token expires** (`exp` + `leeway_s`; v2 close 4001
-`auth_expired`, v1 1008), checked once a second. There is no in-band token
-refresh yet: the client reconnects with a new token. To rotate keys, list
-two `jwt` links with different `kid`s. JWKS URLs are not supported yet
-(they need the HTTP client of the proxy step).
+`auth_expired`, v1 1008), checked once a second, unless the client renews
+it first with `sys.refresh` ([PROTOCOL.md](PROTOCOL.md); the JS SDK does it
+automatically). To rotate static keys, list two `jwt` links with different
+`kid`s, or use `jwks_url` (below).
 
 **One-time tickets** (`kind: ticket`): the backend calls
 `POST /api/v1/tickets` (server API, below) and hands the ticket to the
@@ -327,9 +337,10 @@ API key issued it, is valid for `ttl_s` (default 30, max 300) and is
 **consumed on first use** — including a failed use (wrong tenant), so a
 leaked ticket cannot be retried. Because tickets are single-use and
 short-lived, enabling the `query` source for browsers is a reasonable
-trade-off (the long-lived credential never enters a URL). Tickets live in
-process memory: a restart invalidates outstanding ones (single node; a
-shared store comes with M4).
+trade-off (the long-lived credential never enters a URL). With one node
+tickets live in process memory (a restart invalidates outstanding ones);
+with the Redis broker they are shared: issued on any node, accepted once on
+any node ("Cluster broker" above).
 
 ---
 
@@ -360,10 +371,10 @@ stay on both.
 
 | Endpoint | Body | Result |
 |---|---|---|
-| `POST /api/v1/publish` | `{"room": "r", "data": {...}}` (Ext, reliable by default) or `{"room": "r", "hot": {"svc": 1, "op": 2, "key": 0, "data_b64": "..."}}` (Hot, lossy by default); optional `"qos": "reliable"\|"lossy"` | `{"recipients": n}`; 503 + `Retry-After` if a cluster broker's queue is full (ADR 0011) |
-| `POST /api/v1/disconnect` | `{"user": "u", "sid": "optional", "reason": "optional"}` | `{"closed": n}` |
-| `GET /api/v1/rooms/{room}/presence` | — | `{"room": "r", "users": [...]}` |
-| `POST /api/v1/tickets` | `{"user": "u", "ttl_s": 30, "permissions": {"subscribe": ["match:*"], "publish": ["match:42"]}}` (`ttl_s`, `permissions` and each list optional; an omitted list = unrestricted, `[]` = nothing) | `{"ticket": "wpt_...", "expires_in_s": 30}`; 400 if the tenant's `auth` has no `ticket` |
+| `POST /api/v1/publish` | `{"room": "r", "data": {...}}` (Ext, reliable by default) or `{"room": "r", "hot": {"svc": 1, "op": 2, "key": 0, "data_b64": "..."}}` (Hot, lossy by default); optional `"qos": "reliable"\|"lossy"` | `{"recipients": n}`; 503 + `Retry-After` while the node drains (publish to another node) or if a cluster broker's queue is full (ADR 0011) |
+| `POST /api/v1/disconnect` | `{"user": "u", "sid": "optional", "reason": "optional"}` (`reason` at most 123 bytes: it travels in the close frame) | `{"closed": n}`; 503 if the cluster's session table is unavailable |
+| `GET /api/v1/rooms/{room}/presence` | — | `{"room": "r", "users": [...]}` (each user once); 503 if the cluster's presence is unavailable |
+| `POST /api/v1/tickets` | `{"user": "u", "ttl_s": 30, "permissions": {"subscribe": ["match:*"], "publish": ["match:42"]}}` (`ttl_s`, `permissions` and each list optional; an omitted list = unrestricted, `[]` = nothing) | `{"ticket": "wpt_...", "expires_in_s": 30}`; 400 if the tenant's `auth` has no `ticket`; 503 if too many tickets are outstanding, or (+ `Retry-After`) the cluster's ticket store is unavailable |
 
 ---
 

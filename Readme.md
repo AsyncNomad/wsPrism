@@ -79,7 +79,7 @@ INFO wsprism_gateway::gateway: wsprism-gateway serving listen=0.0.0.0:8080 api=1
 
 ```bash
 curl http://localhost:8080/healthz   # ok
-curl http://localhost:8080/readyz    # ready (드레인 중이면 503)
+curl http://localhost:8080/readyz    # ready (드레인 중이거나 클러스터 노드가 슬롯을 잃었으면 503)
 curl http://127.0.0.1:8081/metrics   # Prometheus 메트릭 (내부 리스너 gateway.api.listen — 공개 포트에는 없음)
 ```
 
@@ -88,13 +88,16 @@ curl http://127.0.0.1:8081/metrics   # Prometheus 메트릭 (내부 리스너 ga
 - **URL:** `ws://<host>:<port>/v1/ws?tenant=<id>[&sid=<세션 id>]`
 - **인증 티켓**은 테넌트의 `policy.ticket_sources` 중 하나로 보냅니다 (기본: 헤더, 서브프로토콜). 쿼리스트링(`?ticket=`)은 프록시 로그에 남기 때문에 기본으로 꺼져 있습니다.
   - 네이티브 클라이언트: `Authorization: Bearer <ticket>`
-  - 브라우저: 서브프로토콜 `wsprism.v1` + `wsprism.auth.<ticket>`
-- 브라우저에서 접속하려면 그 Origin이 테넌트의 `policy.allowed_origins`에 있어야 합니다.
+  - 브라우저: 서브프로토콜 `wsprism.v2.json` + `wsprism.auth.<ticket>` (v1 클라이언트는 `wsprism.v1`)
+- 브라우저에서 접속하려면 그 Origin이 테넌트의 `policy.allowed_origins`에 있어야 합니다. 예시 설정에서는 `starter_plan`만 `https://app.example.com`을 허용하므로, 로컬에서 시험하려면 페이지의 Origin(예: `http://localhost:3000`)을 추가하세요.
 
 ```js
-// 브라우저. 예시 설정의 테넌트는 auth가 비어 있어 개발용 스텁으로 동작합니다(티켓 "dev"만 통과).
-// 실제 배포는 1회용 티켓·JWT·백엔드 프록시 중에서 고릅니다 (docs/CONFIG.md).
-const ws = new WebSocket("ws://localhost:8080/v1/ws?tenant=starter_plan", ["wsprism.v1", "wsprism.auth.dev"]);
+// JS SDK (sdk/js). 예시 설정의 테넌트는 auth가 비어 있어 개발용 스텁으로 동작합니다:
+// 티켓 "dev"(사용자 dev) 또는 "dev.<id>"(사용자 <id>). 실제 배포는 1회용 티켓·JWT·백엔드 프록시 (docs/CONFIG.md).
+import { WsPrismClient } from "./sdk/js/wsprism.js";
+const client = new WsPrismClient({ url: "ws://localhost:8080/v1/ws", tenant: "starter_plan", getTicket: async () => "dev.alice" });
+await client.connect();
+await client.join("lobby");
 ```
 
 ### 5. 메시지 전송 (프로토콜)
@@ -161,7 +164,7 @@ wsPrism은 이 둘을 동시에 지원합니다.
 - **🏢 멀티 테넌시:** 단일 인스턴스에서 여러 프로젝트를 독립 정책으로 운영
 - **🛡️ 정책 엔진:** 기본 보안 설계, 테넌트별 허용 목록·레이트 리미트·페이로드 제한
 - **🧠 결정적 QoS:** 게임 상태는 손실 허용, 채팅은 신뢰 전달 등 우선순위 기반 전송
-- **🔌 전송 계층 독립성:** 비즈니스 로직은 전송 방식과 분리 (현재 WebSocket, 향후 QUIC/TCP)
+- **🔌 전송 계층 독립성:** 비즈니스 로직은 전송 방식과 분리 (현재 WebSocket, WebTransport 검토 중)
 - **📜 이력과 복구:** 룸별 메시지 이력(offset/epoch), 재접속 시 놓친 메시지를 순서대로 재전송
 - **🌐 클러스터 (실험적):** Redis로 여러 노드가 룸·세션·presence·이력을 공유. 노드 강제 종료·롤링 업데이트·Redis 재시작을 카오스 테스트로 검증 ([`docs/CLUSTER.md`](docs/CLUSTER.md))
 - **🔧 운영:** JSON 로그(세션 `trace_id`, 비밀값 마스킹), 설정 값의 `${VAR}`, Prometheus 메트릭, 정상 종료 시 무손실 드레인, Docker 이미지 ([`docs/OPERATIONS.md`](docs/OPERATIONS.md))
@@ -193,7 +196,8 @@ graph TD
         Router -->|Ext Lane - Text| Service_Chat[Native Service · WASM 계획]
     end
 
-    Service_Chat -.->|WebHook / RPC| Backend[Your Backend API]
+    Service_Chat -.->|RPC 프록시 HTTP| Backend[Your Backend API]
+    Backend -.->|서버 API: 발행·티켓·강제 종료| Transport
 
 ```
 

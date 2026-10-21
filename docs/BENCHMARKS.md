@@ -7,13 +7,13 @@ wsPrism의 성능 수치와 측정 방법이다. 원칙: **수치 없이 성능�
 
 | 도구 | 위치 | 무엇을 재나 |
 |---|---|---|
-| 마이크로 벤치마크 (criterion) | `crates/wsprism-core/benches/protocol.rs`, `crates/wsprism-gateway/benches/hotpath.rs` | 메시지당 핫패스 비용: 디코드, 정책, 메트릭, 룸 팬아웃 |
+| 마이크로 벤치마크 (criterion) | `crates/wsprism-protocol/benches/protocol.rs`, `crates/wsprism-gateway/benches/hotpath.rs` | 메시지당 핫패스 비용: 디코드, 정책, 메트릭, 룸 팬아웃 |
 | 부하 생성기 | `crates/wsprism-loadgen` | 실제 WebSocket 연결로 종단 간 지연(p50~p99.9), 전달 처리량, 전달률 |
 | 시나리오 스크립트 | `bench/run-baseline.sh`, `bench/gateway.yaml` | 표준 시나리오 실행 + 게이트웨이 RSS 측정 → `bench/results/<label>.jsonl` |
 
 ```bash
 # 마이크로 벤치마크
-cargo bench -p wsprism-core --bench protocol
+cargo bench -p wsprism-protocol --bench protocol
 cargo bench -p wsprism-gateway --bench hotpath
 
 # 종단 간 시나리오 (release 빌드, 로컬 게이트웨이 자동 기동)
@@ -23,7 +23,7 @@ bench/run-baseline.sh <label>
 ### 부하 생성기 방법론
 
 - 모든 연결이 룸에 들어가 수신한다. 앞쪽 `--publishers`개 연결이 송신 시각(프로세스 공통 기준 시각 기준 ns)을 담은 프로브를 `--rate`/s로 보낸다.
-  - Hot: `[v][svc=1 echo][op][flags][ts u64][padding]` → echo 서비스가 active room에 Lossy 팬아웃.
+  - Hot: `[v][svc=1][op][flags][ts u64][padding]` → svc 1(룸 릴레이 `HotRelayService`, 초기 측정 때는 echo 서비스)이 룸에 Lossy 팬아웃.
   - Ext: `chat:send` JSON, `data.msg` 앞 20자리가 ts → Reliable 팬아웃.
 - 수신 시 `지금 - ts`를 HdrHistogram(µs, 유효숫자 3)에 기록. 송신·수신이 같은 프로세스라 시계 동기화가 필요 없다.
 - 전달률 = 받은 프로브 수 / (보낸 프로브 수 × 룸 인원). Lossy 레인의 드롭이 여기에 드러난다.
@@ -45,7 +45,7 @@ bench/run-baseline.sh <label>
 - **게이트웨이와 부하 생성기가 같은 머신에서 CPU를 나눠 쓴다.** 절대값은 전용 서버보다 나쁘게 나오고, 고부하에서는 부하 생성기가 먼저 포화될 수 있다(`hot_heavy`가 목표 10,000 msg/s 대신 8.5~9k msg/s만 보냄 — 어느 쪽이 병목인지는 아직 분리하지 않음).
 - 각 시나리오 1회 실행. 같은 설정 2회 실행 간 차이는 p99 기준 약 15% 이내, p99.9는 더 크게 흔들린다(예: 4.1 vs 6.6 ms).
 - RSS는 프로세스 전체이며 할당자가 반납하지 않은 메모리를 포함한다(시나리오 간 감소하지 않음).
-- **경쟁 제품과의 비교는 아직 없다.** 공정한 비교는 전용 호스트 2대(서버/클라이언트 분리)에서 같은 시나리오로 한다(ROADMAP M5).
+- (기준선 측정 당시) 경쟁 제품 비교는 없었다. 이후 비교는 아래 「경쟁 게이트웨이와의 WebSocket 비교」(compete-v1), 「경쟁 비교 재측정」(compete-v2), 「이력을 켠 경쟁 비교」(A14). 전용 호스트 2대(서버/클라이언트 분리) 측정은 아직 없다.
 
 ## 결과
 

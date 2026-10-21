@@ -4,6 +4,13 @@
 # This configuration controls the "Protection" and "Policy" layers of the gateway.
 # It allows operators to define strict resource limits, DoS protection, and
 # tenant-specific behaviors without recompiling the server.
+#
+# Not shown here (see docs/CONFIG.md): authentication (tenants[].auth: tickets,
+# JWT/JWKS, connect proxy, plugins) and server API keys, the RPC proxy, room
+# history (tenants[].history), the Redis cluster broker (gateway.broker) and
+# ${VAR} values from the environment. The tenants below have no `auth`, so the
+# development stub accepts ticket "dev" / "dev.<id>" (startup warns): never in
+# production.
 # ==============================================================================
 
 version: 1  # (required) Config schema version.
@@ -45,14 +52,17 @@ gateway:
   writer_send_timeout_ms: 1500
 
   # Graceful Shutdown Period.
-  # When SIGTERM is received, the gateway stops accepting new connections and
-  # waits this long for existing sessions to disconnect cleanly.
-  # type: integer (ms)
+  # On SIGTERM the gateway stops accepting connections (and server API
+  # publishes), closes the sessions, and within this period waits for them to
+  # go and, with the Redis broker, for its queue to reach Redis
+  # (docs/OPERATIONS.md).
+  # type: integer (ms), default 2000
   drain_grace_ms: 5000
 
   # Per-session outbound queue capacity (messages).
   # When full, lossy publishes to that session are dropped, and a reply to the
-  # session's own request closes it as a slow consumer (close 1008 "slow_consumer").
+  # session's own request closes it as a slow consumer (close 4101 / v1 1008
+  # "slow_consumer").
   # type: integer (1..=1048576), default 1024
   session_queue_capacity: 1024
 
@@ -84,13 +94,13 @@ gateway:
 
     # Global Limit (Token Bucket):
     # Total connection attempts allowed per second across ALL IPs.
-    # Protects the server from total CPU exhaustion.
+    # Protects the server from total CPU exhaustion. Defaults: 100 / 200.
     global_rps: 500
     global_burst: 1000
 
     # Per-IP Limit (Token Bucket):
     # Connection attempts allowed per specific IP address.
-    # Prevents a single actor from flooding the handshake endpoint.
+    # Prevents a single actor from flooding the handshake endpoint. Defaults: 10 / 50.
     per_ip_rps: 10
     per_ip_burst: 20
 
@@ -117,7 +127,7 @@ tenants:
       # Packet Size Limit.
       max_frame_bytes: 4096
 
-      # [NEW in Sprint 5] Resource Governance Limits
+      # Resource Governance Limits
       # ------------------------------------------------------------
       
       # 1. Tenant-wide Concurrency Cap.
@@ -165,7 +175,7 @@ tenants:
 
       # Where clients may present their ticket, in priority order (default: header, subprotocol).
       #   header      -> Authorization: Bearer <ticket>
-      #   subprotocol -> Sec-WebSocket-Protocol: wsprism.v1, wsprism.auth.<ticket>  (browsers)
+      #   subprotocol -> Sec-WebSocket-Protocol: wsprism.v2.json, wsprism.auth.<ticket>  (browsers)
       #   query       -> ?ticket=<ticket>  (legacy; leaks into access logs, so off by default)
       ticket_sources: [header, subprotocol]
 
@@ -226,7 +236,7 @@ tenants:
 
 
   # ============================================================================
-  # Tenant C: "internal_dashboard" (Monitoring Tool)
+  # Tenant C: "internal_sys" (internal dashboard / monitoring tool)
   # ============================================================================
   - id: internal_sys
 

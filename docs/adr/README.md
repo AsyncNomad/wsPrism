@@ -15,7 +15,7 @@
 | [0008](0008-m2-lite-integration.md) | M2-lite — 인증·권한·서버 API·백엔드 프록시·SDK | 채택 (단계별) |
 | [0009](0009-crate-split-and-public-api.md) | 크레이트 분리(protocol·engine·gateway·파사드)와 공개 API 정책 | 채택 (단계별) |
 | [0010](0010-presence-events.md) | 멤버 입장·퇴장 이벤트 (presence events) | 채택 |
-| [0011](0011-broker-history-and-cluster.md) | Broker 경계, 메시지 이력·복구, 멀티 노드 (M3+M4) | 채택 (개정 1) |
+| [0011](0011-broker-history-and-cluster.md) | Broker 경계, 메시지 이력·복구, 멀티 노드 (M3+M4) | 채택 (개정 2), 구현 완료 |
 | [0012](0012-jwks-and-token-refresh.md) | JWKS와 대역 내 토큰 갱신 | 채택 |
 
 새 ADR은 다음 번호로 만들고, 결정이 바뀌면 기존 ADR을 고치지 말고 새 ADR에서 "대체함"을 밝힌다.

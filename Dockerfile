@@ -3,10 +3,13 @@
 # certificates, no shell), running as an unprivileged user.
 #
 #   docker build -t wsprism-gateway .
-#   docker run -v $PWD/wsprism.yaml:/etc/wsprism/wsprism.yaml:ro -p 8080:8080 wsprism-gateway
+#   docker run -v $PWD/my.yaml:/etc/wsprism/wsprism.yaml:ro -p 8080:8080 wsprism-gateway
 #
 # The configuration is not baked in: mount it at /etc/wsprism/wsprism.yaml
-# (or point WSPRISM_CONFIG elsewhere). Values can come from the environment
+# (or point WSPRISM_CONFIG elsewhere). Inside a container listen on 0.0.0.0
+# (gateway.listen, gateway.api.listen): the repository's wsprism.yaml binds
+# the server API to 127.0.0.1, unreachable from outside the container;
+# deploy/compose/wsprism.yaml is a container-ready starting point. Values can come from the environment
 # (${VAR} in the file, docs/CONFIG.md). Probes: GET /healthz, /readyz.
 # Example cluster: deploy/compose/.
 

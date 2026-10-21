@@ -3,14 +3,14 @@
 [ADR 0004](../adr/0004-product-direction.md)의 검증 단계 V를 **중단했다가 이어서** 할 수 있도록 남기는 살아 있는 문서. 단계가 끝날 때마다 갱신하고 커밋한다.
 상세 결과는 [BENCHMARKS.md](../BENCHMARKS.md) 「검증 V」, 설계는 [hot-lane-over-webtransport.md](hot-lane-over-webtransport.md) §7.
 
-- 브랜치: `v/validation` (push 안 함 — 로컬 커밋만)
-- 마지막 갱신: 2026-10-20 (ADR 0011 R2까지)
+- 브랜치: `v/validation`은 2026-10-21 PR #3로 `main`에 병합됨. 이후 작업은 `main`에 로컬 커밋하고, push는 사용자가 한다.
+- 마지막 갱신: 2026-10-21 (M6 0.1.0 범위, 출시 전 외부 피드백 반영 중)
 
 ## 환경 준비 (새 셸·새 세션)
 
 ```bash
 export PATH=$HOME/.cargo/bin:$PATH        # rustup으로 설치한 stable (nightly는 퍼징용)
-cd ~/code/wsPrism && git switch v/validation
+cd ~/code/wsPrism && git switch main
 (cd spikes/wt-hotlane && cargo build --release)   # 버리는 스파이크 릴레이
 cargo build --release -p wsprism-loadgen
 ```
@@ -30,7 +30,7 @@ cargo build --release -p wsprism-loadgen
 | G5 비용 | ❌ 실패 — 오프로드 켬 조건: 한계 메모리 2.8~2.9×, CPU 1.65~1.89×(기준 안) | `v2-cost-{10,30}`, `v-mem-*`, `v-cpu-scale` |
 | V6 MoQ | ✅ 완료 — MoQ 위 구축 기각 (ADR 0004 개정 3) | `moq-*.jsonl`, `moq-reconnect-*.log` |
 
-**분기 확정: "G5만 실패 → 하이브리드"** (2026-10-16). ADR 0004 확정은 G2 후. 다음 작업: T0 (아래 「T0 진행」).
+**분기 확정: "G5만 실패 → 하이브리드"** (2026-10-16). ADR 0004 확정은 G2 후. 다음 작업: 0.1.0 출시 전 점검(아래 「대기업급 단계」), 그 뒤 T0 잔여(T0-5·T0-6)와 WebTransport 단계 T.
 
 ## 대기업급 단계 (사용자 결정 2026-10-19: "배포는 나중에, 최대한 대기업급에 가깝게부터")
 
@@ -141,14 +141,13 @@ bench/run-moq.sh moq-judgment 3
 
 ## T0 진행 (경계, WebSocket만 — 설계 §9)
 
-브랜치: `v/validation`에서 이어서 한다(로컬 커밋만). 각 단계는 동작 변화 없는 리팩터링이거나, 동작 변화가 있으면 테스트를 먼저 쓴다. 게이트: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`.
+(당시 브랜치 `v/validation`, 지금은 `main`.) 각 단계는 동작 변화 없는 리팩터링이거나, 동작 변화가 있으면 테스트를 먼저 쓴다. 게이트: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`.
 
 - [x] T0-1 `SessionIo` 추출 → 읽기·쓰기 두 절반 `SessionTx`/`SessionRx`([ADR 0005](../adr/0005-session-transport-seam.md)): 세션 루프·종료 처리가 axum `WebSocket`(Split 타입) 대신 트레이트를 쓴다. WebSocket 구현 `WsIo`는 `wire`·`close`·`codec`을 감싼다. 동작 변화 없음
 - [x] T0 쓰기 합치기(버퍼 없는 `feed`×N + `flush` 1회, 최대 64) — 216만/s 포화 해소, 저부하 회귀 없음(BENCHMARKS 「T0: 쓰기 합치기」)
-- [ ] 성능 P0 (설계 [performance-architecture.md](performance-architecture.md) §11): ✅ P0-a 쓰기 합치기, ✅ P0-b ID 규칙·사용자 분리 벤치, ✅ P0-c 중첩 DashSet 제거, ✅ P0-g 쓰기 타임아웃, ✅ P0-d 종료 신호·스위퍼 (유휴 24.2 → 16.2 KB/연결). ✅ P0-f mimalloc 기각. ✅ P1-a 룸 멤버 핸들(팬아웃 수신자당 200 → 35 ns). 남은 것: P0-e 메트릭·GCRA(낮음), P1-b ID 인터닝(낮음). **다음 큰 레버: P2 전송 재작성(커널 송신 46%·프레이밍 14%) — ADR 필요, 1단계 axum 0.8은 의존성 업그레이드(네트워크) 확인 후.** 프로토콜 v2는 [ADR 0006](../adr/0006-protocol-v2.md) 채택(리뷰 반영) — v2-1 ✅(협상·종료 코드), v2-2 ✅(관대한 제어 봉투, R6 이름 유지), v2-3 ✅(룸 ID·member_id·v2 Hot 프레임·릴레이). T0-3 ✅, v2-4 틱 ✅(묶음 프레임은 T로 연기). 다음: 부하 생성기 v2 키 모드로 슬롯·틱 측정 → ADR 0007 송신 프로토타입(사용자 승인: "진행", 2026-10-16). P2 [ADR 0007](../adr/0007-transport-own-framing.md) 단계 1 기준 미달 → **보류**, 실험 코드 제거(사용자 결정 2026-10-16: 상용 수준 기능 확장 먼저, 성능은 나중에). **M2-lite** ([ADR 0008](../adr/0008-m2-lite-integration.md)): M2-1~M2-8 ✅ (인증 체인·권한·서버 API·1회용 티켓·JWT·connect/RPC 프록시·JS SDK `sdk/js`·예제 앱 `examples/chat-and-state`) — **M2 완료 기준 충족**. M2-9 ✅ ([ADR 0009](../adr/0009-crate-split-and-public-api.md) S1~S6: protocol·engine·gateway·파사드 분리, `Gateway::builder`, MSRV 1.95, allowlist 엄격화) + crates.io 배포 준비 ✅(`docs/RELEASING.md`, 게시는 사용자). 배포 전 전체 리뷰 반영 ✅(HARDENING "배포 전 전체 리뷰", ADR 0010 presence). **남은 결정·작업:** 실제 게시(사용자 토큰), 성능 단계(팬아웃 +8~12% — cgu/LTO, ADR 0009 §6), JWKS, G2 브라우저 측정, WebTransport 단계 T. 틱 송신 측정 ✅(CPU −57~79%) 프로파일: `bench/profile-gateway.sh <이름>` (perf 6.8 설치됨; 재부팅 시 `perf_event_paranoid=1`, `kptr_restrict=0` 재설정 필요)
+- [ ] 성능 P0 (설계 [performance-architecture.md](performance-architecture.md) §11): ✅ P0-a 쓰기 합치기, ✅ P0-b ID 규칙·사용자 분리 벤치, ✅ P0-c 중첩 DashSet 제거, ✅ P0-g 쓰기 타임아웃, ✅ P0-d 종료 신호·스위퍼 (유휴 24.2 → 16.2 KB/연결). ✅ P0-f mimalloc 기각. ✅ P1-a 룸 멤버 핸들(팬아웃 수신자당 200 → 35 ns). 남은 것: P0-e 메트릭·GCRA(낮음), P1-b ID 인터닝(낮음). **다음 큰 레버: P2 전송 재작성(커널 송신 46%·프레이밍 14%) — ADR 필요, 1단계 axum 0.8은 의존성 업그레이드(네트워크) 확인 후.** 프로토콜 v2는 [ADR 0006](../adr/0006-protocol-v2.md) 채택(리뷰 반영) — v2-1 ✅(협상·종료 코드), v2-2 ✅(관대한 제어 봉투, R6 이름 유지), v2-3 ✅(룸 ID·member_id·v2 Hot 프레임·릴레이). T0-3 ✅, v2-4 틱 ✅(묶음 프레임은 T로 연기). 다음: 부하 생성기 v2 키 모드로 슬롯·틱 측정 → ADR 0007 송신 프로토타입(사용자 승인: "진행", 2026-10-16). P2 [ADR 0007](../adr/0007-transport-own-framing.md) 단계 1 기준 미달 → **보류**, 실험 코드 제거(사용자 결정 2026-10-16: 상용 수준 기능 확장 먼저, 성능은 나중에). **M2-lite** ([ADR 0008](../adr/0008-m2-lite-integration.md)): M2-1~M2-8 ✅ (인증 체인·권한·서버 API·1회용 티켓·JWT·connect/RPC 프록시·JS SDK `sdk/js`·예제 앱 `examples/chat-and-state`) — **M2 완료 기준 충족**. M2-9 ✅ ([ADR 0009](../adr/0009-crate-split-and-public-api.md) S1~S6: protocol·engine·gateway·파사드 분리, `Gateway::builder`, MSRV 1.95, allowlist 엄격화) + crates.io 배포 준비 ✅(`docs/RELEASING.md`, 게시는 사용자). 배포 전 전체 리뷰 반영 ✅(HARDENING "배포 전 전체 리뷰", ADR 0010 presence). **남은 결정·작업:** 실제 게시(사용자 토큰), G2 브라우저 측정, WebTransport 단계 T. (JWKS ✅ ADR 0012, 팬아웃 cgu ✅ ADR 0009 §6.) 틱 송신 측정 ✅(CPU −57~79%) 프로파일: `bench/profile-gateway.sh <이름>` (perf 6.8 설치됨; 재부팅 시 `perf_event_paranoid=1`, `kptr_restrict=0` 재설정 필요)
 - [x] T0-3 Hot 슬롯: 키 있는 Hot 프레임은 수신 세션의 `(sender, svc, key)` 최신값 슬롯으로(상한 1,024, 초과 새 키 드롭). 메트릭 `wsprism_hot_slot_{overwritten,full_drops}_total`. 통합 테스트로 늦은 독자가 백로그 대신 최신값을 받는 것 확인(슬롯 끄면 실패). 후속: 부하 생성기에 v2 키 있는 모드 → 게이트웨이에서 AoI 측정
-- [ ] T0-2 전달 등급: `OutFrame::Hot { key, bytes }`, `RealtimeCore::deliver`의 Lossy 바이너리 → Hot 경로
-- [ ] T0-3 Hot 슬롯 `(sender, svc, key)` 최신값 + 짧은 FIFO + 상한, 틱 묶음 전송(WebSocket) — 큐 적체·드롭 지표, 포화점 시나리오(`rooms:160·240`) 재측정
-- [ ] T0-4 Hot 헤더 확장(KEY/SENDER), 연결별 `member_id`, `HotRelayService`, 크기 상한(PROTOCOL.md)
+- [x] T0-2 전달 등급: `OutFrame::Hot(Arc<HotOut>)`(v1·v2 형식을 한 번씩 인코딩), Lossy 바이너리 → Hot 경로
+- [x] T0-4 Hot 헤더 확장(KEY/SENDER), 연결별 `member_id`, `HotRelayService` — ADR 0006 v2-3로 완료 (T0-3은 위)
 - [ ] T0-5 코어 전달 API를 `Audience`(룸·멤버 지정·세션·사용자)로 통합 — 서버 피어 멤버 지정 송신 경계(설계 §4.6)
 - [ ] T0-6 완료 조건 확인: `SessionIo`·전달 등급이 브라우저 세션을 전제하지 않음

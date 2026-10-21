@@ -22,14 +22,15 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 
 | 항목 | 상태 |
 |---|---|
-| 연결 앞단 | 탄탄함. 보안·정확성 결함 15건 수정(`hardening`), admission 파이프라인, Origin·신뢰 프록시·티켓 경로, 프로토콜 v1(에러 코드, `reply_to`, 버전 협상). 테스트 79개, 퍼징 5종, cargo-deny |
-| 전송 | WebSocket만. Hot Lane의 Lossy는 서버 큐에서만 성립(네트워크 구간은 TCP) |
-| 백엔드 연동 | 없음. 서비스는 Rust로 함께 컴파일, 서버 발행 API 없음 |
-| 확장 지점 | 서비스는 `AppState::new`에서 직접 등록, 인증은 티켓 `dev`만 통과하는 스텁 |
-| 확장성 | 단일 노드 |
-| 성능 | 기준선 측정 완료([BENCHMARKS](BENCHMARKS.md)). TCP_NODELAY 수정으로 p99.9 26.7→3.6 ms. 메시지당 최대 비용은 메트릭(275 ns)과 팬아웃(수신자당 ~200 ns). **경쟁 비교(WebSocket)**: 연결당 메모리 최소(Centrifugo 대비 1.4~3.6×, Sockudo 대비 9~14× 적음), CPU 우위 1.07~1.25×, 8코어 포화점은 Centrifugo가 더 높음(216만 전달/s) |
+| 연결 앞단 | admission 파이프라인, Origin·신뢰 프록시·티켓 경로, 프로토콜 v1·v2(에러·종료 코드, `reply_to`, 버전 협상), 배포 전 전체 리뷰 반영([HARDENING](HARDENING.md)). Rust 테스트 약 270개 + JS·카오스 테스트, 퍼징 5종, cargo-deny |
+| 전송 | WebSocket만. Hot Lane의 Lossy는 서버 큐에서만 성립(네트워크 구간은 TCP). WebTransport는 단계 T |
+| 백엔드 연동 | 인증 체인(1회용 티켓, JWT·JWKS, connect 프록시, 플러그인), 서버 API(발행·티켓·강제 종료·presence), RPC 프록시, JS SDK, 예제 앱 |
+| 확장 지점 | `Gateway::builder`로 서비스·인증기 추가(파사드 `wsprism`, [API.md](API.md)) |
+| 이력·확장성 | 룸 이력과 재접속 복구. Redis 클러스터(**실험적**, 고가용성 + 제한적 확장): [CLUSTER.md](CLUSTER.md) |
+| 운영 | JSON 로그, `${VAR}` 설정, Prometheus, 무손실 드레인, Docker 이미지: [OPERATIONS.md](OPERATIONS.md) |
+| 성능 | [BENCHMARKS](BENCHMARKS.md). 경쟁 비교(compete-v2, 이력 켠 A14): Centrifugo 대비 연결당 메모리 2.6~4배 적음, 저·중부하 CPU 1.24~1.5배 적음, 216만 전달/s에서 p99 6~9 ms(Centrifugo는 이력을 켜면 포화). 단일 노드·같은 장치 측정 |
 
-**M0, M1 완료 (브랜치 `m0/engine-prep`). 검증 V(브랜치 `v/validation`): G1·G3·G4 통과, G5 실패(메모리) → ADR 0004 분기 "하이브리드". 남은 것 G2(브라우저). 다음: T0.**
+(2026-10-21 기준) **M0~M5 완료, M6은 0.1.0 범위 완료. 검증 V: G1·G3·G4 통과, G5 실패 → "하이브리드", G2(브라우저) 남음. 다음: 0.1.0 출시 전 점검과 게시(사용자).**
 
 ## 목표를 측정 가능하게
 
@@ -47,7 +48,7 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 
 | 계층 | 대상 | 방식 |
 |---|---|---|
-| ① 설정 | 운영자 | YAML, `--check-config`, 핫 리로드(M6) |
+| ① 설정 | 운영자 | YAML, `--check-config`, `${VAR}`, 핫 리로드(0.1.0 이후) |
 | ② 백엔드 프록시 | **대부분의 팀(언어 무관)** | connect / rpc를 백엔드로 위임(HTTP → gRPC), 서버 발행 API, 1회용 티켓 발급 |
 | ③ Rust 트레이트 | 성능이 필요한 팀 | `Authenticator`, `TextService`·`HotService`, 이후 `Broker` → `Gateway::builder`로 조립 (✅ ADR 0009) |
 | ④ WASM 플러그인 | SaaS 테넌트별 커스텀 | Ext Lane 전용, 샌드박스. Hot Lane에는 넣지 않는다 |
@@ -57,6 +58,7 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 ```
 wsprism-protocol  와이어 계약 (전송·런타임 무관)
 wsprism-engine    룸·전달·Hot 상태·서비스 트레이트 (axum·HTTP·설정 형식 무관)
+wsprism-redis     클러스터 Broker(Redis): 노드 간 룸·이력·세션·presence·티켓 공유
 wsprism-gateway   서버: 설정·핸드셰이크·전송·인증(JWT·티켓·프록시·플러그인)·서버 API + 바이너리
 wsprism           파사드: 안정 API + GatewayBuilder (사용자가 의존하는 크레이트)
 sdk/js            클라이언트 SDK (JS 완료 → Unity C# → Dart). WebTransport 우선, WebSocket 폴백
@@ -72,11 +74,11 @@ sdk/js            클라이언트 SDK (JS 완료 → Unity C# → Dart). WebTran
 | **M1 정직한 기반** ✅ | admission 파이프라인, Origin 허용 목록, 신뢰 프록시 + XFF, 티켓 경로 + 버전 협상([ADR 0003](adr/0003-ticket-sources-and-subprotocol.md)), 에러 코드 목록·정보 노출 제거, `reply_to`, `--config`/`--check-config`, 문서 정합, 퍼징 5종, cargo-deny(`serde_yaml` 교체), 벤치마크 기준선(TCP_NODELAY 수정) | 기준선 수치 문서화, 퍼징·감사 CI |
 | **V 차별화 검증** (약 3주) | ✅ V1 netlab(비특권, root 불필요) ✅ V2 스파이크 릴레이(WS·WSS·WT) ✅ V3 `loadgen statesync`(AoI·끊김·CPU·RSS). 남은 것: V4 매트릭스(틱 {즉시, 60, 30} 포함)·V5 비용 → G1·G5 우선, V6 MoQ(상한 3일), V7 브라우저, V8 소크, V9 폴백. 노이즈 이웃 격리는 G1 실패 시에만. 세부: [설계 §7](design/hot-lane-over-webtransport.md#7-검증-단계-v-약-3주) | 관문 G1~G5 → ADR 0004 확정 / 하이브리드 / 전환 |
 | **T0 경계** | `SessionIo`(전송 능력), 전달 등급(`OutFrame::Hot`), Hot 슬롯(`(sender, svc, key)` 최신값, 상한) + 틱 묶음 전송, Hot 헤더 확장·연결별 `member_id`·크기 상한 — **WebSocket만으로, M2 공개 트레이트 전에**. 서버 피어 경로를 막지 않을 것. 세부: [설계 §9](design/hot-lane-over-webtransport.md#9-작업-순서-v-통과-후) | 동작 변화 없는 리팩터링 + WS에서 큐 적체 감소 측정 |
-| **M2-lite 끼워 쓰기** | engine/server crate 분리, `Authenticator` 트레이트 + JWT(테넌트별 JWKS) + **1회용 티켓 발급 API**, HTTP 백엔드 프록시(connect·rpc), **서버 발행 API**(`/api/v1/publish`, `/api/v1/disconnect`), 최소 TS SDK(WS). gRPC·다양한 플러그인은 뒤로 | Node 또는 Spring 백엔드에 붙인 예제 앱 — **충족 (2026-10-16)**: [ADR 0008](adr/0008-m2-lite-integration.md) M2-1~M2-8, `examples/chat-and-state`. 남음: M2-9 크레이트 분리, JWKS |
+| **M2-lite 끼워 쓰기** | engine/server crate 분리, `Authenticator` 트레이트 + JWT(테넌트별 JWKS) + **1회용 티켓 발급 API**, HTTP 백엔드 프록시(connect·rpc), **서버 발행 API**(`/api/v1/publish`, `/api/v1/disconnect`), 최소 TS SDK(WS). gRPC·다양한 플러그인은 뒤로 | Node 또는 Spring 백엔드에 붙인 예제 앱 — **충족 (2026-10-16)**: [ADR 0008](adr/0008-m2-lite-integration.md) M2-1~M2-8, `examples/chat-and-state`. M2-9 크레이트 분리 ✅([ADR 0009](adr/0009-crate-split-and-public-api.md)), JWKS ✅([ADR 0012](adr/0012-jwks-and-token-refresh.md)) |
 | **T 비신뢰 전송 + 서버 피어** | V6 결정에 따라 WebTransport 직접 구현(`WtIo`) 또는 MoQ 경로, **서버 피어**(권위 게임 서버의 신뢰 장기 연결: 입력 수신·권위 상태 발행), `transport` 메트릭 라벨, 1회용 티켓 경로, SDK의 비신뢰 우선·WS 폴백 | 같은 서비스 코드가 혼합 전송 룸에서 동작, V의 이득이 제품 경로에서 재현 |
-| **M3 신뢰성 (동등 수준)** | 채널 일반화, 채널별 이력 + offset/epoch + 재접속 복구, ACK. Hot Lane은 이력 없음 | 끊긴 사이 메시지 복구 테스트 |
-| **M4 멀티 노드 (동등 수준)** | Broker(Redis 먼저), 노드 로컬 구독 색인, 클러스터 강제 퇴장, 1회용 티켓 공유 저장소, 전역 한도의 정확/근사 결정 | 노드 강제 종료 카오스 테스트 |
-| **M5 성능 공개** | 메시지당 할당 제거(메트릭 라벨, 팬아웃), ID 인터닝, 프레임 사전 인코딩, 표준 메트릭 crate. 비교 대상 전체와 공개 벤치마크 | 재현 가능한 벤치 리포와 결과 |
+| **M3 신뢰성 (동등 수준)** ✅ | 채널 일반화, 채널별 이력 + offset/epoch + 재접속 복구, ACK. Hot Lane은 이력 없음 | 끊긴 사이 메시지 복구 테스트 — 충족 (2026-10-20, [ADR 0011](adr/0011-broker-history-and-cluster.md) R2·R3-2. ACK는 없음: offset 기반 복구) |
+| **M4 멀티 노드 (동등 수준)** ✅ | Broker(Redis 먼저), 노드 로컬 구독 색인, 클러스터 강제 퇴장, 1회용 티켓 공유 저장소, 전역 한도의 정확/근사 결정 | 노드 강제 종료 카오스 테스트 — 충족 (2026-10-20, ADR 0011 R3~R5) |
+| **M5 성능 공개** ✅ | 메시지당 할당 제거(메트릭 라벨, 팬아웃), ID 인터닝, 프레임 사전 인코딩, 표준 메트릭 crate. 비교 대상 전체와 공개 벤치마크 | 재현 가능한 벤치 리포와 결과 — 충족 (2026-10-21, BENCHMARKS 「M5」. ID 인터닝·표준 메트릭 crate는 우선순위가 낮아 하지 않음. 전용 호스트 측정은 아직) |
 | **M6 운영** | 환경변수 오버라이드, 핫 리로드(`ArcSwap`), OpenTelemetry, JSON 로그·마스킹, 관리 API(RBAC), Docker/Helm, 재접속 지터, 메트릭 단위 표준화, UDP 로드밸런서 가이드 | 롤링 업데이트 가이드대로 무중단 배포 — **0.1.0 범위 충족 (2026-10-21)**: 카오스 테스트로 검증(docs/CLUSTER.md "Rolling update"). 핫 리로드·OpenTelemetry·RBAC·Helm·UDP 가이드는 0.1.0 이후 |
 | **M7 채택** | SDK 확장(Unity C#, Dart), semver·CHANGELOG·MSRV, `SECURITY.md`·`CONTRIBUTING.md`, 예제(멀티플레이·협업 커서), 소크·카오스, 외부 보안 감사 | 1.0 릴리스 |
 

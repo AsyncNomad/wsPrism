@@ -1,13 +1,20 @@
-# wsPrism Protocol v1 (Draft)
+# wsPrism Protocol (v2 and v1)
 
 wsPrism is a **Self-hosted Realtime Gateway** with a **Two-Lane** architecture:
 
-- **Hot Lane (Binary)**: deterministic, ultra-low latency, **native-only**
-- **Ext Lane (Text/JSON)**: flexible, customizable via **WASM plugins (ingress-only)**
+- **Hot Lane (Binary)**: deterministic, ultra-low latency
+- **Ext Lane (Text/JSON)**: flexible; requests go to built-in or custom
+  services (`Gateway::builder`, docs/API.md) or to your backend (RPC proxy)
+
+Two wire versions are negotiated by subprotocol: **v2** (`wsprism.v2.json`,
+the JS SDK's default; ADR 0006) and **v1** (`wsprism.v1`, kept for older
+clients). Where they differ this document says so.
 
 Key contracts:
-- Hot Lane packets **do not include `room`**. They are routed to the user's **active room**.
-- Ingress pipeline for Ext Lane: **Policy → Plugin → Service**
+- v2 Hot frames name their room (`chan`, the room id from `sys.joined`);
+  v1 Hot frames carry no room and go to the session's **active room**.
+- Ingress pipeline for Ext Lane: **Policy → Service** (a WASM plugin stage is
+  planned, not implemented: docs/PLUGIN_ABI.md).
 
 ---
 
@@ -98,8 +105,9 @@ Little-endian.
 - `0x02`: ACK_REQUESTED
 
 Hot Lane routing:
-- `svc_id` routes to a native BinaryService
-- **room is resolved by presence.active_room**
+- `svc_id` routes to a native `HotService`
+- v1: the room is the session's active room (the last one joined); v2: the
+  frame's `chan`
 
 **Delivery today (WebSocket).** Hot Lane traffic is *lossy only inside the
 gateway*: when a recipient's outbound queue is full, the frame is dropped for
@@ -266,7 +274,7 @@ sends nothing.
 | `TOO_MANY_SESSIONS` | Per-user session limit reached (`on_exceed: deny`) |
 | `SLOW_CONSUMER` | The client could not keep up with its outbound queue |
 | `TIMEOUT` | No activity within the idle timeout |
-| `UNAVAILABLE` | A backend the request depends on (RPC proxy) failed or timed out; retry later |
+| `UNAVAILABLE` | Something the request depends on is unavailable or saturated: the RPC backend, the cluster broker's queue (full, or waiting too long), the cluster's session or presence store, or the authentication backend during `sys.refresh`; retry later |
 | `INTERNAL` | Internal error (`msg` is always `internal error`) |
 
 Requests answered by an **RPC backend** (`tenants[].rpc`) may also carry the
@@ -282,11 +290,13 @@ Before the upgrade (plain HTTP responses):
 | HTTP | When |
 |---|---|
 | 400 | Unknown tenant |
+| 400 | `sid` outside `[A-Za-z0-9_-]{1,64}` |
 | 400 | Subprotocols offered but no supported version (`wsprism.v2.json`, `wsprism.v1`) |
 | 401 | Missing ticket (none of the tenant's `ticket_sources` present) or invalid ticket |
 | 403 | Browser `Origin` not in the tenant's `policy.allowed_origins` (requests without `Origin` are not checked) |
 | 429 + `Retry-After` | Handshake rate limit |
-| 503 (+ `Retry-After`) | Draining, or tenant session capacity reached |
+| 503 | Draining (no `Retry-After`: connect to another node) |
+| 503 + `Retry-After` | Tenant session capacity reached, or authentication unavailable (connect proxy, JWKS, or the cluster's ticket store down) |
 
 After the upgrade, the gateway sends an explanatory `sys.*` message (when
 there is one) and then a close frame:
@@ -304,6 +314,8 @@ there is one) and then a close frame:
 | 1009 | `message too big` | — | Message exceeded the tenant `max_frame_bytes` |
 | 1008 | `disconnected` | `sys.kicked{reason}` | The tenant's backend disconnected the user (server API) |
 | 1013 | `capacity` | `sys.error RESOURCE_EXHAUSTED` | Tenant capacity reached during admission |
+| 1013 | `unavailable` | `sys.error UNAVAILABLE` | The cluster's session table is unavailable (v2 too: 1013, try again later) |
+| 1008 | `auth_expired` | `sys.kicked` | The credential's `exp` passed without `sys.refresh` (v2: 4001) |
 
 ### Protocol v2 close codes (ADR 0006 §6)
 

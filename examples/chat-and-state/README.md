@@ -10,6 +10,7 @@ It shows the pieces you need to put wsPrism behind your own app:
 | Chat | `client.send("chat", "send", ...)` | Built-in service on the Ext lane |
 | Dice | `client.rpc("game", "roll", ...)` → `backend.mjs` `POST /wsprism/rpc` | **RPC proxy**: the gateway forwards `game:*` to your backend; the backend answers *and* broadcasts to the room via `POST /api/v1/publish` |
 | Cursors | `client.sendState(...)` / `on("state")` | Hot lane state, paced at 30 Hz (`hot_tick_hz`), latest value per user |
+| Who is here | `client.on("presence", ...)` | Presence events (`presence_events: true`): a member's cursor disappears when it leaves |
 
 ## Run
 

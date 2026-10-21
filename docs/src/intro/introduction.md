@@ -80,7 +80,7 @@ publish to rooms and disconnect users; an RPC proxy so business logic lives in
 your backend; a dependency-free JavaScript SDK.
 
 🧩 **Transport Agnostic Design**  
-Sessions run on a transport seam: WebSocket today, WebTransport next.
+Sessions run on a transport seam: WebSocket today, WebTransport under evaluation.
 
 ---
 

@@ -37,6 +37,8 @@ export interface Authed {
   tenant: string;
   user: string;
   sid: string;
+  /** Seconds until the credential expires, if it does (the SDK refreshes it). */
+  expires_in_s?: number;
 }
 export interface Member {
   user: string;
@@ -130,7 +132,9 @@ export class WsPrismClient {
   send(svc: string, type: string, opts?: { room?: string; data?: unknown }): void;
   /** Ext request that the gateway or a backend answers. */
   request(svc: string, type: string, opts?: { room?: string; data?: unknown; timeoutMs?: number }): Promise<Message>;
-  join(room: string): Promise<Joined>;
+  /** `recover`: resume a history room from a known position (the SDK does
+   * this itself when it rejoins after a reconnect). */
+  join(room: string, opts?: { recover?: { epoch: string; offset: number } }): Promise<Joined>;
   leave(room: string): Promise<void>;
   /** Backend RPC (`tenants[].rpc`): the reply's `data`. */
   rpc<T = unknown>(svc: string, type: string, opts?: { room?: string; data?: unknown; timeoutMs?: number }): Promise<T>;

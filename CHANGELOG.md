@@ -43,7 +43,8 @@ the Rust API may break in 0.x minor releases, always listed here.
 - Startup fails when an allowlist names a service that does not exist.
 - Every authenticator's user id (including plugins) must be `[A-Za-z0-9_-]{1,64}`;
   the client `sid` follows the same rule (HTTP 400 otherwise). The dev
-  authenticator's users are now `dev` / `<id>` (no `user:` prefix).
+  authenticator accepts `dev` (user `dev`) and `dev:<id>` / `dev.<id>`
+  (user `<id>`, no `user:` prefix; `dev.` works in a browser subprotocol).
 - The handshake rate limiter is on by default; IPv6 clients are limited per /64
   (`handshake_limit.ipv6_prefix_len`).
 - `policy.hot_echo_to_sender: false` relays Hot state to everyone but the sender;
@@ -62,8 +63,13 @@ the Rust API may break in 0.x minor releases, always listed here.
   announced as having left, once. Nodes repair themselves after Redis
   loses data or a node is cut off, refill history rooms after a dropped
   subscription, tell clients when a room's history restarted, and never
-  apply a retried history publish twice. Chaos-tested: node `kill -9`,
-  Redis restart, Redis pause (docs/CLUSTER.md).
+  apply a retried history publish twice. A Redis that comes back with an
+  older state (restored snapshot, promoted replica; detected by its
+  `run_id`) starts a new history epoch, so clients are told instead of
+  silently dropping reused offsets. One Redis at one address (no Sentinel or
+  Redis Cluster yet). Chaos-tested: node `kill -9`, rolling update, Redis
+  restart (empty and from an older snapshot), Redis pause, stop while Redis
+  is slow (docs/CLUSTER.md). Least-privilege ACL in docs/CONFIG.md.
 - Server API publish answers 503 + `Retry-After` when a cluster broker's queue
   is full.
 - Operations: `--log-format json` (`WSPRISM_LOG_FORMAT`) writes one JSON
@@ -87,20 +93,31 @@ the Rust API may break in 0.x minor releases, always listed here.
   `HotService` and authenticator plugins; `prelude`.
 - API levels: stable (facade), SPI (`wsprism_engine::spi`, unstable),
   internal. MSRV 1.95.
-- Broker boundary (`wsprism_engine::broker`, **experimental** until the Redis
-  broker ships; ADR 0011 R1). One node uses the inline `MemoryBroker`, which
+- Broker boundary (`wsprism_engine::broker`, **experimental** like the Redis
+  broker that implements it; ADR 0011 R1). One node uses the inline `MemoryBroker`, which
   costs nothing. Member ids (Hot `sender`) are now a node slot plus a per-room
   counter, unique among a room's live members across a cluster.
+- SPI `Member` has `skip_upto` / `skip_epoch` (callers building one pass `0` /
+  `None`).
+- The `wsprism` facade forwards the `redis` feature (default on):
+  `default-features = false` builds without Redis.
 
 ### Clients
 - JavaScript SDK (`sdk/js`, no dependencies, Node 22+ and browsers): tickets
   via subprotocol, request/reply, rooms with rejoin, Hot state with stale
   frame dropping, reconnection by close-code range, history rooms resumed
-  on reconnect (`recovered: false` on the rejoined room = resync).
+  on reconnect (`recovered: false` on the rejoined room = resync), a `gap`
+  event (with `epoch` when a room's history restarted), presence events,
+  automatic token refresh (`sys.refresh`) and a list of gateway URLs tried
+  in turn on reconnect.
 - Example app `examples/chat-and-state` (Node backend + SDK).
 
 ### Known limitations
-- The Redis cluster broker is experimental until the chaos tests (ADR 0011
-  R5); tenant-wide session and room limits are per node.
+- The Redis cluster broker is experimental: young code, chaos-tested only
+  for the scenarios above. It is high availability with limited scaling:
+  room history is bounded by one Redis core (~150k messages/s), and each
+  node is bounded at ~200k publishes/s (docs/CLUSTER.md). Tenant-wide
+  session and room limits are per node. A Redis restart (with or without
+  persistence) starts a new history epoch in every history room.
 - Embedders should build with `codegen-units = 1` like this workspace
   (fan-out micro-benchmark −9–10% otherwise; docs/API.md).

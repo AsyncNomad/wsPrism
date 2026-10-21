@@ -71,7 +71,7 @@ flags: 0x01 KEY  0x02 SEQ  0x04 SENDER(서버→클라이언트 전용)
 ```
 
 - `v`, `flags`는 보내지 않아도 된다(보내면 무시)(③). **필드 이름은 v1과 같다**(R6: 초안의 `id`·`ch` 이름 변경은 철회).
-- **모르는 필드는 무시**하고 `wsprism_unknown_fields_total` 메트릭만 올린다(④). 테넌트 정책 `strict_envelope: true`면 v1처럼 거부.
+- **모르는 필드는 무시**하고 `wsprism_unknown_fields_total` 메트릭만 올린다(④). 테넌트 정책 `strict_envelope: true`면 v1처럼 거부. *(구현 상태 2026-10-21: 무시는 구현됨. 메트릭과 `strict_envelope`는 **미구현**.)*
 - `sys.joined` → `{"svc":"sys","type":"joined","ch":"party:1","alias":3,"member_id":17,"reply_to":…}`.
 - 구독과 발행 권한은 채널 정책에서 분리한다(`subscribe` / `publish`, M2-lite의 JWT 채널 권한과 함께). v2의 `join`은 구독, 발행 권한은 별도 검사.
 
@@ -126,6 +126,8 @@ flags: 0x01 KEY  0x02 SEQ  0x04 SENDER(서버→클라이언트 전용)
 | JSON 봉투의 모르는 필드 계속 거부 | 클라이언트와 서버가 동시에 배포되지 않는 현실에서 호환성 사고의 원인. 엄격 모드는 옵션으로 남긴다 |
 
 ## 결과 (채택 시)
+
+*구현 상태 (2026-10-21):* v2 코덱의 JSON 제어·`hot`, 연결별 룸 id·`member_id`, v2 전용 SDK, 퍼징은 완료. `batch` 프레임, MessagePack(`rmp-serde`), PROTOCOL.md의 v2 중심 재작성(현재는 v1·v2를 함께 기술), v1→v2 변환은 **미이행**. 아래는 채택 당시 계획 그대로다.
 
 - `wsprism-core::protocol`에 v2 코덱(`ctl` JSON/MessagePack, `hot`, `batch`)과 v1→v2 변환. 퍼징 대상 추가.
 - 세션: 연결별 채널 별칭 표(`u16 → RoomId`), `member_id`(연결마다).
