@@ -29,12 +29,31 @@ first release that drops the label.
 | Event | Clients | Recovery |
 |---|---|---|
 | A node is killed (`kill -9`, crash) | Its clients reconnect to another node and resume history rooms from their last offset: nothing lost, nothing twice (chaos test) | Within `slot_ttl_s` + ~5 s the other nodes remove its members and send `member_left` once (presence events on); its sessions stop counting toward limits |
-| A node stops gracefully | Close 1001; reconnect elsewhere | Same as above for whatever it could not clean up |
+| A node stops gracefully (SIGTERM) | `/readyz` 503; server API publishes 503 (publish elsewhere); sessions closed with 1001 and resume on another node: nothing lost or repeated (chaos tests: rolling update, stop while Redis is slow) | Within `drain_grace_ms` the node hands over its queue (publishes it accepted, members leaving) before exiting |
 | Redis restarts without data | History rooms: the nodes refill from the new history and tell clients the history restarted (`sys.gap` with the new epoch); every message published after the restart arrives once. Rooms without history: `sys.gap` (resync). Nobody is disconnected | Nodes reconnect, re-subscribe, reload scripts, and within ~15 s put their sessions and memberships back |
 | Redis pauses or is slow | Publishes wait; past `outbox_max_wait_ms` (1 s) new ones are refused (`UNAVAILABLE`, server API 503). Nothing is lost or delivered twice (chaos test) | Automatic when Redis answers again |
 | Redis is down | New connections 1013 (try again later); Reliable publishes `UNAVAILABLE`; Hot state still flows between members of the same node; ticket logins 503 | Automatic when Redis is back (as above) |
 | A node is cut off from Redis longer than `slot_ttl_s` | Its rooms look empty to the others for a while (`member_left` sent) | When it reconnects it re-registers and restores its sessions and memberships; if another node took its slot meanwhile, `/readyz` turns 503: restart it |
 | A close command between nodes is lost | A replaced session may linger on its node | Closed within ~15 s (the node checks its sessions against Redis) |
+
+## Rolling update
+
+Restart one node at a time; the others take its clients.
+
+1. Send SIGTERM (Kubernetes does on pod deletion). The node turns
+   `/readyz` 503, refuses new connections and server API publishes (503,
+   `Retry-After: 1`), closes its sessions with 1001 (clients reconnect to
+   another node and resume their history rooms), and hands its queue to
+   Redis, all within `gateway.drain_grace_ms` (default 2 s; raise it if
+   Redis can be slow).
+2. Start the new version; wait until its `/readyz` answers 200.
+3. Next node.
+
+Back-ends: retry a 503 on another node (or through the load balancer).
+Clients: give the SDK every node (`url: [..]`) or a load balancer address.
+A node cannot start while Redis does not answer: it exits and the
+orchestrator restarts it. Kubernetes: `terminationGracePeriodSeconds` above
+`drain_grace_ms`, a readiness probe on `/readyz`, `maxUnavailable: 1`.
 
 ## Delivery semantics
 
@@ -45,8 +64,9 @@ first release that drops the label.
   the order it sent them when node 1 is slow. Publish a room's messages to
   one node if their order matters.
 - **The server API's 200 means "queued on that node"**, not "delivered".
-  A node that dies before flushing its queue (normally microseconds) loses
-  what it had queued. Back-ends that need certainty publish to rooms with
+  A node that is killed (crash, `kill -9`) before flushing its queue
+  (normally microseconds) loses what it had queued; a node stopped with
+  SIGTERM hands it over first (within `drain_grace_ms`). Back-ends that need certainty publish to rooms with
   history and check the offsets their clients report.
 - **Retries never duplicate history messages** (each frame carries a
   per-node sequence the Redis script checks). Plain room messages can be

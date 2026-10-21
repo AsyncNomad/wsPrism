@@ -35,6 +35,17 @@ log pipelines (Loki, Elasticsearch, Cloud Logging, ...):
   replaced by `***`. User ids and client IPs are logged (personal data
   under some regulations: keep log retention accordingly).
 
+## Stopping and updating
+
+SIGTERM (or Ctrl-C) drains: `/readyz` turns 503, new connections and
+server API publishes are refused (503), sessions are closed with 1001
+(clients reconnect), and a cluster node hands its queued frames to Redis,
+all within `gateway.drain_grace_ms` (default 2000). Then the process
+exits. Give your orchestrator a longer stop timeout than that.
+
+Several nodes: restart them one at a time ([CLUSTER.md](CLUSTER.md)
+"Rolling update"); the chaos tests check that nothing is lost or repeated.
+
 ## Probes and metrics
 
 The internal listener (`gateway.api.listen`) serves `/healthz` (process up),

@@ -74,6 +74,9 @@ the Rust API may break in 0.x minor releases, always listed here.
   `wsprism_dispatch_duration_seconds` (seconds, was `_micros`).
   `Gateway::metrics_text()` now includes the egress, Hot slot and broker
   counters, like `/metrics`. Guide: docs/OPERATIONS.md.
+- Graceful stop hands over a cluster node's queued frames (publishes it
+  accepted, members leaving) before exiting, and refuses server API
+  publishes (503) while draining. Rolling updates are chaos-tested.
 
 ### Rust API
 - `wsprism` facade with `Gateway::builder()`: add your own `TextService` /
