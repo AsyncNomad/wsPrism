@@ -157,7 +157,8 @@ gateway:
   puts its sessions and room memberships back — nobody is disconnected. A local
   session the table no longer has (replaced elsewhere while the command to
   close it was lost) is closed as `replaced`. If another node took this
-  node's slot, `/readyz` answers 503: restart the node.
+  node's slot, the node drains and stops with an error (the binary exits
+  with a failure; `Gateway::serve` returns an error to embedders).
 - **Per node:** `max_sessions_total` and the room limits
   (`max_rooms_total`, `max_users_per_room`, `max_rooms_per_user`).
 - **Scope:** one Redis at one address. There is no Sentinel or Redis

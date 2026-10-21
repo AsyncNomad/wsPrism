@@ -74,8 +74,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Every scenario: node kill, rolling update, Redis restart (empty and
-      # from an older snapshot), Redis pause, stop while Redis is slow.
+      # Every scenario: node kill, rolling update, a node frozen past its
+      # slot TTL (fencing), Redis restart (empty and from an older snapshot),
+      # Redis pause, stop while Redis is slow.
       - name: Chaos tests
         run: |
           cargo build -p wsprism-gateway --locked

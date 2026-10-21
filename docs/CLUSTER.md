@@ -38,7 +38,7 @@ first release that drops the label.
 | Redis restarts (without data, or from an older snapshot) | History rooms: the nodes refill from the new history and tell clients the history restarted (`sys.gap` with the new epoch); every message published after the restart arrives once. Rooms without history: `sys.gap` (resync). Nobody is disconnected | Nodes reconnect, re-subscribe, reload scripts, and within ~15 s put their sessions and memberships back |
 | Redis pauses or is slow | Publishes wait; past `outbox_max_wait_ms` (1 s) new ones are refused (`UNAVAILABLE`, server API 503). Nothing is lost or delivered twice (chaos test) | Automatic when Redis answers again |
 | Redis is down | New connections 1013 (try again later); Reliable publishes `UNAVAILABLE`; Hot state still flows between members of the same node; ticket logins 503 | Automatic when Redis is back (as above) |
-| A node is cut off from Redis longer than `slot_ttl_s` | Its rooms look empty to the others for a while (`member_left` sent) | When it reconnects it re-registers and restores its sessions and memberships; if another node took its slot meanwhile, `/readyz` turns 503: restart it |
+| A node is cut off from Redis longer than `slot_ttl_s` | Its rooms look empty to the others for a while (`member_left` sent) | When it reconnects it re-registers and restores its sessions and memberships. If another node took its slot meanwhile, it drains (its clients reconnect to other nodes) and exits with a failure for the orchestrator to restart it (chaos test) |
 | A close command between nodes is lost | A replaced session may linger on its node | Closed within ~15 s (the node checks its sessions against Redis) |
 
 ## Rolling update
@@ -101,11 +101,11 @@ from Redis come in batches); the default 1024 is fine.
 
 - Tenant-wide limits (`max_sessions_total`, room limits) are per node.
 - One Redis at one address: no Sentinel or Redis Cluster yet.
-- A node cut off from Redis longer than `slot_ttl_s` whose slot another node
-  took turns `/readyz` 503 but keeps serving its connected sessions until it
-  is restarted, with member ids that may collide with the other node's
-  (wrong Hot `sender`, presence). Restart such a node; automatic fencing is
-  planned.
+- Fencing is a first step: a node whose slot another node took notices at
+  its next heartbeat (every `slot_ttl_s` / 3) and then drains and exits.
+  Until then (up to ~10 s with the default 30 s) it may still deliver with
+  member ids that collide with the new owner's (wrong Hot `sender`,
+  presence); Redis does not refuse its writes yet.
 - After Redis restarts empty, a user who reconnects with the same `sid` on
   another node before the old node restored its sessions (~15 s) can end up
   with two sessions for that sid until one disconnects.
