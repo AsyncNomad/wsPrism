@@ -10,6 +10,31 @@ wsprism-gateway --check-config --config wsprism.yaml
 The parser is **strict**: unknown fields and out-of-range values fail at
 startup (and in `--check-config`), with the offending location.
 
+### Values from the environment
+
+Any value may use `${NAME}` (startup fails if `NAME` is unset or empty),
+`${NAME:-default}`, or `$${` for a literal `${`, so one file serves every
+environment:
+
+```yaml
+gateway:
+  listen: "0.0.0.0:${PORT:-8080}"
+  session_queue_capacity: ${QUEUE:-1024}
+  broker: { kind: redis, url_env: REDIS_URL, prefix: "${CLUSTER:-wsp}" }
+```
+
+- Values are substituted after parsing, so a value can never change the
+  file's structure (a `: ` or `#` in it stays text). Keys are not
+  substituted.
+- A value that is exactly one placeholder becomes a number or boolean if
+  its result reads as one; anything else is a string.
+- Inside `{ }` or `[ ]`, quote the placeholder (`"${QUEUE}"`); quoting
+  does not change the typing.
+- With placeholders, errors name the setting (`tenants[0].limits`) rather
+  than the line.
+- Secrets: prefer the `*_env` settings (`secret_env`, `url_env`), which
+  read the variable where it is used.
+
 The annotated reference is the repository's [`wsprism.yaml`](../wsprism.yaml);
 every option is documented there.
 

@@ -18,6 +18,7 @@ wsprism-redis = { workspace = true, optional = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_norway = { workspace = true }
+serde_path_to_error = "0.1"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

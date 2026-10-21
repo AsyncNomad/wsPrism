@@ -12,6 +12,10 @@ reference: [CONFIG.md](CONFIG.md). Several nodes: [CLUSTER.md](CLUSTER.md).
 | `--log-format text\|json` | `WSPRISM_LOG_FORMAT` | `text` | Log lines (below) |
 | | `RUST_LOG` | errors only | Levels, e.g. `info`, `warn,wsprism_redis=info` |
 
+Configuration values can come from the environment: `${NAME}` /
+`${NAME:-default}` anywhere in a value ([CONFIG.md](CONFIG.md) "Values
+from the environment"), so one file serves every environment.
+
 ## Logs
 
 Logs go to stderr. `--log-format json` writes one JSON object per line for

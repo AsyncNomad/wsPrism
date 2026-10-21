@@ -171,3 +171,39 @@ fn shipped_configs_build() {
         }
     }
 }
+
+/// M6: `${VAR}` in values, from the environment (here a fixed lookup).
+#[test]
+fn placeholders_take_values_from_the_environment() {
+    let env = |name: &str| match name {
+        "PORT" => Some("9000".to_string()),
+        "QUEUE" => Some("2048".to_string()),
+        "TENANT" => Some("acme".to_string()),
+        _ => None,
+    };
+    let yaml = r#"
+version: 1
+gateway:
+  listen: "0.0.0.0:${PORT}"
+  session_queue_capacity: ${QUEUE}
+tenants:
+  - id: "${TENANT}"
+    limits: { max_frame_bytes: "${FRAME:-4096}" } # quoted inside { }
+"#;
+    let cfg = config::load_with_env(yaml, &env).expect("must parse");
+    assert_eq!(cfg.gateway.listen, "0.0.0.0:9000");
+    assert_eq!(cfg.gateway.session_queue_capacity, 2048);
+    assert_eq!(cfg.tenants[0].id, "acme");
+    assert_eq!(cfg.tenants[0].limits.max_frame_bytes, 4096);
+
+    // Strictness is kept, and errors name the setting.
+    let typo = yaml.replace("limits:", "limitz:");
+    let err = config::load_with_env(&typo, &env).expect_err("unknown field");
+    assert!(err.to_string().contains("tenants[0]"), "{err}");
+    let missing = config::load_with_env(yaml, &|_| None).expect_err("PORT unset");
+    assert!(err_has(&missing, "PORT") && err_has(&missing, "gateway.listen"));
+}
+
+fn err_has(e: &wsprism_protocol::error::WsPrismError, s: &str) -> bool {
+    e.to_string().contains(s)
+}
