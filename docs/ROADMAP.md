@@ -28,7 +28,7 @@ wsPrism을 **상용 서비스에서 쉽게 커스텀해 쓸 수 있고, 기존 �
 | 확장 지점 | `Gateway::builder`로 서비스·인증기 추가(파사드 `wsprism`, [API.md](API.md)) |
 | 이력·확장성 | 룸 이력과 재접속 복구. Redis 클러스터(**실험적**, 고가용성 + 제한적 확장): [CLUSTER.md](CLUSTER.md) |
 | 운영 | JSON 로그, `${VAR}` 설정, Prometheus, 무손실 드레인, Docker 이미지: [OPERATIONS.md](OPERATIONS.md) |
-| 성능 | [BENCHMARKS](BENCHMARKS.md). 경쟁 비교(compete-v2, 이력 켠 A14): Centrifugo 대비 연결당 메모리 2.6~4배 적음, 저·중부하 CPU 1.24~1.5배 적음, 216만 전달/s에서 p99 6~9 ms(Centrifugo는 이력을 켜면 포화). 단일 노드·같은 장치 측정 |
+| 성능 | [BENCHMARKS](BENCHMARKS.md). 경쟁 비교(compete-v2, 이력 켠 A14): Centrifugo 대비 연결당 메모리 2.6~4배 적음, 저·중부하 CPU 1.24~1.5배 적음, 216만 전달/s에서 p99 6~9 ms(Centrifugo는 이력을 켜면 포화). 클러스터(같은 Redis): 이력 처리량 약 1.5~1.7배, 12만 발행/s에서 wsPrism 전부 전달 대 Centrifugo 81%(p50 약 3초). 같은 장치 측정 |
 
 (2026-10-21 기준) **M0~M5 완료, M6은 0.1.0 범위 완료. 검증 V: G1·G3·G4 통과, G5 실패 → "하이브리드", G2(브라우저) 남음. 다음: 0.1.0 출시 전 점검과 게시(사용자).**
 

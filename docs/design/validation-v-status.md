@@ -50,6 +50,7 @@ cargo build --release -p wsprism-loadgen
 | M5 이후 보류 과제 | 0.1.0 이후 | 이력 룸을 여러 Redis에 나누기(배수 확장), Streams 저장(+27%/코어), 입장·퇴장 멤버 스냅샷 할당, 노드당 송신 상한(약 20만 발행/s) |
 | M6 운영 (0.1.0 범위) | ✅ 2026-10-21 | JSON 로그·URL 마스킹, `${VAR}` 설정, 메트릭 HELP·초 단위, 정상 종료 시 송신 큐 인계(결함 R6-1 수정), 롤링 업데이트 카오스 테스트·가이드, Dockerfile(52.5 MB)·compose(실제 이미지로 롤링 재시작 중 600개 발행 무손실 확인). docs/OPERATIONS.md |
 | 출시 전 외부 피드백 P0 | ✅ 2026-10-21 | Redis 롤백 → `run_id`로 epoch 교체(+결함 2개), 펜싱 1차(슬롯 상실 시 드레인·종료), `SECURITY.md`, `gateway.log_identities`, 와이어 계약 고정(v2 4102, 필드 규칙). CI가 클러스터·카오스 전체를 실제로 돌리게 수정. ADR 0011 「출시 전 검토」 |
+| 0.1.x 검증 | ✅ 2026-10-21 | 무작위 장애 soak(`sdk/js/test/soak.mjs`, 15분 장애 234회 위반 0), Redis TLS(사설 CA·mTLS, `rediss://` 패닉 결함 수정), 테넌트 공정성(기아 없음·격리 없음 → 테넌트별 송신 큐는 0.2), Centrifugo Redis 엔진 비교(이력 처리량 1.5~1.7배). BENCHMARKS, HARDENING |
 | M6 이후 보류 | 0.1.0 이후 | 핫 리로드(설정 변경은 롤링 재시작으로 무중단 가능), OpenTelemetry(새 의존성 승인 필요; 지금은 `trace_id`가 로그·클라이언트 오류에 있음), 관리 API RBAC, Helm 차트, UDP 로드밸런서 가이드(WebTransport 경로 확정 후) |
 | 0.1.0 릴리스 준비 | ⏳ 다음 | RELEASING.md |
 
