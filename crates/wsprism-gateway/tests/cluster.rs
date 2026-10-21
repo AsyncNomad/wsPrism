@@ -825,14 +825,21 @@ async fn a_session_replaced_without_notice_is_closed() {
     }
 }
 
-/// R5: a node whose slot another node took stops being ready.
+/// R5: a node whose slot another node took stops being ready; since the
+/// fencing step it also drains and stops, so "not ready" is a 503 or a
+/// refused connection.
 #[tokio::test]
 async fn a_node_that_lost_its_slot_is_not_ready() {
     let Some(url) = redis_url() else { return };
     let p = prefix("steal");
     let a_node = node_with(&url, &p, 3).await;
     let _ = user(&a_node, "warm").await; // started: slot 0
-    let ready = |addr| async move { http(addr, "GET", "/readyz", None, None).await.0 };
+    let ready = |addr| async move {
+        if tokio::net::TcpStream::connect(addr).await.is_err() {
+            return 0; // stopped
+        }
+        http(addr, "GET", "/readyz", None, None).await.0
+    };
     assert_eq!(ready(a_node.addr).await, 200);
     let client = redis::Client::open(url.as_str()).unwrap();
     let mut c = client.get_multiplexed_async_connection().await.unwrap();
