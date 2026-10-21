@@ -5,7 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "wsPrism cluster broker on Redis: room fan-out between gateway nodes (experimental)"
 readme = "README.md"
 keywords = ["websocket", "realtime", "redis", "pubsub"]

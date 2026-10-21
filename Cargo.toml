@@ -7,7 +7,6 @@ members = ["crates/*"]
 # Every crate is released together with this version (ADR 0009 §5-2).
 version = "0.1.0"
 edition = "2021"
-homepage = "https://github.com/AsyncNomad/wsPrism"
 # MSRV: a stable release at least 6 months old (ADR 0009 §5-4); CI checks it.
 rust-version = "1.95"
 license = "Apache-2.0"

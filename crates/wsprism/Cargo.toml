@@ -5,7 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 description = "Multi-tenant realtime gateway: build a WebSocket gateway with your own services and authenticators"
 readme = "README.md"
 keywords = ["websocket", "gateway", "realtime", "multi-tenant", "gamedev"]

@@ -223,6 +223,15 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 
 남은 점(문서화): Redis가 응답하지 않는 동안에는 노드가 시작하지 못하고 종료한다(오케스트레이터가 다시 띄움). `drain_grace_ms`(기본 2초) 안에 Redis가 돌아오지 않으면 남은 큐는 버려지고 경고 로그를 남긴다.
 
+### CI fuzz job 첫 실행 실패 (2026-10-21)
+
+`v/validation` 병합 때 fuzz job 5개가 모두 2초 만에 실패했다(다른 job은 통과). 이 job은 10-14에 추가됐지만 CI가 `main` push와 PR에서만 돌아 GitHub에서 처음 실행된 것이었다.
+
+- **원인:** `taiki-e/install-action`이 설치하는 미리 빌드된 cargo-fuzz는 musl 바이너리다. cargo-fuzz는 `--target`이 없으면 자기가 빌드된 대상을 쓰므로 `x86_64-unknown-linux-musl`로 빌드했다. AddressSanitizer는 정적 libc와 함께 쓸 수 없고, musl 표준 라이브러리도 설치돼 있지 않았다. 로컬 cargo-fuzz는 `cargo install`로 받은 gnu판이라 재현되지 않았다.
+- **수정:** `--target x86_64-unknown-linux-gnu`를 명시했다. 빌드와 실행을 다른 단계로 나눴다(환경 문제와 실제 크래시 구분). 실패하면 크래시 입력을 artifact로 남긴다.
+- **재발 방지:** 작업 브랜치(`v/**`) push에도 CI가 돈다.
+- 같이 정리: `actions/checkout@v5`(Node 20 종료 경고), `homepage`가 `repository`와 같아 생기는 cargo 경고(`homepage` 제거).
+
 ## 사각지대 (아직 검증하지 않은 것)
 
 - 부하/동시성 테스트 없음. "best-effort" 한도 초과폭이 실제로 얼마인지 측정한 적 없다.

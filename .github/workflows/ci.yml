@@ -2,7 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [ main, dev, hardening ]
+    # Working branches too (v/*): a job must have run once before a merge
+    # (the fuzz job first ran on GitHub at the merge of v/validation).
+    branches: [ main, dev, hardening, 'v/**' ]
   pull_request:
   workflow_dispatch:
 
@@ -17,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -58,7 +60,7 @@ jobs:
         image: redis:7.2
         ports: ["6379:6379"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Cluster tests
@@ -81,7 +83,7 @@ jobs:
   msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.95
       - uses: Swatinem/rust-cache@v2
       - name: Check on the MSRV
@@ -97,7 +99,7 @@ jobs:
       matrix:
         node: [22, 24]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
@@ -115,7 +117,7 @@ jobs:
   deny:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check
@@ -129,7 +131,7 @@ jobs:
       matrix:
         target: [hot_frame, envelope, client_ip, origin, subprotocol]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@nightly
       - uses: taiki-e/install-action@v2
         with:
@@ -137,6 +139,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: fuzz
+      # The prebuilt cargo-fuzz is a musl binary and defaults to its own
+      # target (x86_64-unknown-linux-musl), which AddressSanitizer does not
+      # support: name the target. Build and run are separate steps, so a
+      # build problem is not mistaken for a finding.
+      - name: Build ${{ matrix.target }}
+        working-directory: fuzz
+        run: cargo fuzz build --target x86_64-unknown-linux-gnu ${{ matrix.target }}
       - name: Fuzz ${{ matrix.target }} (60s)
         working-directory: fuzz
-        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60
+        run: cargo fuzz run --target x86_64-unknown-linux-gnu ${{ matrix.target }} -- -max_total_time=60
+      - name: Keep the crashing input
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-${{ matrix.target }}-artifacts
+          path: fuzz/artifacts/${{ matrix.target }}/
+          if-no-files-found: ignore
