@@ -112,7 +112,22 @@ gateway:
   keeps flowing between local members.
 - **Metrics:** `wsprism_broker_outbox_refused_total`,
   `wsprism_broker_retries_total`, `wsprism_broker_failed_total`.
-- **TLS:** `rediss://` (rustls, system roots).
+- **TLS:** `rediss://` trusts the system store by default. A private CA
+  and mutual TLS (PEM files, read at startup):
+
+  ```yaml
+  broker:
+    kind: redis
+    url_env: REDIS_URL            # rediss://user:password@redis.internal:6380
+    tls:
+      ca_file: /etc/wsprism/redis-ca.pem
+      client_cert_file: /etc/wsprism/redis-client.pem   # with client_key_file
+      client_key_file: /etc/wsprism/redis-client.key
+  ```
+
+  The server certificate must name the host or IP in the URL. Tested
+  against a TLS-only Redis that requires client certificates
+  (`bench/redis-tls-test.sh`).
 - **History** (`tenants[].history`) works across nodes: Redis gives each
   kept message its offset (one Lua script stores and publishes it), so
   every node sees the same offsets, and a client can resume on any node.

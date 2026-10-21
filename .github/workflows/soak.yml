@@ -1,0 +1,50 @@
+name: Cluster soak
+
+# Randomized cluster soak (sdk/js/test/soak.mjs): a seeded mix of node and
+# Redis faults for a while, then a final batch every client must get. Run it
+# by hand (Actions -> Cluster soak -> Run workflow), e.g. before a release.
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Minutes of faults
+        default: "20"
+      seed:
+        description: Seed (empty = random; the summary prints it)
+        default: ""
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      WSPRISM_TEST_REDIS: redis://127.0.0.1:6379
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # A named container: the soak restarts, pauses and snapshots it.
+      - name: Redis
+        run: docker run -d --name wsp-redis -p 6379:6379 redis:7.2 redis-server --save "" --appendonly no
+      - name: Build the gateway
+        run: cargo build -p wsprism-gateway --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Inputs through the environment, never pasted into the script.
+      - name: Soak
+        env:
+          MINUTES: ${{ inputs.minutes }}
+          SEED: ${{ inputs.seed }}
+        run: |
+          if [ -n "$SEED" ]; then
+            node sdk/js/test/soak.mjs --minutes "$MINUTES" --seed "$SEED"
+          else
+            node sdk/js/test/soak.mjs --minutes "$MINUTES"
+          fi

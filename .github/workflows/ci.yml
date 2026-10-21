@@ -71,6 +71,13 @@ jobs:
         run: |
           cargo test -p wsprism-gateway --locked --test cluster --test cluster_gap --test history
           cargo test -p wsprism-redis --locked
+      # A TLS-only Redis with a private CA requiring client certificates
+      # (gateway.broker.tls), on its own isolated network.
+      - name: Cluster over TLS
+        run: |
+          eval "$(bench/redis-tls-test.sh)"
+          cargo test -p wsprism-redis --locked --test tls
+          cargo test -p wsprism-gateway --locked --test cluster_tls
       - uses: actions/setup-node@v4
         with:
           node-version: 22

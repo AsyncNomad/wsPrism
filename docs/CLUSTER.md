@@ -26,6 +26,8 @@ first release that drops the label.
     their sessions and memberships back within ~15 s.
   - A least-privilege ACL user: [CONFIG.md](CONFIG.md) has the exact command
     list (verified by the cluster tests).
+  - TLS (`rediss://`), with a private CA and client certificates if you
+    use them (`gateway.broker.tls`, [CONFIG.md](CONFIG.md)).
 - **Probes:** `/healthz` (process alive), `/readyz` (503 while draining or
   after this node lost its slot — restart it).
 

@@ -73,7 +73,11 @@ the Rust API may break in 0.x minor releases, always listed here.
   longer than `slot_ttl_s`) drains and stops with an error instead of
   serving with colliding member ids. Chaos-tested: node `kill -9`, rolling
   update, a node frozen past its slot TTL, Redis restart (empty and from an
-  older snapshot), Redis pause, stop while Redis is slow (docs/CLUSTER.md). Least-privilege ACL in docs/CONFIG.md.
+  older snapshot), Redis pause, stop while Redis is slow (docs/CLUSTER.md).
+  Least-privilege ACL in docs/CONFIG.md. `rediss://` with a private CA and
+  mutual TLS (`gateway.broker.tls`). A randomized soak
+  (`sdk/js/test/soak.mjs`, manual CI workflow) mixes node and Redis faults
+  and checks for silent loss.
 - Server API publish answers 503 + `Retry-After` when a cluster broker's queue
   is full.
 - Operations: `--log-format json` (`WSPRISM_LOG_FORMAT`) writes one JSON
