@@ -353,3 +353,49 @@ test("a node stopped while Redis is slow still delivers what it accepted", { ski
     assert.deepEqual(stretches.flat(), Array.from({ length: 100 }, (_, i) => i + 1), `${r.name}: every offset once`);
   }
 });
+
+test("Redis restarts from an older snapshot: clients are told, then every new message arrives once", { skip: dockerSkip }, async (t) => {
+  // An RDB snapshot (or a promoted replica) brings back an older state:
+  // the same epoch with a lower offset counter. Offsets the clients have
+  // already seen would be handed out again.
+  const dropSnapshot = () => docker("exec", CONTAINER, "rm", "-f", "/data/dump.rdb");
+  dropSnapshot();
+  t.after(dropSnapshot);
+  const nodes = await cluster("rollback");
+  const recs = Array.from({ length: 6 }, (_, i) => recorder(nodes, `b${i}`, i % 2));
+  t.after(() => recs.forEach((r) => r.client.close()));
+  await joinAll(recs);
+  await publish(nodes, 1, 50);
+  await until(() => recs.every((r) => lastOffset(r) === 50), 20000, "first 50", recs);
+  docker("exec", CONTAINER, "redis-cli", "SAVE");
+  // Connected after the snapshot: the restored Redis does not know it.
+  const late = recorder(nodes, "late", 0);
+  t.after(() => late.client.close());
+  await joinAll([late]);
+  await publish(nodes, 51, 80);
+  await until(() => [...recs, late].every((r) => lastOffset(r) === 80), 20000, "up to 80", [...recs, late]);
+  // The test Redis runs with --save "": it does not save on the way down
+  // and loads the snapshot taken at 50 on the way up.
+  docker("restart", CONTAINER);
+  await publish(nodes, 81, 120);
+  await until(
+    () => recs.every((r) => r.events.filter((e) => !e.gap && e.n > 80).length === 40),
+    30000,
+    "the 40 messages after the restart",
+    recs,
+  );
+  // The nodes compare their sessions with Redis every 15 s: the late
+  // session must be put back, not closed as replaced.
+  await sleep(17000);
+  await publish(nodes, 121, 125);
+  const all = [...recs, late];
+  await until(() => all.every((r) => r.events.filter((e) => !e.gap && e.n > 80).length === 45), 30000, "the last 5", all);
+  for (const r of all) {
+    check(r);
+    const after = r.events.filter((e) => !e.gap && e.n > 80).map((e) => e.n);
+    assert.deepEqual(after, Array.from({ length: 45 }, (_, i) => 81 + i), `${r.name}: each new message once, in order`);
+    const at81 = r.events.findIndex((e) => !e.gap && e.n === 81);
+    assert.ok(r.events.slice(0, at81).some((e) => e.gap && e.epoch), `${r.name}: told the history changed before message 81`);
+    assert.equal(r.reconnects, 0, `${r.name}: not disconnected`);
+  }
+});

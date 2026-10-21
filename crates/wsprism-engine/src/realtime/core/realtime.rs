@@ -719,8 +719,11 @@ impl RealtimeCore {
             let skip = f.except.as_deref().filter(|_| local);
             self.presence.for_each_member(&f.room_key, |m| {
                 // A recovering join already gave this member everything up
-                // to `skip_upto` (this one may have been in flight then).
-                if o > m.skip_upto && Some(&*m.key) != skip {
+                // to `skip_upto` of its epoch (this one may have been in
+                // flight then); a newer epoch's offsets start again.
+                let seen = o <= m.skip_upto
+                    && (f.epoch.is_none() || m.skip_epoch.as_deref() == f.epoch.as_deref());
+                if !seen && Some(&*m.key) != skip {
                     self.deliver(&m.key, &m.conn, frame.clone(), &f.qos);
                 }
             });
@@ -887,6 +890,20 @@ fn offset_of(frame: &OutFrame) -> Option<u64> {
     let rest = t.as_bytes().strip_prefix(b"{\"offset\":")?;
     let end = rest.iter().position(|b| !b.is_ascii_digit())?;
     std::str::from_utf8(&rest[..end]).ok()?.parse().ok()
+}
+
+/// A `sys.gap` that announces a new history epoch (`sys::gap_epoch`).
+fn is_epoch_gap(frame: &OutFrame) -> bool {
+    let OutFrame::Text(t) = frame else {
+        return false;
+    };
+    let b = t.as_bytes();
+    // Cheap filter first; this runs on frames held during a join.
+    if !b.windows(13).any(|w| w == b"\"type\":\"gap\"") {
+        return false;
+    }
+    serde_json::from_slice::<serde_json::Value>(b)
+        .is_ok_and(|v| v["svc"] == "sys" && v["type"] == "gap" && v["epoch"].is_string())
 }
 
 /// The broker tasks of a core ([`RealtimeCore::start`]); dropping this
@@ -1351,6 +1368,7 @@ impl RealtimeCtx {
             conn,
             member_id: 0,
             skip_upto: 0,
+            skip_epoch: None,
             notify: self.presence_events,
             user: Arc::clone(&self.user),
         };
@@ -1569,6 +1587,7 @@ impl RealtimeCtx {
         // The client has everything up to here: replayed, or skipped as
         // older than its starting position.
         let upto = history.as_ref().map_or(0, |p| p.offset);
+        let skip = history.as_ref().map(|p| (Arc::clone(&p.epoch), p.offset));
         let stamped: Vec<OutFrame> = replay
             .unwrap_or_default()
             .iter()
@@ -1590,9 +1609,14 @@ impl RealtimeCtx {
         }
         let (core, key, real) = (&self.core, &*self.session_key, self.conn.clone());
         core.presence
-            .replace_member_conn(&rk, key, real.clone(), upto, || {
+            .replace_member_conn(&rk, key, real.clone(), skip, || {
+                // After a new epoch's gap notice, offsets start again:
+                // nothing after it was seen.
+                let mut upto = upto;
                 while let Ok(f) = held.try_recv() {
-                    if offset_of(&f).is_some_and(|o| o <= upto) {
+                    if is_epoch_gap(&f) {
+                        upto = 0;
+                    } else if offset_of(&f).is_some_and(|o| o <= upto) {
                         continue;
                     }
                     core.deliver(key, &real, f, &QoS::Reliable);

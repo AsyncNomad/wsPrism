@@ -32,7 +32,7 @@
 //!   published by one Lua script (`PUBLISH_KEPT`), so offsets, history and
 //!   delivery order agree on every node. Per room (one hash tag): `:st`
 //!   (hash: last offset `seq`, epoch `ep`, log bytes `b`, last frame seq
-//!   applied per node `n:<node id>`) and `:log` (sorted set, score =
+//!   applied per node `n:<node id>`, writing Redis `run_id` `rid`) and `:log` (sorted set, score =
 //!   offset, member = `<unix s>:<frame>`). If Redis loses the state
 //!   (restart, eviction), a new epoch starts: clients resync instead of
 //!   resuming from offsets that mean something else now.
@@ -78,17 +78,28 @@ const POSITION_TTL: Duration = Duration::from_secs(24 * 3600);
 /// try may have run (R5). Returns the last offset.
 ///
 /// The state is one hash (`seq`, `ep`, `b` = bytes in the log, `n:<node>` =
-/// last frame seq applied from that node) read and written once per call:
+/// last frame seq applied from that node, `rid` = the Redis `run_id` that
+/// wrote it) read and written once per call:
 /// the fixed cost of a call is mostly its `redis.call`s (M5,
 /// `bench/redis-lua-bench.py`). Times are whole seconds (`TIME`'s first
 /// field as is; `ttl_s` is configured in seconds anyway).
+///
+/// `rid`: a Redis that restarted from an older snapshot, or a promoted
+/// replica that missed the last writes, still has the epoch but an older
+/// `seq`; offsets clients already saw would be handed out again, and nodes
+/// and clients would drop those messages as seen. `run_id` is not saved in
+/// snapshots and differs per process and replica, so state written by
+/// another Redis process starts a new epoch (`INFO server` costs ~4 µs per
+/// call, a few percent at realistic batch sizes; M6 review).
 const PUBLISH_KEPT: &str = r"
 local ch, size, ttl, maxb, pttl = ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4]), tonumber(ARGV[6])
 local node = 'n:' .. ARGV[7]
-local st = redis.call('HMGET', KEYS[1], 'seq', 'ep', 'b', node)
+local rid = string.match(redis.call('INFO', 'server'), 'run_id:(%x+)')
+local st = redis.call('HMGET', KEYS[1], 'seq', 'ep', 'b', node, 'rid')
 local o, ep, b, done = tonumber(st[1]), st[2], tonumber(st[3] or '0'), tonumber(st[4] or '0')
-if not o or not ep then
-  -- First use, or Redis lost the room's state: a new epoch.
+if not o or not ep or st[5] ~= rid then
+  -- First use, Redis lost the room's state, or the state comes from an
+  -- older snapshot / another Redis: a new epoch.
   o, ep, b, done = 0, ARGV[5], 0, 0
   redis.call('DEL', KEYS[1], KEYS[2])
 end
@@ -134,7 +145,7 @@ if #z > 0 then
   end
   redis.call('PEXPIRE', KEYS[2], ttl)
 end
-redis.call('HSET', KEYS[1], 'seq', o, 'ep', ep, 'b', b, node, last)
+redis.call('HSET', KEYS[1], 'seq', o, 'ep', ep, 'b', b, node, last, 'rid', rid)
 redis.call('PEXPIRE', KEYS[1], pttl)
 return o
 ";
@@ -144,12 +155,14 @@ return o
 /// `{epoch, top, ok, {members...}}`.
 const READ_KEPT: &str = r"
 local ttl, pttl = tonumber(ARGV[3]) / 1000, tonumber(ARGV[5])
-local st = redis.call('HMGET', KEYS[1], 'seq', 'ep')
+local rid = string.match(redis.call('INFO', 'server'), 'run_id:(%x+)')
+local st = redis.call('HMGET', KEYS[1], 'seq', 'ep', 'rid')
 local top, ep = tonumber(st[1]), st[2]
-if not top or not ep then
+if not top or not ep or st[3] ~= rid then
+  -- As in PUBLISH_KEPT: no state, or state from another Redis process.
   top, ep = 0, ARGV[4]
   redis.call('DEL', KEYS[1], KEYS[2])
-  redis.call('HSET', KEYS[1], 'seq', 0, 'ep', ep, 'b', 0)
+  redis.call('HSET', KEYS[1], 'seq', 0, 'ep', ep, 'b', 0, 'rid', rid)
 end
 redis.call('PEXPIRE', KEYS[1], pttl)
 if ARGV[1] == '' then return {ep, top} end
@@ -174,6 +187,28 @@ local f = top + 1
 if first[2] then f = tonumber(first[2]) end
 if since + 1 < f then return {ep, top, 0} end
 return {ep, top, 1, redis.call('ZRANGEBYSCORE', KEYS[2], '(' .. since, '+inf')}
+";
+
+/// KEYS: nodes, node rids. ARGV: node id, slot. Registers the node for
+/// the reapers (R4-2) and records which Redis process it registered with.
+const REGISTER: &str = r"
+local rid = string.match(redis.call('INFO', 'server'), 'run_id:(%x+)')
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+redis.call('HSET', KEYS[2], ARGV[1], rid)
+return 1
+";
+
+/// KEYS: nodes, node rids. ARGV: node id. 1 if the node is registered with
+/// this Redis process. A Redis restored from an older snapshot (or a
+/// promoted replica) may still list the node but lacks what it wrote since:
+/// that counts as not registered, so the node puts its sessions and
+/// memberships back (R5-1) instead of closing the sessions it cannot find.
+const REGISTERED: &str = r"
+local rid = string.match(redis.call('INFO', 'server'), 'run_id:(%x+)')
+if redis.call('HEXISTS', KEYS[1], ARGV[1]) == 1 and redis.call('HGET', KEYS[2], ARGV[1]) == rid then
+  return 1
+end
+return 0
 ";
 
 /// How to reach Redis and how to use it.
@@ -334,6 +369,8 @@ pub struct RedisBroker {
     of_user: redis::Script,
     members: redis::Script,
     reap_room: redis::Script,
+    register: redis::Script,
+    registered: redis::Script,
     /// This node's slot (set in `start`).
     slot: std::sync::atomic::AtomicU16,
     /// False once another node took this node's slot.
@@ -390,6 +427,8 @@ impl RedisBroker {
             of_user: redis::Script::new(OF_USER),
             members: redis::Script::new(MEMBERS),
             reap_room: redis::Script::new(REAP_ROOM),
+            register: redis::Script::new(REGISTER),
+            registered: redis::Script::new(REGISTERED),
             slot: std::sync::atomic::AtomicU16::new(0),
             healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             cfg,
@@ -484,13 +523,7 @@ impl Broker for RedisBroker {
             .map_err(unavailable)?;
         tracing::info!(slot, node = %self.node_id, "redis broker: node slot claimed");
         // Known to the reapers of other nodes (R4-2).
-        let _: i64 = redis::cmd("HSET")
-            .arg(format!("{}:nodes", self.cfg.prefix))
-            .arg(&self.node_id)
-            .arg(slot)
-            .query_async(&mut conn)
-            .await
-            .map_err(unavailable)?;
+        self.register_on(&mut conn, slot).await?;
         let mut tasks = lock(&self.tasks);
         tasks.push(tokio::spawn(heartbeat(
             conn.clone(),
@@ -677,6 +710,33 @@ impl Broker for RedisBroker {
 }
 
 impl RedisBroker {
+    /// The registered nodes (node id -> slot) and the Redis `run_id` each
+    /// registered with.
+    fn node_keys(&self) -> [String; 2] {
+        [
+            format!("{}:nodes", self.cfg.prefix),
+            format!("{}:noderid", self.cfg.prefix),
+        ]
+    }
+
+    async fn register_on(
+        &self,
+        conn: &mut ConnectionManager,
+        slot: u16,
+    ) -> Result<(), BrokerError> {
+        let [nodes, rids] = self.node_keys();
+        let _: i64 = self
+            .register
+            .key(nodes)
+            .key(rids)
+            .arg(&self.node_id)
+            .arg(slot)
+            .invoke_async(conn)
+            .await
+            .map_err(unavailable)?;
+        Ok(())
+    }
+
     fn pr_key(&self, room_key: &str) -> String {
         format!("{}:pr:{{{room_key}}}", self.cfg.prefix)
     }
@@ -756,23 +816,19 @@ impl SharedPresence for RedisBroker {
     }
 
     async fn registered(&self) -> Result<bool, BrokerError> {
-        redis::cmd("HEXISTS")
-            .arg(format!("{}:nodes", self.cfg.prefix))
+        let [nodes, rids] = self.node_keys();
+        self.registered
+            .key(nodes)
+            .key(rids)
             .arg(&self.node_id)
-            .query_async(&mut self.conn()?)
+            .invoke_async(&mut self.conn()?)
             .await
             .map_err(unavailable)
     }
 
     async fn register(&self) -> Result<(), BrokerError> {
-        let _: i64 = redis::cmd("HSET")
-            .arg(format!("{}:nodes", self.cfg.prefix))
-            .arg(&self.node_id)
-            .arg(self.slot.load(std::sync::atomic::Ordering::Relaxed))
-            .query_async(&mut self.conn()?)
-            .await
-            .map_err(unavailable)?;
-        Ok(())
+        let slot = self.slot.load(std::sync::atomic::Ordering::Relaxed);
+        self.register_on(&mut self.conn()?, slot).await
     }
 
     async fn reap_dead(&self) -> Result<Vec<DeadMember>, BrokerError> {
@@ -846,6 +902,10 @@ impl SharedPresence for RedisBroker {
                 .ignore()
                 .cmd("HDEL")
                 .arg(&nodes_key)
+                .arg(&node)
+                .ignore()
+                .cmd("HDEL")
+                .arg(self.node_keys()[1].as_str())
                 .arg(&node)
                 .ignore()
                 .query_async(&mut conn)

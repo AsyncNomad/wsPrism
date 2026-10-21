@@ -1,0 +1,6 @@
+{"scenario":"ext","build":"m6-review","rev":"8ef40de-dirty","ir":30883740,"units":102400,"ir_per_unit":301.6,"spread_pct":0.00}
+{"scenario":"hot","build":"m6-review","rev":"8ef40de-dirty","ir":19131784,"units":101376,"ir_per_unit":188.7,"spread_pct":0.00}
+{"scenario":"hot_keyed","build":"m6-review","rev":"8ef40de-dirty","ir":26296922,"units":101376,"ir_per_unit":259.4,"spread_pct":0.04}
+{"scenario":"api","build":"m6-review","rev":"8ef40de-dirty","ir":17756319,"units":102400,"ir_per_unit":173.4,"spread_pct":0.00}
+{"scenario":"churn","build":"m6-review","rev":"8ef40de-dirty","ir":393509147,"units":1024,"ir_per_unit":384286.3,"spread_pct":0.45}
+{"scenario":"disconnect","build":"m6-review","rev":"8ef40de-dirty","ir":75020189,"units":1024,"ir_per_unit":73261.9,"spread_pct":0.46}

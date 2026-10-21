@@ -66,6 +66,10 @@ pub struct Member {
     /// Cluster history rooms: kept messages up to this offset already
     /// reached the client (its recovering join's position; callers pass 0).
     pub skip_upto: u64,
+    /// The epoch `skip_upto` counts in: after the history restarts (a new
+    /// epoch) offsets start again and nothing is skipped (callers pass
+    /// `None`).
+    pub skip_epoch: Option<Arc<str>>,
     /// Its room hears when it leaves (tenant `presence_events`); kept for
     /// the cluster's membership (ADR 0011 R5).
     pub notify: bool,
@@ -445,7 +449,7 @@ impl Presence {
         room_key: &str,
         session_key: &str,
         conn: Connection,
-        skip_upto: u64,
+        skip: Option<(Arc<str>, u64)>,
         then: impl FnOnce(),
     ) -> bool {
         let Some(mut room) = self.room_to_sessions.get_mut(room_key) else {
@@ -455,7 +459,10 @@ impl Presence {
             return false;
         };
         m.conn = conn;
-        m.skip_upto = skip_upto;
+        (m.skip_epoch, m.skip_upto) = match skip {
+            Some((epoch, upto)) => (Some(epoch), upto),
+            None => (None, 0),
+        };
         then();
         true
     }
@@ -612,6 +619,7 @@ mod tests {
             },
             member_id: 0,
             skip_upto: 0,
+            skip_epoch: None,
             notify: false,
             user: Arc::from("u"),
         }
