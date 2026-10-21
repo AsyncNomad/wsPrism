@@ -48,7 +48,9 @@ cargo build --release -p wsprism-loadgen
 | R5 대조 작업·카오스(노드 kill -9, Redis 재시작·정지, offset 검사기) | ✅ M3·M4 완료 기준 충족 | ADR 0011 「R5-1」「R5-2」, docs/CLUSTER.md |
 | M5 성능 과제 | ✅ 2026-10-21 | 송신 묶음 4096(다중 파이프라인 불필요), 키 있는 Hot 543→259 명령어, 저부하 CPU 분석(원인 미확정, 문서화), 이력 켠 경쟁 비교(A14), 이력 상태 해시화(Redis −8~22%, Streams 시제품은 보류), 2노드 측정. BENCHMARKS 「M5」, ADR 0011 「M5」 |
 | M5 이후 보류 과제 | 0.1.0 이후 | 이력 룸을 여러 Redis에 나누기(배수 확장), Streams 저장(+27%/코어), 입장·퇴장 멤버 스냅샷 할당, 노드당 송신 상한(약 20만 발행/s) |
-| M6 운영 → 0.1.0 | ⏳ 다음 | ROADMAP |
+| M6 운영 (0.1.0 범위) | ✅ 2026-10-21 (Docker 빌드 단계 검증 남음) | JSON 로그·URL 마스킹, `${VAR}` 설정, 메트릭 HELP·초 단위, 정상 종료 시 송신 큐 인계(결함 R6-1 수정), 롤링 업데이트 카오스 테스트·가이드, Dockerfile·compose(대체 이미지로 실행 검증). docs/OPERATIONS.md |
+| M6 이후 보류 | 0.1.0 이후 | 핫 리로드(설정 변경은 롤링 재시작으로 무중단 가능), OpenTelemetry(새 의존성 승인 필요; 지금은 `trace_id`가 로그·클라이언트 오류에 있음), 관리 API RBAC, Helm 차트, UDP 로드밸런서 가이드(WebTransport 경로 확정 후) |
+| 0.1.0 릴리스 준비 | ⏳ 다음 | RELEASING.md |
 
 - **성능 회귀 판정 (ADR 0011 B2):** `bench/run-icount.sh`(valgrind callgrind, 결정적 명령어 수 — WSL2에는 CPU PMU가 없어 `perf stat -e instructions` 불가)와 `bench/run-mem-users.sh`(유휴 메모리). 기준선은 `bench/results/icount-pre-r1.jsonl`, `mem-pre-r1.jsonl`. 단계마다 같은 스크립트로 다시 재서 ±2%를 본다.
 - **Queued 모드 회귀:** `WSPRISM_TEST_BROKER=queued cargo test -p wsprism-gateway` (CI에도 있음).
