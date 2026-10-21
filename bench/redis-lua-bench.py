@@ -92,7 +92,7 @@ def run(src):
     time.sleep(0.2)
     seq = 0
     # KEYS: before M5 seq, epoch, log, bytes, applied; since: state, log.
-    keys = 'selba' if 'KEYS[5]' in src else 'sl'
+    keys = 'selba' if 'KEYS[5]' in src else 'sltn'[:max(int(k) for k in re.findall(r'KEYS\[(\d)\]', src))]
 
     def batch(n):
         nonlocal seq

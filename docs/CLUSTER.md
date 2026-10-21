@@ -59,7 +59,7 @@ first release that drops the label.
 |---|---|
 | Hot state | Same as a single node (delivered locally first) |
 | Ext without history | Fine at 240k publishes/s per node (2.16M deliveries/s, p50 ~5 ms) |
-| Ext with history | ~120k kept messages/s per Redis core |
+| Ext with history | ~150k kept messages/s per Redis core (~200 B messages; fewer for larger ones) |
 
 Sessions queue: keep `gateway.session_queue_capacity` well above 256 (frames
 from Redis come in batches); the default 1024 is fine.
