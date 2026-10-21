@@ -1,0 +1,8 @@
+//! Dispatcher module exports.
+//!
+//! Re-exports the dispatcher and service traits so downstream consumers can
+//! depend on this module directly.
+
+pub(crate) mod dispatcher;
+
+pub use dispatcher::{Dispatcher, HotService, TextService};

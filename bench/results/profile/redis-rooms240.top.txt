@@ -1,0 +1,60 @@
+samples (weighted): 75728728653
+
+== exclusive categories (sum = 100%) ==
+ 42.4%  tokio runtime (scheduler, io driver)
+ 12.1%  publish_room / deliver
+  9.0%  allocator
+  8.7%  outbound queue (mpsc)
+  7.7%  ws framing (tungstenite)
+  5.7%  json (serde)
+  4.8%  waker register / wake
+  3.5%  presence / registry (dashmap)
+  3.5%  utf8 re-validation (to_message)
+  1.5%  split-socket BiLock
+  0.9%  metrics
+  0.2%  kernel: epoll / futex / sched
+  0.0%  per-write timeout timer
+  0.0%  session loop / dispatch (ours)
+  0.0%  other
+
+== top self (leaf frame) ==
+  6.3%  _int_malloc
+  5.1%  __memmove_avx_unaligned_erms
+  4.3%  _RNCINvMNtNtCsal5olSQ9Yb_15wsprism_gateway9transport7sessionNtB5_7Session10event_loopNtNtB5_5ws_io4WsTxNtB1m_4WsRxE0B9_
+  3.2%  _RNvXs2_NtNtCsevLNFiNqfJP_4core3str5lossyNtB5_10Utf8ChunksNtNtNtNtB9_4iter6traits8iterator8Iterator4next
+  3.1%  malloc
+  3.0%  _int_free
+  2.7%  cfree@GLIBC_2.2.5
+  2.5%  _RNvMNtNtNtCseAMNSZEw3d_12futures_core4task10___internal12atomic_wakerNtB2_11AtomicWaker8register
+  2.4%  _RNvMs0_NtNtNtCs5LoRnmiZ2Jn_5tokio7runtime2io12registrationNtB5_12Registration10poll_ready
+  2.3%  _RNvMs0_NtNtNtCs5LoRnmiZ2Jn_5tokio4sync4mpsc4listINtB5_2RxNtNtNtNtCsal5olSQ9Yb_15wsprism_gateway9transport7session7refresh14RefreshOutcomeE3popB11_
+  2.2%  _RNvMsf_NtNtCs5LoRnmiZ2Jn_5tokio4sync6notifyNtB5_15NotifiedProject13poll_notified
+  2.0%  __memcmp_avx2_movbe
+  1.7%  _RNCINvMs_NtNtCseI79fiKZCbN_4axum7extract2wsNtB7_16WebSocketUpgrade10on_upgradeNCNCNvNtNtCsal5olSQ9Yb_15wsprism_gateway9transport2ws10ws_upgrade00INtN
+  1.7%  _RNvMs0_NtNtNtCs5LoRnmiZ2Jn_5tokio4sync4mpsc4listINtB5_2RxNtNtNtCsgwi9kGGPo1f_14wsprism_engine8realtime5types8OutFrameE3popCsal5olSQ9Yb_15wsprism_gate
+  1.6%  _RINvXs2_Cs9XQfvsfdoMc_7dashmapINtB6_7DashMapNtNtCs1C1lLj4PWSY_5alloc6string6StringINtNtNtNtCsgHYyB3hU8Ec_3std11collections4hash3set7HashSetBG_EEINtNt
+  1.6%  _RNvXs3_NtNtCseI79fiKZCbN_4axum7extract2wsNtB5_9WebSocketNtNtCseAMNSZEw3d_12futures_core6stream6Stream9poll_next
+  1.5%  _RNvNtCs6ap95FqX4Hn_5bytes5bytes11shared_drop
+  1.5%  _RNvMs0_NtNtCsf8ezJ1To5oV_12futures_util4lock6bilockINtB5_6BiLockNtNtNtCseI79fiKZCbN_4axum7extract2ws9WebSocketE9poll_lockCsal5olSQ9Yb_15wsprism_gatew
+  1.4%  _RNvMs_NtNtNtNtCs5LoRnmiZ2Jn_5tokio7runtime9scheduler12multi_thread6workerNtB4_7Context8run_task
+  1.3%  _RINvMs2_NtCs4yKCRItl2Qm_11tungstenite8protocolNtB6_16WebSocketContext12buffer_frameINtNtCs1hfdDKC0q4B_17tokio_tungstenite6compat8AllowStdINtNtNtCsaUz
+  1.2%  _RNvMsf_NtNtCs5LoRnmiZ2Jn_5tokio4sync6notifyNtB5_15NotifiedProject13drop_notified
+  1.1%  _RNvMs0_NtNtNtCs5LoRnmiZ2Jn_5tokio4sync4task12atomic_wakerNtB5_11AtomicWaker15register_by_ref
+  1.1%  _RNvXs3_NtNtCsevLNFiNqfJP_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCsgwi9kGGPo1f_14wsprism_engine
+  1.0%  _RNvMs1_NtNtNtCs5LoRnmiZ2Jn_5tokio4sync4mpsc7boundedINtB5_6SenderNtNtNtCsgwi9kGGPo1f_14wsprism_engine8realtime5types8OutFrameE8try_sendB16_
+  1.0%  __send
+  0.9%  realloc
+  0.9%  _RNvMNtNtCs5LoRnmiZ2Jn_5tokio4sync15batch_semaphoreNtB2_9Semaphore11try_acquire
+  0.9%  _RNvNtNtNtNtCs5LoRnmiZ2Jn_5tokio7runtime9scheduler12multi_thread6worker3run
+  0.8%  unlink_chunk.isra.0
+  0.8%  _RNvMs5_NtNtNtCsgwi9kGGPo1f_14wsprism_engine8realtime4core8realtimeNtB5_11RealtimeCtx10is_in_room
+  0.8%  malloc_consolidate
+  0.7%  _RNvNtNtNtCs5LoRnmiZ2Jn_5tokio7runtime4task5waker11clone_waker
+  0.7%  _RNvMs0_NtNtNtCsgwi9kGGPo1f_14wsprism_engine8realtime4core8realtimeNtB5_12RealtimeCore12route_queued
+  0.7%  _RNvXs1_NtCscQlLOXXjJr7_10serde_json3serQINtB5_10SerializerQINtNtCs1C1lLj4PWSY_5alloc3vec3VechEENtNtCs8HnQjVGnFjK_10serde_core3ser10Serializer13serial
+  0.7%  _RNvNtNtNtCs5LoRnmiZ2Jn_5tokio7runtime4task5waker11wake_by_val
+  0.7%  _RINvNtCsevLNFiNqfJP_4core3ptr9drop_glueNtNtCsgwi9kGGPo1f_14wsprism_engine6broker11BrokerFrameECsk3GFzDAYqbZ_15wsprism_gateway
+  0.7%  _RNvMNtNtNtCs5LoRnmiZ2Jn_5tokio4sync4mpsc4listINtB2_2TxNtNtNtCsgwi9kGGPo1f_14wsprism_engine8realtime5types8OutFrameE10find_blockBW_
+  0.7%  _RNvMs0_NtNtNtCs5LoRnmiZ2Jn_5tokio4sync4task12atomic_wakerNtB5_11AtomicWaker4wake
+  0.6%  _RNvMNtNtCs5LoRnmiZ2Jn_5tokio4sync15batch_semaphoreNtB2_9Semaphore18add_permits_locked
+  0.6%  __vdso_clock_gettime

@@ -1,75 +1,77 @@
 //! wsPrism gateway binary entrypoint.
 //!
-//! Bootstraps tracing, loads configuration, builds application state, and
-//! starts the WebSocket server.
+//! Bootstraps tracing, then builds and serves the gateway through the public
+//! API only (`Gateway::builder`, ADR 0009 §3) — the same path an embedder uses.
 
-use std::net::SocketAddr;
-use tracing_subscriber::{fmt, EnvFilter};
-use tokio::time::Instant;
+use std::path::PathBuf;
+use std::process::ExitCode;
 
-use wsprism_gateway::{app_state, config, router};
+use clap::Parser;
 
-#[tokio::main]
-async fn main() {
-    fmt().with_env_filter(EnvFilter::from_default_env()).init();
+use wsprism_gateway::Gateway;
 
-    // Config (strict parsing + validate already in Sprint 0)
-    let cfg = config::load_from_file("wsprism.yaml").expect("config load failed");
-    let listen: SocketAddr = cfg
-        .gateway
-        .listen
-        .parse()
-        .expect("gateway.listen must be a valid SocketAddr");
+mod logging;
 
-    let state = app_state::AppState::new(cfg).expect("failed to build app state");
-    let app = router::build_router(state.clone());
+/// Optional global allocator (`--features mimalloc`), measured against the
+/// system allocator before it becomes a default (performance-architecture §9).
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-    tracing::info!(%listen, "wsprism-gateway starting");
-    let listener = tokio::net::TcpListener::bind(listen).await.expect("failed to bind");
+/// wsPrism realtime gateway.
+#[derive(Debug, Parser)]
+#[command(version, about)]
+struct Cli {
+    /// Path to the gateway configuration file.
+    #[arg(long, short, env = "WSPRISM_CONFIG", default_value = "wsprism.yaml")]
+    config: PathBuf,
 
-    let drain_grace_ms = state.cfg().gateway.drain_grace_ms;
-    
-    // Sprint 5: Enable ConnectInfo for HandshakeDefender
-    axum::serve(
-        listener, 
-        app.into_make_service_with_connect_info::<SocketAddr>()
-    )
-    .with_graceful_shutdown(async move {
-        shutdown_signal().await;
+    /// Validate the configuration (parse, check, compile tenant policies)
+    /// and exit without serving.
+    #[arg(long)]
+    check_config: bool,
 
-        tracing::info!("shutdown signal received; entering draining mode");
-        state.enter_draining();
-        state.realtime().best_effort_shutdown_all("draining");
-
-        let deadline = Instant::now() + std::time::Duration::from_millis(drain_grace_ms);
-        while Instant::now() < deadline {
-            if state.realtime().sessions.len_sessions() == 0 {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("server failed");
+    /// Log lines: readable text, or one JSON object per line for log
+    /// pipelines. `RUST_LOG` sets the levels.
+    #[arg(long, env = "WSPRISM_LOG_FORMAT", value_enum, default_value = "text")]
+    log_format: logging::LogFormat,
 }
 
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        let _ = tokio::signal::ctrl_c().await;
+#[tokio::main]
+async fn main() -> ExitCode {
+    let cli = Cli::parse();
+    logging::init(cli.log_format);
+
+    let gateway = match Gateway::builder()
+        .config_file(&cli.config)
+        .and_then(|b| b.build())
+    {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("{}: {}", cli.config.display(), operator_message(&e));
+            return ExitCode::FAILURE;
+        }
     };
+    if cli.check_config {
+        println!("{}: OK", cli.config.display());
+        return ExitCode::SUCCESS;
+    }
+    tracing::info!(config = %cli.config.display(), "wsprism-gateway starting");
+    match gateway.serve().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{}", operator_message(&e));
+            ExitCode::FAILURE
+        }
+    }
+}
 
-    #[cfg(unix)]
-    let term = async {
-        use tokio::signal::unix::{signal, SignalKind};
-        let mut sigterm = signal(SignalKind::terminate()).expect("install SIGTERM handler");
-        let _ = sigterm.recv().await;
-    };
-
-    #[cfg(not(unix))]
-    let term = std::future::pending::<()>();
-
-    tokio::select! {
-        _ = ctrl_c => {},
-        _ = term => {},
+/// For the operator (stderr): like the client message, but an internal
+/// error shows its cause (`read config failed: No such file ...`) instead
+/// of the bare "internal error" clients get.
+fn operator_message(e: &wsprism_protocol::error::WsPrismError) -> &str {
+    match e {
+        wsprism_protocol::error::WsPrismError::Internal(cause) => cause,
+        other => other.client_message(),
     }
 }

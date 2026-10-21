@@ -1,0 +1,12 @@
+{
+  // Type-checks wsprism.d.ts against test/types-check.ts (no build output).
+  "compilerOptions": {
+    "strict": true,
+    "noEmit": true,
+    "target": "es2022",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2022", "dom"]
+  },
+  "files": ["test/types-check.ts"]
+}

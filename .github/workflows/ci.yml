@@ -1,0 +1,142 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, dev, hardening ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # Libraries alone: dev-dependency features (`internals`) unify into the
+      # all-targets build above and can hide dead code.
+      - name: Clippy (libraries only)
+        run: cargo clippy --workspace --lib --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      # The gateway suite again, room traffic through a queued loopback
+      # broker (ADR 0011 B3): queued mode must behave like one node.
+      - name: Test (queued broker)
+        run: cargo test -p wsprism-gateway --locked
+        env:
+          WSPRISM_TEST_BROKER: queued
+
+  # Two gateway nodes sharing rooms through a Redis service container
+  # (ADR 0011 R3). The service is only reachable from this job.
+  cluster:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      redis:
+        image: redis:7.2
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Cluster tests
+        run: |
+          cargo test -p wsprism-gateway --locked --test cluster --test cluster_gap
+          cargo test -p wsprism-redis --locked
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Node kill -9 with SDK clients (the Redis restart / pause scenarios
+      # need the docker container and are skipped here).
+      - name: Chaos tests
+        run: |
+          cargo build -p wsprism-gateway --locked
+          node --test --test-force-exit sdk/js/test/chaos.test.mjs
+        env:
+          WSPRISM_TEST_REDIS: redis://127.0.0.1:6379
+
+  # Minimum supported Rust version (workspace rust-version; ADR 0009 §5-4).
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95
+      - uses: Swatinem/rust-cache@v2
+      - name: Check on the MSRV
+        run: cargo check --workspace --all-targets --locked
+
+  # JS SDK against a real gateway process (sdk/js/run-tests.sh).
+  # Node: every non-EOL LTS line the SDK supports (engines: >=22).
+  sdk-js:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - name: SDK tests
+        run: sdk/js/run-tests.sh
+      - name: Example app (end to end)
+        run: examples/chat-and-state/run-tests.sh
+      - name: SDK type declarations
+        run: npx --yes -p typescript@5 tsc -p sdk/js
+
+  # Dependency policy: RustSec advisories (what cargo-audit checks), licenses,
+  # sources and bans, as configured in deny.toml.
+  deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  # Short fuzzing smoke run per parser that sees untrusted input (fuzz/).
+  # Longer campaigns run locally: cargo +nightly fuzz run <target>.
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [hot_frame, envelope, client_ip, origin, subprotocol]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Fuzz ${{ matrix.target }} (60s)
+        working-directory: fuzz
+        run: cargo fuzz run ${{ matrix.target }} -- -max_total_time=60

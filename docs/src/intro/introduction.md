@@ -48,11 +48,12 @@ graph TD
         
         Transport --> Policy --> Router
         
-        Router -->|Hot Lane - Binary| Service_Echo[Native / Hot Service]
-        Router -->|Ext Lane - Text| Service_Chat[Script / WASM Service]
+        Router -->|Hot Lane - Binary| Service_Hot[Hot relay / your Rust services]
+        Router -->|Ext Lane - Text| Service_Ext[Built-in / your Rust services]
+        Router -->|Ext Lane - RPC proxy| Backend[Your Backend - any language]
     end
-    
-    Service_Chat -.->|WebHook / RPC| Backend[Your Backend API]
+
+    Backend -.->|Server API: tickets, publish, disconnect| Transport
 ```
 
 ---
@@ -60,7 +61,7 @@ graph TD
 ## Key Features
 
 ⚡ **Ultra-Low Latency Core**  
-Built on `tokio` and `axum`, utilizing a lock-free, session-oriented architecture optimized for tail latency.
+Built on `tokio` and `axum`, with a session-oriented architecture tuned for tail latency (session loops never wait on their own queues; TCP_NODELAY by default). Measured numbers are in `docs/BENCHMARKS.md`.
 
 🏢 **Multi-Tenancy**  
 Run multiple isolated tenants (projects) on a single wsPrism instance, each with independent configuration and policies.
@@ -73,10 +74,13 @@ Prioritized message delivery:
 - *Lossy* channels for high-frequency game state updates  
 - *Reliable* channels for chat, commands, and events
 
-🔌 **Transport Agnostic Design**  
-Business logic is fully decoupled from the transport layer:
-- WebSocket today  
-- QUIC / TCP / Custom transports tomorrow
+🔌 **Backend Integration in Any Language**  
+One-time tickets, JWT or a connect proxy for authentication; a server API to
+publish to rooms and disconnect users; an RPC proxy so business logic lives in
+your backend; a dependency-free JavaScript SDK.
+
+🧩 **Transport Agnostic Design**  
+Sessions run on a transport seam: WebSocket today, WebTransport next.
 
 ---
 

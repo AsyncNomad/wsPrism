@@ -54,63 +54,69 @@ wsPrism은 프로젝트 루트의 `wsprism.yaml` 파일을 통해 게이트웨�
 
 ### 2. 게이트웨이 실행 (Run the Gateway)
 
-Cargo 또는 사전 빌드된 바이너리를 사용해 실행할 수 있습니다.
-
 ```bash
-# Cargo 사용
-RUST_LOG=wsprism_gateway=debug cargo run --release -- --config wsprism.yaml
-```
+# 설정 검증만 (CI·배포 전 점검용)
+cargo run --release -p wsprism-gateway -- --check-config --config wsprism.yaml
 
-```bash
-# 바이너리 사용
-./wsprism start --config wsprism.yaml
+# 실행 (설정 경로는 --config 또는 WSPRISM_CONFIG, 기본값 ./wsprism.yaml)
+RUST_LOG=wsprism_gateway=info cargo run --release -p wsprism-gateway -- --config wsprism.yaml
+
+# 빌드된 바이너리
+./target/release/wsprism-gateway --config wsprism.yaml
+
+# 컨테이너 (distroless, non-root; 설정은 마운트, 로그는 JSON)
+docker build -t wsprism-gateway .
+docker run -v $PWD/my.yaml:/etc/wsprism/wsprism.yaml:ro -p 8080:8080 wsprism-gateway
+# Redis를 쓰는 2노드 클러스터 예제: deploy/compose/
 ```
 
 ### 3. 실행 확인 (Verify)
 
-서버가 정상적으로 실행되면 다음과 같은 로그가 출력됩니다.
-
 ```
-INFO  wsprism::server > 🚀 wsPrism Gateway active at 0.0.0.0:8080
-INFO  wsprism::loader > Loaded configuration for tenant: "acme"
+INFO wsprism_gateway: wsprism-gateway starting config=wsprism.yaml
+INFO wsprism_gateway::gateway: wsprism-gateway serving listen=0.0.0.0:8080 api=127.0.0.1:8081
+```
+
+```bash
+curl http://localhost:8080/healthz   # ok
+curl http://localhost:8080/readyz    # ready (드레인 중이면 503)
+curl http://127.0.0.1:8081/metrics   # Prometheus 메트릭 (내부 리스너 gateway.api.listen — 공개 포트에는 없음)
 ```
 
 ### 4. 연결 (Connect)
 
-클라이언트(브라우저, 게임 엔진 등)에서 WebSocket으로 연결합니다.
+- **URL:** `ws://<host>:<port>/v1/ws?tenant=<id>[&sid=<세션 id>]`
+- **인증 티켓**은 테넌트의 `policy.ticket_sources` 중 하나로 보냅니다 (기본: 헤더, 서브프로토콜). 쿼리스트링(`?ticket=`)은 프록시 로그에 남기 때문에 기본으로 꺼져 있습니다.
+  - 네이티브 클라이언트: `Authorization: Bearer <ticket>`
+  - 브라우저: 서브프로토콜 `wsprism.v1` + `wsprism.auth.<ticket>`
+- 브라우저에서 접속하려면 그 Origin이 테넌트의 `policy.allowed_origins`에 있어야 합니다.
 
-- **URL 형식:** `ws://<host>:<port>/v1/ws?tenant=<id>&ticket=<auth_token>`
-- **예시:** `ws://localhost:8080/v1/ws?tenant=acme&ticket=dev`
+```js
+// 브라우저. 예시 설정의 테넌트는 auth가 비어 있어 개발용 스텁으로 동작합니다(티켓 "dev"만 통과).
+// 실제 배포는 1회용 티켓·JWT·백엔드 프록시 중에서 고릅니다 (docs/CONFIG.md).
+const ws = new WebSocket("ws://localhost:8080/v1/ws?tenant=starter_plan", ["wsprism.v1", "wsprism.auth.dev"]);
+```
 
 ### 5. 메시지 전송 (프로토콜)
 
-wsPrism은 **듀얼 레인(Dual Lane)** 프로토콜을 사용합니다.
+wsPrism은 **듀얼 레인(Dual Lane)** 프로토콜을 사용합니다. 전체 계약은 [`docs/PROTOCOL.md`](docs/PROTOCOL.md)에 있습니다.
 
 ### A. Ext Lane (텍스트 / JSON)
 
-채팅, 룸 관리, 복잡한 로직에 사용됩니다.
+채팅, 룸 관리, 복잡한 로직에 사용됩니다. `seq`를 보내면 응답에 `reply_to`로 돌아옵니다.
 
 ```json
-{
-	"v":1,
-	"svc":"chat",
-	"type":"send",
-	"room":"match:1",
-	"data":{
-		"msg":"Hello World"
-	}
-}
+{"v":1, "svc":"room", "type":"join", "room":"match:1", "seq":1}
+{"v":1, "svc":"chat", "type":"send", "room":"match:1", "seq":2, "data":{"msg":"Hello World"}}
 ```
 
 ### B. Hot Lane (바이너리)
 
-이동, 물리 연산 등 지연에 민감한 데이터에 사용됩니다.
-
-서비스 ID와 오퍼코드에 의해 엄격하게 라우팅됩니다.
+이동, 물리 연산 등 지연에 민감한 데이터에 사용됩니다. 서비스 ID와 오퍼코드로 라우팅되며, 세션의 활성 룸(마지막으로 join한 룸)으로 전달됩니다.
 
 ```
-구조:[svc_id (u8)][opcode (u8)][flags (u8)][payload ...]
-예시:[0x01][0x01][0x00][...bytes...]
+구조: [v=1 (u8)][svc_id (u8)][opcode (u8)][flags (u8)][seq (u32 LE, flags & 0x01일 때)][payload ...]
+예시: [0x01][0x01][0x01][0x00][...bytes...]
 ```
 
 ---
@@ -145,17 +151,20 @@ wsPrism의 코어 엔진은 **Rust**로 구현되어 메모리 안전성, 제로
 wsPrism은 이 둘을 동시에 지원합니다.
 
 - **Ext Lane (텍스트 / JSON):** 채팅, 로비, 복잡한 데이터 처리용. 디버깅이 쉽고 유연함
-- **Hot Lane (바이너리):** 이동, 물리, 시세 틱 처리용. 제로 할당 라우팅, 최소 오버헤드, ID 기반 엄격한 라우팅
+- **Hot Lane (바이너리):** 이동, 물리, 시세 틱 처리용. zero-copy 디코드, 최소 오버헤드, ID 기반 엄격한 라우팅
 
 ---
 
 ## 주요 기능 (Key Features)
 
-- **⚡ 초저지연 코어:** `tokio`, `axum` 기반, 락-프리 세션 아키텍처
+- **⚡ 초저지연 코어:** `tokio`, `axum` 기반, 세션 루프가 자기 큐를 절대 기다리지 않는 구조. 수치는 [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)
 - **🏢 멀티 테넌시:** 단일 인스턴스에서 여러 프로젝트를 독립 정책으로 운영
 - **🛡️ 정책 엔진:** 기본 보안 설계, 테넌트별 허용 목록·레이트 리미트·페이로드 제한
 - **🧠 결정적 QoS:** 게임 상태는 손실 허용, 채팅은 신뢰 전달 등 우선순위 기반 전송
 - **🔌 전송 계층 독립성:** 비즈니스 로직은 전송 방식과 분리 (현재 WebSocket, 향후 QUIC/TCP)
+- **📜 이력과 복구:** 룸별 메시지 이력(offset/epoch), 재접속 시 놓친 메시지를 순서대로 재전송
+- **🌐 클러스터 (실험적):** Redis로 여러 노드가 룸·세션·presence·이력을 공유. 노드 강제 종료·롤링 업데이트·Redis 재시작을 카오스 테스트로 검증 ([`docs/CLUSTER.md`](docs/CLUSTER.md))
+- **🔧 운영:** JSON 로그(세션 `trace_id`, 비밀값 마스킹), 설정 값의 `${VAR}`, Prometheus 메트릭, 정상 종료 시 무손실 드레인, Docker 이미지 ([`docs/OPERATIONS.md`](docs/OPERATIONS.md))
 
 ---
 
@@ -181,12 +190,33 @@ graph TD
         Transport --> Policy --> Router
 
         Router -->|Hot Lane - Binary| Service_Echo[Native/Hot Service]
-        Router -->|Ext Lane - Text| Service_Chat[Script/WASM Service]
+        Router -->|Ext Lane - Text| Service_Chat[Native Service · WASM 계획]
     end
 
     Service_Chat -.->|WebHook / RPC| Backend[Your Backend API]
 
 ```
+
+---
+
+## 문서 (Documentation)
+
+| 문서 | 내용 |
+|---|---|
+| [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | 와이어 프로토콜 계약: 핸드셰이크·인증, 두 레인, 룸, 에러 코드, 종료 코드 |
+| [`docs/CONFIG.md`](docs/CONFIG.md) | 설정: 인증(티켓·JWT·프록시·플러그인), 서버 API, RPC 프록시, 클러스터, 환경변수 |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | 운영: 명령행, JSON 로그, 메트릭 목록, 종료·업데이트, 컨테이너 |
+| [`docs/CLUSTER.md`](docs/CLUSTER.md) | 클러스터: 배포 구성, 장애 시 동작, 롤링 업데이트, 전달 의미, 용량 |
+| [`CHANGELOG.md`](CHANGELOG.md) | 변경 기록 (모든 크레이트 같은 버전) |
+| [`docs/RELEASING.md`](docs/RELEASING.md) | 배포 절차 |
+| [`docs/API.md`](docs/API.md) | Rust API: `Gateway::builder`로 사용자 서비스·인증기 붙이기, API 등급과 호환성 정책 |
+| [`sdk/js/`](sdk/js/README.md) | JavaScript 클라이언트 SDK (의존성 없음, 프로토콜 v2) |
+| [`examples/chat-and-state/`](examples/chat-and-state/README.md) | Node 백엔드 + SDK 예제 앱 (채팅·RPC·Hot 상태) |
+| [`wsprism.yaml`](wsprism.yaml) | 모든 설정 항목의 주석 달린 레퍼런스 |
+| [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | 측정 방법과 성능 수치 |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md) | 상용 수준을 향한 단계별 계획 |
+| [`docs/adr/`](docs/adr/README.md) | 설계 결정 기록 |
+| [`docs/HARDENING.md`](docs/HARDENING.md) | 보안·정확성 결함 수정 기록 |
 
 ---
 
@@ -209,4 +239,4 @@ graph TD
 
 이 프로젝트는 **Apache License 2.0** 하에 배포됩니다.
 
-자세한 내용은 [LICENSE](https://www.notion.so/LICENSE) 파일을 참고하세요.
+자세한 내용은 [LICENSE](LICENSE) 파일을 참고하세요.

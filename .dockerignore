@@ -1,0 +1,8 @@
+target
+.git
+**/node_modules
+bench/results
+spikes
+fuzz/target
+fuzz/corpus
+fuzz/artifacts

@@ -1,0 +1,22 @@
+[package]
+name = "moq-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "THROWAWAY validation V6: the statesync scenario over a MoQ relay (moq-relay-ietf)"
+
+# Not part of the product workspace; deleted after validation V.
+[workspace]
+
+[dependencies]
+moq-transport = "0.16"
+moq-native-ietf = "0.10"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+hdrhistogram = "7.6"
+serde_json = "1"
+url = "2"
+web-transport = "0.10"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }

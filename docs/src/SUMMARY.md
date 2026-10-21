@@ -3,13 +3,8 @@
 - [Design Philosophy](intro/philosophy.md)
 - [Getting Started](intro/getting_started.md)
 
-# User Guide
+# Reference
 - [Configuration](guide/configuration.md)
-
-# Architecture
-- [Overview](architecture/overview.md)
-- [Dual Lane Protocol](architecture/dual_lane.md)
-- [Policy Engine](architecture/policy.md)
-
-# API Reference
-- [Rust API Docs](https://asyncnomad.github.io/wsPrism/api/wsprism/index.html)
+- [Operating wsPrism](guide/operations.md)
+- [Running a cluster](guide/cluster.md)
+- [Architecture and Decisions](architecture/overview.md)

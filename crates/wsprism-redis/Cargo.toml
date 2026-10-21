@@ -1,0 +1,26 @@
+[package]
+name = "wsprism-redis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "wsPrism cluster broker on Redis: room fan-out between gateway nodes (experimental)"
+readme = "README.md"
+keywords = ["websocket", "realtime", "redis", "pubsub"]
+categories = ["network-programming", "asynchronous"]
+
+[dependencies]
+wsprism-engine = { workspace = true }
+redis = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+
+[dev-dependencies]
+redis = { workspace = true }
+bytes = { workspace = true }
+futures-util = { workspace = true }

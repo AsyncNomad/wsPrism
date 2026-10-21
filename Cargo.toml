@@ -1,6 +1,17 @@
 [workspace]
-resolver = "2"
+# "3": dependency updates prefer versions compatible with rust-version (MSRV-aware).
+resolver = "3"
 members = ["crates/*"]
+
+[workspace.package]
+# Every crate is released together with this version (ADR 0009 §5-2).
+version = "0.1.0"
+edition = "2021"
+homepage = "https://github.com/AsyncNomad/wsPrism"
+# MSRV: a stable release at least 6 months old (ADR 0009 §5-4); CI checks it.
+rust-version = "1.95"
+license = "Apache-2.0"
+repository = "https://github.com/AsyncNomad/wsPrism"
 
 [workspace.dependencies]
 # runtime / logging
@@ -11,18 +22,52 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # serialization / config / errors
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value"] }
-serde_yaml = "0.9"
+# serde_yaml is deprecated and its unsafe-libyaml is unmaintained (RUSTSEC-2024-0449);
+# serde_norway is the maintained drop-in fork.
+serde_norway = "0.9"
 thiserror = "1"
 
 # binary utils
 bytes = "1"
 
 # internal crates
-wsprism-core = { path = "crates/wsprism-core" }
-wsprism-gateway = { path = "crates/wsprism-gateway" }
+wsprism-protocol = { path = "crates/wsprism-protocol", version = "0.1.0" }
+wsprism-engine = { path = "crates/wsprism-engine", version = "0.1.0" }
+wsprism-gateway = { path = "crates/wsprism-gateway", version = "0.1.0" }
+wsprism-redis = { path = "crates/wsprism-redis", version = "0.1.0" }
+# Redis broker (ADR 0011 R3). TLS via rustls like the HTTP client.
+redis = { version = "1.7", default-features = false, features = ["aio", "tokio-comp", "connection-manager", "script", "tokio-rustls-comp"] }
 
 axum = { version = "0.7", features = ["ws"] }
 futures-util = "0.3"
 
 dashmap = "5"
+
+# benchmarking / load testing (dev & tools only)
+criterion = "0.8"
+hdrhistogram = "7.6"
+clap = { version = "4.6", features = ["derive"] }
 async-trait = "0.1"
+ipnet = "2"
+
+# CPU profiling builds (bench/profile-gateway.sh): release codegen plus symbols.
+# One codegen unit for release builds (ADR 0009 §6): with the default 16,
+# LLVM's inlining of tokio's mpsc send path into the fan-out loop depends on
+# how units are partitioned, and the fan-out micro-benchmark is 9-10% slower
+# (#[inline] on our functions does not help - the decision is inside tokio).
+# Applies to binaries built from this workspace; embedders set it in their
+# own profile (docs/API.md). End-to-end effect is ~0.1% (fan-out is ~1% of a
+# delivery's cost).
+# Dev/test builds: file and line numbers in backtraces, no full debug info.
+# Test binaries are 2-3x smaller; every code change leaves new copies in
+# target/debug, so this keeps it from growing by tens of GB a day.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.release]
+codegen-units = 1
+
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = false

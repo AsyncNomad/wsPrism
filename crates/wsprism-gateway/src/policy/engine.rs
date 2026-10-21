@@ -3,17 +3,17 @@
 //! Parses allowlists, enforces size/rate limits, and exposes connection-level
 //! limiters as needed by the transport layer.
 
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use wsprism_core::error::ClientCode;
+use wsprism_protocol::error::ClientCode;
 
-pub use crate::config::schema::{HotErrorMode, OnExceed, SessionMode};
-use crate::config::schema::{RateLimitScope, SessionPolicy, TenantPolicy};
+pub use crate::config::schema::{HotErrorMode, OnExceed};
+use crate::config::schema::{RateLimitScope, SessionPolicy, TenantPolicy, TicketSource};
 
 use super::allowlist::{
     compile_ext_rules, compile_hot_rules, is_ext_allowed, is_hot_allowed, ExtRule, HotRule,
 };
+use super::origin::OriginPolicy;
 
 /// Decision from policy evaluation.
 #[derive(Debug, Clone)]
@@ -27,8 +27,6 @@ pub enum PolicyDecision {
 /// Tenant-scoped policy runtime.
 /// Construct once at startup, then share via Arc.
 pub struct TenantPolicyRuntime {
-    pub tenant_id: String,
-
     max_frame_bytes: usize,
     ext_rules: Vec<ExtRule>,
     hot_rules: Vec<HotRule>,
@@ -45,26 +43,28 @@ pub struct TenantPolicyRuntime {
     // Hot lane behavior
     hot_error_mode: HotErrorMode,
     hot_requires_active_room: bool,
+    hot_echo_to_sender: bool,
+    presence_events: bool,
+    hot_tick: Option<std::time::Duration>,
+
+    origins: OriginPolicy,
+    ticket_sources: Vec<TicketSource>,
 }
 
 impl TenantPolicyRuntime {
-    pub fn new(
-        tenant_id: String,
-        max_frame_bytes: usize,
-        policy: &TenantPolicy,
-    ) -> wsprism_core::Result<Self> {
+    pub fn new(max_frame_bytes: usize, policy: &TenantPolicy) -> wsprism_protocol::Result<Self> {
         let ext_rules = compile_ext_rules(&policy.ext_allowlist)?;
         let hot_rules = compile_hot_rules(&policy.hot_allowlist)?;
 
         let tenant_limiter = match policy.rate_limit_scope {
-            RateLimitScope::Tenant | RateLimitScope::Both => {
-                Some(RateLimiter::new(policy.rate_limit_rps, policy.rate_limit_burst))
-            }
+            RateLimitScope::Tenant | RateLimitScope::Both => Some(RateLimiter::new(
+                policy.rate_limit_rps,
+                policy.rate_limit_burst,
+            )),
             RateLimitScope::Connection => None,
         };
 
         Ok(Self {
-            tenant_id,
             max_frame_bytes,
             ext_rules,
             hot_rules,
@@ -75,6 +75,12 @@ impl TenantPolicyRuntime {
             sessions: policy.sessions.clone(),
             hot_error_mode: policy.hot_error_mode,
             hot_requires_active_room: policy.hot_requires_active_room,
+            hot_echo_to_sender: policy.hot_echo_to_sender,
+            presence_events: policy.presence_events,
+            hot_tick: (policy.hot_tick_hz > 0)
+                .then(|| std::time::Duration::from_secs_f64(1.0 / f64::from(policy.hot_tick_hz))),
+            origins: OriginPolicy::compile(&policy.allowed_origins)?,
+            ticket_sources: policy.ticket_sources.clone(),
         })
     }
 
@@ -86,6 +92,26 @@ impl TenantPolicyRuntime {
     }
     pub fn hot_requires_active_room(&self) -> bool {
         self.hot_requires_active_room
+    }
+    pub fn hot_echo_to_sender(&self) -> bool {
+        self.hot_echo_to_sender
+    }
+    pub fn presence_events(&self) -> bool {
+        self.presence_events
+    }
+    /// Pacing period for sending a session's Hot slot (`None` = immediate).
+    pub fn hot_tick(&self) -> Option<std::time::Duration> {
+        self.hot_tick
+    }
+
+    /// Browser origin policy for upgrades (CSWSH protection).
+    pub fn origins(&self) -> &OriginPolicy {
+        &self.origins
+    }
+
+    /// Where clients may present their ticket, in priority order.
+    pub fn ticket_sources(&self) -> &[TicketSource] {
+        &self.ticket_sources
     }
 
     /// Create per-connection limiter if enabled (Connection/Both).
@@ -124,14 +150,14 @@ impl TenantPolicyRuntime {
 
         if self.ext_rules.is_empty() {
             return PolicyDecision::Reject {
-                code: ClientCode::BadRequest,
+                code: ClientCode::NotAllowed,
                 msg: "ext_allowlist empty (strict deny)",
             };
         }
 
         if !is_ext_allowed(&self.ext_rules, svc, msg_type) {
             return PolicyDecision::Reject {
-                code: ClientCode::BadRequest,
+                code: ClientCode::NotAllowed,
                 msg: "svc/type not allowed",
             };
         }
@@ -182,25 +208,49 @@ impl ConnRateLimiter {
     }
 }
 
-/// Minimal token-bucket limiter (tenant-level, shared).
+/// Tenant-wide limiter shared by every session of the tenant: lock-free
+/// GCRA (one atomic "theoretical arrival time"), equivalent to a token
+/// bucket of capacity `burst` refilled at `rps`. Replaces a mutex every
+/// message of the tenant went through.
 struct RateLimiter {
-    inner: Arc<Mutex<TokenBucket>>,
+    /// Nanoseconds since `epoch` at which the bucket would be full again.
+    tat: std::sync::atomic::AtomicU64,
+    epoch: Instant,
+    interval_ns: u64,
+    tolerance_ns: u64,
 }
 
 impl RateLimiter {
     fn new(rps: u32, burst: u32) -> Self {
+        let interval_ns = 1_000_000_000 / u64::from(rps.max(1));
         Self {
-            inner: Arc::new(Mutex::new(TokenBucket::new(rps, burst))),
+            tat: std::sync::atomic::AtomicU64::new(0),
+            epoch: Instant::now(),
+            interval_ns,
+            // A full bucket admits `burst` at once.
+            tolerance_ns: interval_ns * u64::from(burst.max(1)),
         }
     }
 
     fn allow(&self) -> bool {
-        // Poisoned mutex means logic bug; treat as "deny" instead of panic.
-        // (enterprise: never bring down gateway)
-        if let Ok(mut g) = self.inner.lock() {
-            g.allow()
-        } else {
-            false
+        self.allow_at(self.epoch.elapsed().as_nanos() as u64)
+    }
+
+    fn allow_at(&self, now: u64) -> bool {
+        use std::sync::atomic::Ordering;
+        let mut tat = self.tat.load(Ordering::Relaxed);
+        loop {
+            let next = tat.max(now) + self.interval_ns;
+            if next - now > self.tolerance_ns {
+                return false;
+            }
+            match self
+                .tat
+                .compare_exchange_weak(tat, next, Ordering::Relaxed, Ordering::Relaxed)
+            {
+                Ok(_) => return true,
+                Err(actual) => tat = actual,
+            }
         }
     }
 }
@@ -226,8 +276,11 @@ impl TokenBucket {
     }
 
     fn allow(&mut self) -> bool {
-        self.refill();
+        self.allow_at(Instant::now())
+    }
 
+    fn allow_at(&mut self, now: Instant) -> bool {
+        self.refill_at(now);
         if self.tokens == 0 {
             return false;
         }
@@ -235,17 +288,101 @@ impl TokenBucket {
         true
     }
 
-    fn refill(&mut self) {
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.last);
-        if elapsed < Duration::from_millis(50) {
+    /// Add the tokens earned since `last`. Only the time actually converted
+    /// into tokens is consumed, so fractional progress carries over (C6: the
+    /// old version reset `last = now` and lost up to one token interval per
+    /// refill). A full bucket banks no extra time.
+    fn refill_at(&mut self, now: Instant) {
+        const NANOS_PER_SEC: u128 = 1_000_000_000;
+        let rps = u128::from(self.rps);
+        let elapsed = now.saturating_duration_since(self.last).as_nanos();
+        let add = elapsed * rps / NANOS_PER_SEC;
+        if add == 0 {
             return;
         }
-
-        let add = (elapsed.as_millis() as u64 * self.rps as u64 / 1000) as u32;
-        if add > 0 {
-            self.tokens = (self.tokens + add).min(self.capacity);
+        let total = u128::from(self.tokens) + add;
+        if total >= u128::from(self.capacity) {
+            self.tokens = self.capacity;
             self.last = now;
+        } else {
+            self.tokens = total as u32;
+            let used = add * NANOS_PER_SEC / rps;
+            self.last += Duration::from_nanos(used as u64);
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tenant_gcra_admits_the_burst_then_the_rate() {
+        let l = RateLimiter::new(10, 3); // 100 ms per token, burst 3
+        let admitted = (0..10).filter(|_| l.allow_at(0)).count();
+        assert_eq!(admitted, 3, "burst");
+        assert!(
+            !l.allow_at(50_000_000),
+            "half an interval later: still empty"
+        );
+        assert!(l.allow_at(100_000_000), "one interval later: one token");
+        assert!(!l.allow_at(100_000_000));
+        // Long idle refills to the burst, not beyond.
+        let later = 10_000_000_000;
+        assert_eq!((0..10).filter(|_| l.allow_at(later)).count(), 3);
+    }
+
+    #[test]
+    fn tenant_gcra_is_exact_under_contention() {
+        let l = std::sync::Arc::new(RateLimiter::new(1, 1000));
+        let admitted: usize = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..8)
+                .map(|_| {
+                    let l = std::sync::Arc::clone(&l);
+                    s.spawn(move || (0..500).filter(|_| l.allow_at(0)).count())
+                })
+                .collect();
+            hs.into_iter().map(|h| h.join().unwrap()).sum()
+        });
+        assert_eq!(admitted, 1000);
+    }
+
+    fn drained(rps: u32, burst: u32) -> (TokenBucket, Instant) {
+        let mut b = TokenBucket::new(rps, burst);
+        let t0 = b.last;
+        while b.allow_at(t0) {}
+        (b, t0)
+    }
+
+    #[test]
+    fn fractional_refill_time_carries_over() {
+        let (mut b, t0) = drained(10, 5); // one token per 100ms
+        assert!(b.allow_at(t0 + Duration::from_millis(199))); // 1 token, 99ms credit
+        assert!(b.allow_at(t0 + Duration::from_millis(200))); // credit completes token 2
+        assert!(!b.allow_at(t0 + Duration::from_millis(200)));
+    }
+
+    #[test]
+    fn full_bucket_does_not_bank_extra_time() {
+        let (mut b, t0) = drained(10, 2);
+        let later = t0 + Duration::from_secs(10); // would be 100 tokens uncapped
+        assert!(b.allow_at(later));
+        assert!(b.allow_at(later));
+        assert!(!b.allow_at(later));
+        assert!(!b.allow_at(later + Duration::from_millis(99)));
+        assert!(b.allow_at(later + Duration::from_millis(100)));
+    }
+
+    #[test]
+    fn sustained_rate_matches_rps() {
+        // burst 2 so the bucket never hits its cap between polls (with burst
+        // 1, time spent full is correctly not banked, giving ~95).
+        let (mut b, t0) = drained(10, 2);
+        // Poll every 15ms for 10s: should admit 100 (10/s), not fewer.
+        let admitted = (1..=667)
+            .filter(|i| b.allow_at(t0 + Duration::from_millis(15 * i)))
+            .count();
+        assert_eq!(admitted, 100);
     }
 }

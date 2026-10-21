@@ -16,6 +16,17 @@ gateway:
   # WebSocket server bind address (Host:Port).
   listen: "0.0.0.0:8080"
 
+  # Internal listener — never expose it publicly. Serves the server API for
+  # your backend (/api/v1/*, authenticated by tenants[].api_keys) and the
+  # operational endpoints (/metrics, /healthz, /readyz). Bind it to loopback
+  # or a private network. Omit to disable.
+  api:
+    listen: "127.0.0.1:8081"
+
+  # Also serve /metrics on the public listener above. Off by default: metrics
+  # name your tenants and reveal load.
+  public_metrics: false
+
   # Server-side heartbeat interval (Ping).
   # The gateway sends PING frames to keep connections alive through load balancers.
   # type: integer (ms)
@@ -39,6 +50,25 @@ gateway:
   # type: integer (ms)
   drain_grace_ms: 5000
 
+  # Per-session outbound queue capacity (messages).
+  # When full, lossy publishes to that session are dropped, and a reply to the
+  # session's own request closes it as a slow consumer (close 1008 "slow_consumer").
+  # type: integer (1..=1048576), default 1024
+  session_queue_capacity: 1024
+
+  # Socket options for accepted connections.
+  socket:
+    # TCP_NODELAY (disable Nagle). Keep on for realtime traffic: with Nagle +
+    # delayed ACKs, small frames can wait ~25-40 ms (see docs/BENCHMARKS.md).
+    tcp_nodelay: true
+
+  # Reverse proxies / load balancers whose X-Forwarded-For is trusted (IPs or CIDRs).
+  # Behind an LB every TCP peer is the LB, so without this all clients share one
+  # per-IP handshake bucket. Only the rightmost untrusted XFF hop is used, so
+  # clients cannot spoof their address. Empty = trust none (default).
+  trusted_proxies: []
+  # trusted_proxies: ["10.0.0.0/8", "192.168.0.10"]
+
 
   # ----------------------------------------------------------------------------
   # 2. Handshake Defender (DoS Protection)
@@ -48,7 +78,8 @@ gateway:
   # Rejected clients receive HTTP 429 Too Many Requests with a `Retry-After` header.
   
   handshake_limit:
-    # Master switch for the defender.
+    # Master switch for the defender (on by default; turn off only for load
+    # tests from a single address).
     enabled: true
 
     # Global Limit (Token Bucket):
@@ -63,9 +94,14 @@ gateway:
     per_ip_rps: 10
     per_ip_burst: 20
 
+    # IPv6 clients count per prefix of this length (a subscriber usually holds
+    # a whole /64, so per-address limits would be trivial to sidestep). 32-128.
+    ipv6_prefix_len: 64
+
     # Memory Safety:
-    # Max number of unique IP addresses to track in memory.
-    # If exceeded, old entries are probabilistically evicted to prevent OOM.
+    # Max number of unique IP addresses to track in memory. At the cap, entries
+    # whose bucket has fully refilled are evicted; addresses that still don't
+    # fit are limited by the global bucket only.
     max_ip_entries: 50000
 
 
@@ -121,6 +157,18 @@ tenants:
       
       hot_allowlist: []             # Binary protocol disabled for this tenant
 
+      # Browser origins allowed to connect (cross-site WebSocket hijacking protection).
+      # Requests without an Origin header (native apps, servers) are always allowed.
+      # Empty = deny every browser origin. Patterns: exact, "https://*.domain", or "*".
+      allowed_origins:
+        - "https://app.example.com"
+
+      # Where clients may present their ticket, in priority order (default: header, subprotocol).
+      #   header      -> Authorization: Bearer <ticket>
+      #   subprotocol -> Sec-WebSocket-Protocol: wsprism.v1, wsprism.auth.<ticket>  (browsers)
+      #   query       -> ?ticket=<ticket>  (legacy; leaks into access logs, so off by default)
+      ticket_sources: [header, subprotocol]
+
 
   # ============================================================================
   # Tenant B: "enterprise_game" (High Performance)
@@ -137,6 +185,15 @@ tenants:
       max_rooms_total: 10000
       max_users_per_room: 200       # Large matches/lobbies
       max_rooms_per_user: 0         # Unlimited room joins (e.g., global chat + guild + match)
+
+    # Game logic lives in your own backend (any language): `match:*` requests
+    # are forwarded to it over HTTP and its answers come back as sys.reply
+    # (RPC proxy, docs/CONFIG.md). Every allowlisted service must exist:
+    # built-in, registered with GatewayBuilder, or routed here. Until a
+    # backend listens on this URL, match requests are answered UNAVAILABLE.
+    rpc:
+      url: "http://127.0.0.1:9000/wsprism/rpc"
+      allow: ["match:*"]
 
     policy:
       rate_limit_rps: 2000
@@ -162,8 +219,10 @@ tenants:
       
       # Binary OpCodes (Service ID : OpCode)
       hot_allowlist:
-        - "1:*"   # Service 1 (Movement): All opcodes allowed
-        - "2:10"  # Service 2 (Combat): Only opcode 10 allowed
+        - "1:*"     # Service 1: the built-in room relay (positions etc.), all opcodes
+        # - "2:10"  # Your own Hot service 2, opcode 10 only — register it first
+        #           # with GatewayBuilder::hot_service (docs/API.md); an allowlist
+        #           # entry for an unregistered service fails startup
 
 
   # ============================================================================
@@ -189,5 +248,6 @@ tenants:
         on_exceed: kick_oldest
 
       ext_allowlist:
-        - "sys:*"                   # Allow all system commands
-        - "metrics:subscribe"
+        - "room:*"                  # Dashboards join rooms and receive server publishes
+      # Gateway metrics are not a WebSocket service: scrape GET /metrics on the
+      # internal listener (gateway.api.listen).

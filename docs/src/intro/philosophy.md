@@ -36,4 +36,4 @@ Most frameworks force you to choose between "Easy JSON" (Socket.io) or "Fast Bin
 ### B. Hot Lane (Binary)
 - **Use Case:** Player movement, physics synchronization, market ticks, high-frequency signals.
 - **Priority:** Latency critical (Lossy / Latest-state-wins).
-- **Format:** Compact Binary. Zero-allocation routing, minimal overhead, routed strictly by Service ID and OpCode.
+- **Format:** Compact Binary. Zero-copy decoding, minimal overhead, routed strictly by Service ID and OpCode.

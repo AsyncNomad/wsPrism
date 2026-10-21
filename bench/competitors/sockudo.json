@@ -1,0 +1,50 @@
+{
+  "debug": false,
+  "host": "10.77.0.1",
+  "port": 6001,
+  "mode": "production",
+  "activity_timeout": 120,
+  "websocket_max_payload_kb": 64,
+  "adapter": {
+    "driver": "local"
+  },
+  "cache": {
+    "driver": "memory"
+  },
+  "queue": {
+    "driver": "memory"
+  },
+  "rate_limiter": {
+    "enabled": false,
+    "driver": "memory"
+  },
+  "metrics": {
+    "enabled": false
+  },
+  "app_manager": {
+    "driver": "memory",
+    "array": {
+      "apps": [
+        {
+          "id": "bench",
+          "key": "app-key",
+          "secret": "app-secret",
+          "enabled": true,
+          "policy": {
+            "limits": {
+              "max_connections": 1000000,
+              "max_client_events_per_second": 1000000
+            },
+            "features": {
+              "enable_client_messages": true,
+              "enable_user_authentication": false
+            }
+          }
+        }
+      ]
+    }
+  },
+  "push": {
+    "allow_memory_drivers": true
+  }
+}

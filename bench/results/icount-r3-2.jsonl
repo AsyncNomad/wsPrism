@@ -1,0 +1,6 @@
+{"scenario":"ext","build":"r3-2","rev":"cb48b2b-dirty","ir":30860527,"units":102400,"ir_per_unit":301.4,"spread_pct":0.01}
+{"scenario":"hot","build":"r3-2","rev":"cb48b2b-dirty","ir":19125559,"units":101376,"ir_per_unit":188.7,"spread_pct":0.01}
+{"scenario":"hot_keyed","build":"r3-2","rev":"cb48b2b-dirty","ir":55135597,"units":101376,"ir_per_unit":543.9,"spread_pct":0.01}
+{"scenario":"api","build":"r3-2","rev":"cb48b2b-dirty","ir":17761439,"units":102400,"ir_per_unit":173.5,"spread_pct":0.00}
+{"scenario":"churn","build":"r3-2","rev":"cb48b2b-dirty","ir":390762649,"units":1024,"ir_per_unit":381604.1,"spread_pct":0.36}
+{"scenario":"disconnect","build":"r3-2","rev":"cb48b2b-dirty","ir":74983102,"units":1024,"ir_per_unit":73225.7,"spread_pct":0.04}

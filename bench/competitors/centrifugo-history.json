@@ -1,0 +1,27 @@
+{
+  "http_server": {
+    "address": "10.77.0.1",
+    "port": 9101
+  },
+  "log": {
+    "level": "error"
+  },
+  "usage_stats": {
+    "disabled": true
+  },
+  "client": {
+    "allow_anonymous_connect_without_token": true
+  },
+  "channel": {
+    "without_namespace": {
+      "allow_subscribe_for_client": true,
+      "allow_subscribe_for_anonymous": true,
+      "allow_publish_for_client": true,
+      "allow_publish_for_subscriber": true,
+      "allow_publish_for_anonymous": true,
+      "history_size": 200,
+      "history_ttl": "600s",
+      "force_recovery": true
+    }
+  }
+}

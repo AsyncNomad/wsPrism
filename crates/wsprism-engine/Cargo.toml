@@ -1,0 +1,30 @@
+[package]
+name = "wsprism-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "wsPrism realtime engine: rooms, reliable/lossy delivery, latest-value Hot state, service traits"
+readme = "README.md"
+keywords = ["websocket", "realtime", "pubsub", "gamedev"]
+categories = ["network-programming", "asynchronous", "game-development"]
+
+[dependencies]
+wsprism-protocol = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+bytes = { workspace = true }
+dashmap = { workspace = true }
+async-trait = { workspace = true }
+
+[features]
+# Test brokers (`broker::testing`) for this repository's tests only.
+testing = []
+
+[dev-dependencies]
+# Integration tests use the test brokers.
+wsprism-engine = { path = ".", features = ["testing"] }

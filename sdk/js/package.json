@@ -1,0 +1,24 @@
+{
+  "name": "wsprism-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "wsPrism JavaScript client (protocol v2, no dependencies)",
+  "type": "module",
+  "main": "./wsprism.js",
+  "types": "./wsprism.d.ts",
+  "exports": {
+    ".": {
+      "types": "./wsprism.d.ts",
+      "default": "./wsprism.js"
+    }
+  },
+  "files": ["wsprism.js", "wsprism.d.ts", "README.md"],
+  "engines": {
+    "node": ">=22"
+  },
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "./run-tests.sh",
+    "check-types": "npx -p typescript@5 tsc -p ."
+  }
+}

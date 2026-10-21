@@ -1,8 +1,24 @@
 [package]
 name = "wsprism"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Multi-tenant realtime gateway: build a WebSocket gateway with your own services and authenticators"
+readme = "README.md"
+keywords = ["websocket", "gateway", "realtime", "multi-tenant", "gamedev"]
+categories = ["network-programming", "web-programming::websocket", "asynchronous", "game-development"]
 
 [dependencies]
-wsprism-core = { workspace = true }
+wsprism-protocol = { workspace = true }
+wsprism-engine = { workspace = true }
 wsprism-gateway = { workspace = true }
+async-trait = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tokio-tungstenite = "0.24"
+futures-util = { workspace = true }

@@ -1,10 +1,13 @@
 //! Operational HTTP endpoints.
 //!
 //! - `/healthz` : liveness
-//! - `/readyz`  : readiness (503 when draining)
+//! - `/readyz`  : readiness (503 when draining or the cluster slot was lost)
 //! - `/metrics` : Prometheus text format
 
-use axum::{http::StatusCode, response::{IntoResponse, Response}};
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 
 use crate::app_state::AppState;
 
@@ -12,9 +15,14 @@ pub async fn healthz() -> impl IntoResponse {
     (StatusCode::OK, "ok")
 }
 
-pub async fn readyz(axum::extract::State(state): axum::extract::State<AppState>) -> impl IntoResponse {
+pub async fn readyz(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> impl IntoResponse {
     if state.is_draining() {
         (StatusCode::SERVICE_UNAVAILABLE, "draining")
+    } else if !state.realtime().broker().healthy() {
+        // Another node took this node's slot (ADR 0011 R5): restart it.
+        (StatusCode::SERVICE_UNAVAILABLE, "broker slot lost")
     } else {
         (StatusCode::OK, "ready")
     }
@@ -26,7 +34,10 @@ pub async fn metrics(axum::extract::State(state): axum::extract::State<AppState>
 
     (
         StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
         body,
     )
         .into_response()

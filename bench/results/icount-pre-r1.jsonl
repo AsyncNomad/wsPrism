@@ -1,0 +1,6 @@
+{"scenario":"ext","build":"pre-r1","rev":"56c78c9","ir":30892475,"units":102400,"ir_per_unit":301.7,"spread_pct":0.02}
+{"scenario":"hot","build":"pre-r1","rev":"56c78c9","ir":19074584,"units":101376,"ir_per_unit":188.2,"spread_pct":0.00}
+{"scenario":"hot_keyed","build":"pre-r1","rev":"56c78c9","ir":55084518,"units":101376,"ir_per_unit":543.4,"spread_pct":0.01}
+{"scenario":"api","build":"pre-r1","rev":"56c78c9","ir":17826147,"units":102400,"ir_per_unit":174.1,"spread_pct":0.00}
+{"scenario":"churn","build":"pre-r1","rev":"56c78c9","ir":393281213,"units":1024,"ir_per_unit":384063.7,"spread_pct":0.68}
+{"scenario":"disconnect","build":"pre-r1","rev":"56c78c9","ir":75366828,"units":1024,"ir_per_unit":73600.4,"spread_pct":0.33}

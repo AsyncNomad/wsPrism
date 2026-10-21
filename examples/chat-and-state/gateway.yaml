@@ -1,0 +1,25 @@
+# wsPrism gateway for the chat-and-state example. DEMO ONLY: the API key is
+# the published string "demo-key"; generate your own for anything real:
+#   KEY=$(openssl rand -base64 32); printf %s "$KEY" | sha256sum
+version: 1
+gateway:
+  listen: "127.0.0.1:8080"
+  api: { listen: "127.0.0.1:8081" }   # server API: the backend only
+tenants:
+  - id: demo
+    # Browsers connect with one-time tickets the backend issues.
+    auth: [{ kind: ticket }]
+    api_keys:
+      - name: example-backend
+        sha256: "c48a01f49fd0f2cc404bc3cbbc80e91457a3d41bb429a695243de4c61794155c"   # "demo-key"
+    # game:* requests are answered by the backend (RPC proxy).
+    rpc:
+      url: "http://127.0.0.1:3000/wsprism/rpc"
+      allow: ["game:*"]
+      timeout_ms: 2000
+    policy:
+      allowed_origins: ["http://localhost:3000", "http://127.0.0.1:3000"]
+      ext_allowlist: ["room:*", "chat:*", "game:*"]
+      hot_allowlist: ["1:*"]          # svc 1 relays Hot frames to the room
+      hot_tick_hz: 30                 # state is sent at most 30x/s per viewer
+      presence_events: true           # sys.member_joined / member_left + snapshot in sys.joined

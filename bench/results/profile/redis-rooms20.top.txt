@@ -1,0 +1,60 @@
+samples (weighted): 16416416400
+
+== exclusive categories (sum = 100%) ==
+ 51.3%  tokio runtime (scheduler, io driver)
+ 10.2%  outbound queue (mpsc)
+  8.7%  publish_room / deliver
+  8.4%  ws framing (tungstenite)
+  7.0%  allocator
+  5.4%  waker register / wake
+  2.4%  split-socket BiLock
+  2.4%  presence / registry (dashmap)
+  2.0%  utf8 re-validation (to_message)
+  1.8%  json (serde)
+  0.2%  kernel: epoll / futex / sched
+  0.2%  per-write timeout timer
+  0.0%  metrics
+  0.0%  other
+  0.0%  session loop / dispatch (ours)
+
+== top self (leaf frame) ==
+  4.9%  _RNCINvMNtNtCsal5olSQ9Yb_15wsprism_gateway9transport7sessionNtB5_7Session10event_loopNtNtB5_5ws_io4WsTxNtB1m_4WsRxE0B9_
+  4.5%  _RNvMs0_NtNtNtCs5LoRnmiZ2Jn_5tokio4sync4mpsc4listINtB5_2RxNtNtNtNtCsal5olSQ9Yb_15wsprism_gateway9transport7session7refresh14RefreshOutcomeE3popB11_
+  3.6%  __memmove_avx_unaligned_erms
+  3.4%  _RNvNtNtNtNtCs5LoRnmiZ2Jn_5tokio7runtime9scheduler12multi_thread6worker3run
+  3.4%  malloc
+  3.1%  _RNvMs0_NtNtNtCs5LoRnmiZ2Jn_5tokio7runtime2io12registrationNtB5_12Registration10poll_ready
+  3.1%  _RNCINvMs_NtNtCseI79fiKZCbN_4axum7extract2wsNtB7_16WebSocketUpgrade10on_upgradeNCNCNvNtNtCsal5olSQ9Yb_15wsprism_gateway9transport2ws10ws_upgrade00INtN
+  2.8%  _RNvMNtNtNtCseAMNSZEw3d_12futures_core4task10___internal12atomic_wakerNtB2_11AtomicWaker8register
+  2.6%  _int_malloc
+  2.6%  _RNvMsf_NtNtCs5LoRnmiZ2Jn_5tokio4sync6notifyNtB5_15NotifiedProject13poll_notified
+  2.5%  _RNvMs_NtNtNtNtCs5LoRnmiZ2Jn_5tokio7runtime9scheduler12multi_thread6workerNtB4_7Context8run_task
+  2.4%  _RNvMs0_NtNtCsf8ezJ1To5oV_12futures_util4lock6bilockINtB5_6BiLockNtNtNtCseI79fiKZCbN_4axum7extract2ws9WebSocketE9poll_lockCsal5olSQ9Yb_15wsprism_gatew
+  1.8%  _RNvXs2_NtNtCsevLNFiNqfJP_4core3str5lossyNtB5_10Utf8ChunksNtNtNtNtB9_4iter6traits8iterator8Iterator4next
+  1.7%  _RNvMs0_NtNtNtCs5LoRnmiZ2Jn_5tokio4sync4mpsc4listINtB5_2RxNtNtNtCsgwi9kGGPo1f_14wsprism_engine8realtime5types8OutFrameE3popCsal5olSQ9Yb_15wsprism_gate
+  1.7%  _RNvXs3_NtNtCseI79fiKZCbN_4axum7extract2wsNtB5_9WebSocketNtNtCseAMNSZEw3d_12futures_core6stream6Stream9poll_next
+  1.6%  cfree@GLIBC_2.2.5
+  1.4%  _RNvNtCs6ap95FqX4Hn_5bytes5bytes11shared_drop
+  1.4%  _RNvMsf_NtNtCs5LoRnmiZ2Jn_5tokio4sync6notifyNtB5_15NotifiedProject13drop_notified
+  1.2%  _int_free
+  1.2%  _RINvMs2_NtCs4yKCRItl2Qm_11tungstenite8protocolNtB6_16WebSocketContext12buffer_frameINtNtCs1hfdDKC0q4B_17tokio_tungstenite6compat8AllowStdINtNtNtCsaUz
+  1.2%  __memcmp_avx2_movbe
+  1.2%  _RNvMs1_NtNtNtCs5LoRnmiZ2Jn_5tokio4sync4mpsc7boundedINtB5_6SenderNtNtNtCsgwi9kGGPo1f_14wsprism_engine8realtime5types8OutFrameE8try_sendB16_
+  1.2%  _RNvMNtNtCs5LoRnmiZ2Jn_5tokio4sync15batch_semaphoreNtB2_9Semaphore11try_acquire
+  1.2%  _RNvMs0_NtNtNtCs5LoRnmiZ2Jn_5tokio4sync4task12atomic_wakerNtB5_11AtomicWaker15register_by_ref
+  1.1%  _RNvNtNtNtCs5LoRnmiZ2Jn_5tokio7runtime4task5waker11wake_by_val
+  1.0%  __GI___pthread_disable_asynccancel
+  1.0%  __send
+  0.9%  _RNvMNtNtNtCsgwi9kGGPo1f_14wsprism_engine8realtime4core7signalsNtB2_14SessionSignals4lock
+  0.8%  _RNvMNtNtNtCs5LoRnmiZ2Jn_5tokio4sync4mpsc4listINtB2_2TxNtNtNtCsgwi9kGGPo1f_14wsprism_engine8realtime5types8OutFrameE10find_blockBW_
+  0.8%  _RNvMs_NtCsUDBZcxDKaY_11parking_lot7condvarNtB4_7Condvar19wait_until_internal
+  0.8%  __vdso_clock_gettime
+  0.8%  _RNvNtNtNtCs5LoRnmiZ2Jn_5tokio7runtime4task5waker11clone_waker
+  0.7%  unlink_chunk.isra.0
+  0.7%  _RINvXs2_Cs9XQfvsfdoMc_7dashmapINtB6_7DashMapNtNtCs1C1lLj4PWSY_5alloc6string6StringNtNtNtNtCsgwi9kGGPo1f_14wsprism_engine8realtime4core8presence4RoomE
+  0.6%  _RNvXs_NtNtCsaUzi8hwMCQt_10hyper_util6common6rewindINtB4_6RewindINtNtNtB8_2rt5tokio7TokioIoNtNtNtNtCs5LoRnmiZ2Jn_5tokio3net3tcp6stream9TcpStreamEENtNt
+  0.6%  _RNvMNtNtNtCs5LoRnmiZ2Jn_5tokio4sync4mpsc7boundedINtB2_8ReceiverNtNtNtCsgwi9kGGPo1f_14wsprism_engine8realtime5types8OutFrameE8try_recvCsal5olSQ9Yb_15w
+  0.6%  _RINvXs2_Cs9XQfvsfdoMc_7dashmapINtB6_7DashMapNtNtCs1C1lLj4PWSY_5alloc6string6StringINtNtNtNtCsgHYyB3hU8Ec_3std11collections4hash3set7HashSetBG_EEINtNt
+  0.6%  malloc_consolidate
+  0.5%  _RNvMs0_NtNtNtCsgwi9kGGPo1f_14wsprism_engine8realtime4core8realtimeNtB5_12RealtimeCore12route_queued
+  0.5%  _RNvXs3_NtNtCsevLNFiNqfJP_4core4hash3sipINtB5_6HasherNtB5_11Sip13RoundsENtB7_6Hasher5writeCsgwi9kGGPo1f_14wsprism_engine

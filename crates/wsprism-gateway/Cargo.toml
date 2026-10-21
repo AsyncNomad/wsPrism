@@ -1,13 +1,24 @@
 [package]
 name = "wsprism-gateway"
-version = "0.1.0"
-edition = "2021"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "wsPrism gateway server: multi-tenant WebSocket gateway with auth, server API and backend proxies (library + binary)"
+readme = "README.md"
+keywords = ["websocket", "gateway", "realtime", "multi-tenant", "gamedev"]
+categories = ["network-programming", "web-programming::websocket", "asynchronous", "game-development"]
 
 [dependencies]
-wsprism-core = { workspace = true }
+wsprism-protocol = { workspace = true }
+wsprism-engine = { workspace = true }
+wsprism-redis = { workspace = true, optional = true }
 tokio = { workspace = true }
 serde = { workspace = true }
-serde_yaml = { workspace = true }
+serde_norway = { workspace = true }
+serde_path_to_error = "0.1"
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -19,3 +30,38 @@ serde_json = { workspace = true }
 
 dashmap = { workspace = true }
 async-trait = { workspace = true }
+ipnet = { workspace = true }
+clap = { workspace = true, features = ["env"] }
+# Must match the tungstenite version axum's `ws` feature uses: we downcast
+# axum::Error to tungstenite::Error to detect oversize frames (S2). The S2
+# integration tests fail if the versions drift apart.
+tungstenite = "0.24"
+mimalloc = { version = "0.1.52", optional = true }
+ring = "0.17"
+base64 = "0.22"
+jsonwebtoken = { version = "9.3", default-features = false, features = ["use_pem"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
+
+[dev-dependencies]
+# Tests and benchmarks see the `internals` module (ADR 0009 §4-3).
+wsprism-gateway = { path = ".", features = ["internals"] }
+# Test brokers (ADR 0011 B3): `WSPRISM_TEST_BROKER=queued` runs the suite
+# through a queued loopback broker.
+wsprism-engine = { workspace = true, features = ["testing"] }
+# Cluster tests poke Redis directly (e.g. drop subscriber connections).
+redis = { workspace = true }
+criterion = { workspace = true }
+ring = "0.17"
+tokio-tungstenite = "0.24"
+
+[[bench]]
+name = "hotpath"
+harness = false
+
+[features]
+default = ["redis"]
+# Cluster broker on Redis (`gateway.broker.kind: redis`, ADR 0011).
+redis = ["dep:wsprism-redis"]
+mimalloc = ["dep:mimalloc"]
+# Internals for this repository's tests, benchmarks and fuzz targets only.
+internals = []

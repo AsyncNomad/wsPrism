@@ -30,3 +30,180 @@ tenants:
     assert_eq!(cfg.version, 1);
     assert_eq!(cfg.tenants[0].id, "acme");
 }
+
+#[test]
+fn reject_reserved_tenant_id_prefix() {
+    let bad = r#"
+version: 1
+tenants:
+  - id: "_unknown"
+"#;
+    let err = config::load_from_str(bad).expect_err("must fail");
+    assert!(err.to_string().contains("reserved"), "{err}");
+}
+
+/// Tenant ids become parts of internal keys and metric labels, so they are
+/// restricted to `[A-Za-z0-9_-]{1,64}`: an id like `a::b` could otherwise
+/// alias another tenant's keys (`a` + room `b::r` vs `a::b` + room `r`).
+#[test]
+fn reject_tenant_id_outside_charset() {
+    for id in ["a::b", "has space", "dots.are.out", &"x".repeat(65)] {
+        let yaml = format!("version: 1\ntenants:\n  - id: \"{id}\"\n");
+        let err = config::load_from_str(&yaml).expect_err(&format!("must reject {id:?}"));
+        assert_eq!(err.client_code().as_str(), "BAD_REQUEST", "{id:?}");
+    }
+    let ok = "version: 1\ntenants:\n  - id: \"Acme-1_b\"\n";
+    config::load_from_str(ok).expect("charset-conforming id must parse");
+}
+
+/// ADR 0008 §1: `tenants[].auth` is an ordered list of authenticators; an
+/// unknown kind is a config error, not silently ignored.
+#[test]
+fn auth_chain_config_is_strict() {
+    let ok = "version: 1\ntenants:\n  - id: t\n    auth:\n      - kind: dev\n";
+    let cfg = config::load_from_str(ok).expect("explicit dev auth parses");
+    assert_eq!(cfg.tenants[0].auth.len(), 1);
+    let bad = "version: 1\ntenants:\n  - id: t\n    auth:\n      - kind: magic\n";
+    assert!(
+        config::load_from_str(bad).is_err(),
+        "unknown authenticator kind"
+    );
+}
+
+#[test]
+fn jwt_config_is_strict() {
+    let cases = [
+        ("no key", "{ kind: jwt, algorithm: HS256 }"),
+        (
+            "two secrets",
+            "{ kind: jwt, algorithm: HS256, secret_file: a, secret_env: B }",
+        ),
+        (
+            "public key for hmac",
+            "{ kind: jwt, algorithm: HS256, secret_env: B, public_key_file: k }",
+        ),
+        (
+            "secret for rsa",
+            "{ kind: jwt, algorithm: RS256, secret_env: B }",
+        ),
+        (
+            "unknown algorithm",
+            "{ kind: jwt, algorithm: none, secret_env: B }",
+        ),
+        (
+            "leeway too large",
+            "{ kind: jwt, algorithm: HS256, secret_env: B, leeway_s: 301 }",
+        ),
+        (
+            "unknown field",
+            "{ kind: jwt, algorithm: HS256, secret_env: B, algorithms: [HS256] }",
+        ),
+    ];
+    for (name, link) in cases {
+        let yaml = format!("version: 1\ntenants:\n  - id: a\n    auth: [{link}]\n");
+        assert!(
+            config::load_from_str(&yaml).is_err(),
+            "{name} must be rejected"
+        );
+    }
+}
+
+#[test]
+fn jwt_keys_are_loaded_and_checked_at_startup() {
+    let dir = std::env::temp_dir().join(format!("wsprism-jwtcfg-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let short = dir.join("short");
+    std::fs::write(&short, "too-short\n").unwrap();
+    let not_pem = dir.join("not.pem");
+    std::fs::write(&not_pem, "hello").unwrap();
+    let build = |link: String| {
+        let yaml = format!("version: 1\ntenants:\n  - id: a\n    auth: [{link}]\n");
+        wsprism_gateway::Gateway::builder()
+            .config(config::load_from_str(&yaml).unwrap())
+            .build()
+    };
+    let cases = [
+        (
+            "missing file",
+            "{ kind: jwt, algorithm: HS256, secret_file: /nonexistent/wsprism }".to_string(),
+        ),
+        (
+            "short secret",
+            format!(
+                "{{ kind: jwt, algorithm: HS256, secret_file: \"{}\" }}",
+                short.display()
+            ),
+        ),
+        (
+            "unset env",
+            "{ kind: jwt, algorithm: HS256, secret_env: WSPRISM_TEST_UNSET_SECRET }".to_string(),
+        ),
+        (
+            "bad pem",
+            format!(
+                "{{ kind: jwt, algorithm: ES256, public_key_file: \"{}\" }}",
+                not_pem.display()
+            ),
+        ),
+    ];
+    for (name, link) in cases {
+        assert!(build(link).is_err(), "{name} must fail at startup");
+    }
+}
+
+/// Every config shipped in the repository must build (the reference
+/// `wsprism.yaml` once allowlisted services that did not exist, unnoticed
+/// while that was only a warning).
+#[test]
+fn shipped_configs_build() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    for rel in [
+        "wsprism.yaml",
+        "bench/gateway.yaml",
+        "examples/chat-and-state/gateway.yaml",
+    ] {
+        let path = root.join(rel);
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        let cfg = config::load_from_str(&text)
+            .unwrap_or_else(|e| panic!("{rel}: {}", e.client_message()));
+        if let Err(e) = wsprism_gateway::Gateway::builder().config(cfg).build() {
+            panic!("{rel}: {}", e.client_message());
+        }
+    }
+}
+
+/// M6: `${VAR}` in values, from the environment (here a fixed lookup).
+#[test]
+fn placeholders_take_values_from_the_environment() {
+    let env = |name: &str| match name {
+        "PORT" => Some("9000".to_string()),
+        "QUEUE" => Some("2048".to_string()),
+        "TENANT" => Some("acme".to_string()),
+        _ => None,
+    };
+    let yaml = r#"
+version: 1
+gateway:
+  listen: "0.0.0.0:${PORT}"
+  session_queue_capacity: ${QUEUE}
+tenants:
+  - id: "${TENANT}"
+    limits: { max_frame_bytes: "${FRAME:-4096}" } # quoted inside { }
+"#;
+    let cfg = config::load_with_env(yaml, &env).expect("must parse");
+    assert_eq!(cfg.gateway.listen, "0.0.0.0:9000");
+    assert_eq!(cfg.gateway.session_queue_capacity, 2048);
+    assert_eq!(cfg.tenants[0].id, "acme");
+    assert_eq!(cfg.tenants[0].limits.max_frame_bytes, 4096);
+
+    // Strictness is kept, and errors name the setting.
+    let typo = yaml.replace("limits:", "limitz:");
+    let err = config::load_with_env(&typo, &env).expect_err("unknown field");
+    assert!(err.to_string().contains("tenants[0]"), "{err}");
+    let missing = config::load_with_env(yaml, &|_| None).expect_err("PORT unset");
+    assert!(err_has(&missing, "PORT") && err_has(&missing, "gateway.listen"));
+}
+
+fn err_has(e: &wsprism_protocol::error::WsPrismError, s: &str) -> bool {
+    e.to_string().contains(s)
+}
