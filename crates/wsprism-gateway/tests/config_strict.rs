@@ -172,6 +172,18 @@ fn shipped_configs_build() {
     }
 }
 
+/// The compose example's configuration (values from the environment; the
+/// Redis URL is read at build time, so only parsing and validation here).
+#[test]
+fn compose_config_parses() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let text = std::fs::read_to_string(root.join("deploy/compose/wsprism.yaml")).unwrap();
+    let env = |name: &str| (name == "DEMO_API_KEY_SHA256").then(|| "ab".repeat(32));
+    let cfg =
+        config::load_with_env(&text, &env).unwrap_or_else(|e| panic!("{}", e.client_message()));
+    assert_eq!(cfg.tenants[0].id, "demo");
+}
+
 /// M6: `${VAR}` in values, from the environment (here a fixed lookup).
 #[test]
 fn placeholders_take_values_from_the_environment() {
