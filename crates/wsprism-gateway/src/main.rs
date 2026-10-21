@@ -48,7 +48,7 @@ async fn main() -> ExitCode {
     {
         Ok(g) => g,
         Err(e) => {
-            eprintln!("{}: {}", cli.config.display(), e.client_message());
+            eprintln!("{}: {}", cli.config.display(), operator_message(&e));
             return ExitCode::FAILURE;
         }
     };
@@ -60,8 +60,18 @@ async fn main() -> ExitCode {
     match gateway.serve().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("{}", e.client_message());
+            eprintln!("{}", operator_message(&e));
             ExitCode::FAILURE
         }
+    }
+}
+
+/// For the operator (stderr): like the client message, but an internal
+/// error shows its cause (`read config failed: No such file ...`) instead
+/// of the bare "internal error" clients get.
+fn operator_message(e: &wsprism_protocol::error::WsPrismError) -> &str {
+    match e {
+        wsprism_protocol::error::WsPrismError::Internal(cause) => cause,
+        other => other.client_message(),
     }
 }
