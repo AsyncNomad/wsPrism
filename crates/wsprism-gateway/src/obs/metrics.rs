@@ -2,8 +2,9 @@
 //!
 //! No external dependencies are used; this module provides counter/gauge/histogram
 //! types with dynamic labels backed by `DashMap`. Labels are flattened into
-//! sorted key vectors to keep deterministic ordering. Histogram buckets are
-//! fixed in microseconds to avoid floating point math.
+//! sorted key vectors to keep deterministic ordering. Histograms count in
+//! microseconds (integer atomics) and are exposed in seconds, the
+//! Prometheus base unit (M6). Every family has `# HELP` and `# TYPE`.
 
 use dashmap::DashMap;
 use std::fmt::Write;
@@ -35,6 +36,29 @@ fn series<V: Default>(
     Arc::clone(map.entry(key).or_default().value())
 }
 
+/// `# HELP` and `# TYPE` of a family.
+fn header(out: &mut String, name: &str, help: &str, kind: &str) {
+    let _ = writeln!(out, "# HELP {name} {help}");
+    let _ = writeln!(out, "# TYPE {name} {kind}");
+}
+
+/// `k="v",...` (escaped).
+fn label_text(key: &[(String, String)]) -> String {
+    key.iter()
+        .map(|(k, v)| format!("{}=\"{}\"", k, escape_label(v)))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// One sample line; no braces when there are no labels.
+fn sample(out: &mut String, name: &str, labels: &str, value: impl std::fmt::Display) {
+    if labels.is_empty() {
+        let _ = writeln!(out, "{name} {value}");
+    } else {
+        let _ = writeln!(out, "{name}{{{labels}}} {value}");
+    }
+}
+
 /// Helper to escape label values.
 fn escape_label(v: &str) -> String {
     v.replace('\\', "\\\\")
@@ -59,17 +83,15 @@ impl CounterVec {
     }
 
     /// Render in Prometheus text exposition format.
-    fn render(&self, name: &str, out: &mut String) {
-        let _ = writeln!(out, "# TYPE {} counter", name);
+    fn render(&self, name: &str, help: &str, out: &mut String) {
+        header(out, name, help, "counter");
         for r in self.map.iter() {
-            let key = r.key();
-            let val = r.value().load(Ordering::Relaxed);
-            let label_str = key
-                .iter()
-                .map(|(k, v)| format!("{}=\"{}\"", k, escape_label(v)))
-                .collect::<Vec<_>>()
-                .join(",");
-            let _ = writeln!(out, "{}{{{}}} {}", name, label_str, val);
+            sample(
+                out,
+                name,
+                &label_text(r.key()),
+                r.value().load(Ordering::Relaxed),
+            );
         }
     }
 }
@@ -95,17 +117,15 @@ impl GaugeVec {
     }
 
     /// Render in Prometheus text exposition format.
-    fn render(&self, name: &str, out: &mut String) {
-        let _ = writeln!(out, "# TYPE {} gauge", name);
+    fn render(&self, name: &str, help: &str, out: &mut String) {
+        header(out, name, help, "gauge");
         for r in self.map.iter() {
-            let key = r.key();
-            let val = r.value().load(Ordering::Relaxed);
-            let label_str = key
-                .iter()
-                .map(|(k, v)| format!("{}=\"{}\"", k, escape_label(v)))
-                .collect::<Vec<_>>()
-                .join(",");
-            let _ = writeln!(out, "{}{{{}}} {}", name, label_str, val);
+            sample(
+                out,
+                name,
+                &label_text(r.key()),
+                r.value().load(Ordering::Relaxed),
+            );
         }
     }
 }
@@ -172,39 +192,43 @@ impl HistogramVec {
         Histogram(series(&self.map, labels))
     }
 
-    /// Render in Prometheus text exposition format (unit: microseconds).
-    fn render(&self, name: &str, out: &mut String) {
-        let _ = writeln!(out, "# TYPE {} histogram", name);
+    /// Render in Prometheus text exposition format, in seconds (counted
+    /// in microseconds).
+    fn render(&self, name: &str, help: &str, out: &mut String) {
+        header(out, name, help, "histogram");
         for r in self.map.iter() {
-            let key = r.key();
+            let labels = label_text(r.key());
             let hist = r.value();
-
-            let label_str = key
-                .iter()
-                .map(|(k, v)| format!("{}=\"{}\"", k, escape_label(v)))
-                .collect::<Vec<_>>()
-                .join(",");
-            let prefix = if label_str.is_empty() {
-                String::new()
-            } else {
-                format!("{},", label_str)
+            let with = |le: &str| {
+                if labels.is_empty() {
+                    format!("le=\"{le}\"")
+                } else {
+                    format!("{labels},le=\"{le}\"")
+                }
             };
-
+            let bucket = format!("{name}_bucket");
             let mut cumulative = 0;
             for (i, &le) in BUCKETS_MICROS.iter().enumerate() {
                 cumulative += hist.buckets[i].load(Ordering::Relaxed);
-                let count = cumulative;
-                // `le` in microseconds (the metric name says so: `_micros`).
-                let _ = writeln!(out, "{}_bucket{{{}le=\"{}\"}} {}", name, prefix, le, count);
+                sample(out, &bucket, &with(&seconds(le)), cumulative);
             }
             let count = hist.count.load(Ordering::Relaxed);
-            let _ = writeln!(out, "{}_bucket{{{}le=\"+Inf\"}} {}", name, prefix, count);
-
+            sample(out, &bucket, &with("+Inf"), count);
             let sum = hist.sum.load(Ordering::Relaxed);
-            let _ = writeln!(out, "{}_sum{{{}}} {}", name, label_str, sum);
-            let _ = writeln!(out, "{}_count{{{}}} {}", name, label_str, count);
+            sample(out, &format!("{name}_sum"), &labels, seconds(sum));
+            sample(out, &format!("{name}_count"), &labels, count);
         }
     }
+}
+
+/// Microseconds as decimal seconds, exactly (`500` -> `0.0005`).
+fn seconds(micros: u64) -> String {
+    let (whole, frac) = (micros / 1_000_000, micros % 1_000_000);
+    if frac == 0 {
+        return whole.to_string();
+    }
+    let digits = format!("{frac:06}");
+    format!("{whole}.{}", digits.trim_end_matches('0'))
 }
 
 #[derive(Default)]
@@ -213,7 +237,7 @@ pub struct GatewayMetrics {
     pub ws_active_sessions: GaugeVec,
     pub policy_decisions: CounterVec,
     pub handshake_rejections: CounterVec,
-    pub dispatch_duration: HistogramVec, // In Microseconds
+    pub dispatch_duration: HistogramVec,
     pub decode_errors: CounterVec,
     pub service_errors: CounterVec,
     pub writer_timeouts: CounterVec,
@@ -230,39 +254,72 @@ impl GatewayMetrics {
         self.draining.load(Ordering::Relaxed)
     }
 
-    /// Render all registered metrics plus any extra lines provided by callers.
-    pub fn render(&self, extra: &[(&str, u64)]) -> String {
+    /// Render all registered metrics plus counters kept elsewhere
+    /// (`extra`: name, help, value).
+    pub fn render(&self, extra: &[(&str, &str, u64)]) -> String {
         let mut out = String::new();
-        self.ws_upgrades
-            .render("wsprism_ws_upgrades_total", &mut out);
-        self.ws_active_sessions
-            .render("wsprism_ws_sessions_active", &mut out);
-        self.policy_decisions
-            .render("wsprism_policy_decisions_total", &mut out);
-        self.handshake_rejections
-            .render("wsprism_handshake_rejections_total", &mut out);
-        self.dispatch_duration
-            .render("wsprism_dispatch_duration_micros", &mut out); // Explicit unit
-        self.decode_errors
-            .render("wsprism_decode_errors_total", &mut out);
-        self.service_errors
-            .render("wsprism_service_errors_total", &mut out);
-        self.writer_timeouts
-            .render("wsprism_writer_timeouts_total", &mut out);
-
-        let _ = writeln!(
-            out,
-            "# TYPE wsprism_draining gauge\nwsprism_draining {}",
-            if self.is_draining() { 1 } else { 0 }
+        self.ws_upgrades.render(
+            "wsprism_ws_upgrades_total",
+            "WebSocket upgrades accepted.",
+            &mut out,
         );
-        for (k, v) in extra {
-            let _ = writeln!(out, "{} {}", k, v);
+        self.ws_active_sessions.render(
+            "wsprism_ws_sessions_active",
+            "Sessions open now.",
+            &mut out,
+        );
+        self.policy_decisions.render(
+            "wsprism_policy_decisions_total",
+            "Messages and sessions a tenant policy refused or limited.",
+            &mut out,
+        );
+        self.handshake_rejections.render(
+            "wsprism_handshake_rejections_total",
+            "Connections refused before the upgrade, by reason.",
+            &mut out,
+        );
+        self.dispatch_duration.render(
+            "wsprism_dispatch_duration_seconds",
+            "Time to handle one client message, by lane.",
+            &mut out,
+        );
+        self.decode_errors.render(
+            "wsprism_decode_errors_total",
+            "Client frames that could not be decoded.",
+            &mut out,
+        );
+        self.service_errors.render(
+            "wsprism_service_errors_total",
+            "Client messages a service answered with an error.",
+            &mut out,
+        );
+        self.writer_timeouts.render(
+            "wsprism_writer_timeouts_total",
+            "Sessions closed because a write to the socket timed out.",
+            &mut out,
+        );
+        header(
+            &mut out,
+            "wsprism_draining",
+            "1 while the gateway drains for shutdown.",
+            "gauge",
+        );
+        sample(
+            &mut out,
+            "wsprism_draining",
+            "",
+            u8::from(self.is_draining()),
+        );
+        for (name, help, v) in extra {
+            header(&mut out, name, help, "counter");
+            sample(&mut out, name, "", v);
         }
         out
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -274,15 +331,69 @@ mod tests {
         s.observe(Duration::from_micros(700)); // <= 1000
         s.observe(Duration::from_secs(5)); // +Inf only
         let mut out = String::new();
-        h.render("d", &mut out);
-        assert!(out.contains(r#"d_bucket{lane="ext",le="100"} 1"#), "{out}");
-        assert!(out.contains(r#"d_bucket{lane="ext",le="500"} 1"#), "{out}");
-        assert!(out.contains(r#"d_bucket{lane="ext",le="1000"} 2"#), "{out}");
+        h.render("d", "help", &mut out);
         assert!(
-            out.contains(r#"d_bucket{lane="ext",le="1000000"} 2"#),
+            out.contains(r#"d_bucket{lane="ext",le="0.0001"} 1"#),
             "{out}"
         );
+        assert!(
+            out.contains(r#"d_bucket{lane="ext",le="0.0005"} 1"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"d_bucket{lane="ext",le="0.001"} 2"#),
+            "{out}"
+        );
+        assert!(out.contains(r#"d_bucket{lane="ext",le="1"} 2"#), "{out}");
         assert!(out.contains(r#"d_bucket{lane="ext",le="+Inf"} 3"#), "{out}");
+        assert!(out.contains(r#"d_sum{lane="ext"} 5.00075"#), "{out}");
         assert!(out.contains(r#"d_count{lane="ext"} 3"#), "{out}");
+    }
+
+    /// Every family has HELP and TYPE before its samples; label-less samples
+    /// have no braces (M6).
+    #[test]
+    fn exposition_is_well_formed() {
+        let m = GatewayMetrics::default();
+        m.ws_upgrades.inc(&[("tenant", "a"), ("status", "ok")]);
+        m.writer_timeouts.inc(&[]);
+        m.dispatch_duration
+            .handle(&[])
+            .observe(Duration::from_micros(10));
+        let out = m.render(&[("wsprism_x_total", "An extra counter.", 7)]);
+        let mut declared = std::collections::HashSet::new();
+        for line in out.lines() {
+            if let Some(rest) = line.strip_prefix("# HELP ") {
+                declared.insert(rest.split(' ').next().unwrap().to_string());
+                continue;
+            }
+            if line.starts_with("# TYPE ") {
+                continue;
+            }
+            let name = line.split(['{', ' ']).next().unwrap();
+            let family = ["_bucket", "_sum", "_count"]
+                .iter()
+                .find_map(|s| name.strip_suffix(s).filter(|f| declared.contains(*f)))
+                .unwrap_or(name);
+            assert!(declared.contains(family), "no HELP before {line}\n{out}");
+            assert!(!line.contains("{}"), "{line}");
+        }
+        assert!(out.contains("wsprism_writer_timeouts_total 1\n"), "{out}");
+        assert!(
+            out.contains("# TYPE wsprism_x_total counter\nwsprism_x_total 7\n"),
+            "{out}"
+        );
+        assert!(
+            out.contains("wsprism_dispatch_duration_seconds_sum 0.00001\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn seconds_are_exact() {
+        assert_eq!(seconds(0), "0");
+        assert_eq!(seconds(100), "0.0001");
+        assert_eq!(seconds(1_500_000), "1.5");
+        assert_eq!(seconds(2_000_000), "2");
     }
 }

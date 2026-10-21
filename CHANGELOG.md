@@ -66,6 +66,14 @@ the Rust API may break in 0.x minor releases, always listed here.
   Redis restart, Redis pause (docs/CLUSTER.md).
 - Server API publish answers 503 + `Retry-After` when a cluster broker's queue
   is full.
+- Operations: `--log-format json` (`WSPRISM_LOG_FORMAT`) writes one JSON
+  object per line with the session's `trace_id`, tenant, user, sid and IP;
+  backend URLs are logged without credentials or query values.
+  `${VAR}` / `${VAR:-default}` in configuration values. `/metrics` has
+  `# HELP` on every family; the dispatch histogram is
+  `wsprism_dispatch_duration_seconds` (seconds, was `_micros`).
+  `Gateway::metrics_text()` now includes the egress, Hot slot and broker
+  counters, like `/metrics`. Guide: docs/OPERATIONS.md.
 
 ### Rust API
 - `wsprism` facade with `Gateway::builder()`: add your own `TextService` /

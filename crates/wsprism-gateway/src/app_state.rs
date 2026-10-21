@@ -351,23 +351,48 @@ impl AppState {
     }
 
     /// Extra counters that are owned by other modules (egress drop/timeouts).
-    pub fn metrics_extra(&self) -> Vec<(&'static str, u64)> {
+    pub fn metrics_extra(&self) -> Vec<(&'static str, &'static str, u64)> {
         let c = self.realtime.counters();
         let mut v = vec![
-            ("wsprism_egress_drop_total", c.drops()),
+            (
+                "wsprism_egress_drop_total",
+                "Lossy frames dropped because a session's queue was full.",
+                c.drops(),
+            ),
             (
                 "wsprism_egress_slow_consumer_closes_total",
+                "Sessions closed because a reliable frame did not fit their queue.",
                 c.slow_consumer_closes(),
             ),
-            ("wsprism_hot_slot_overwritten_total", c.slot_overwrites()),
-            ("wsprism_hot_slot_full_drops_total", c.slot_full_drops()),
+            (
+                "wsprism_hot_slot_overwritten_total",
+                "Keyed Hot frames replaced in a recipient's slot by a newer one before being sent.",
+                c.slot_overwrites(),
+            ),
+            (
+                "wsprism_hot_slot_full_drops_total",
+                "Keyed Hot frames dropped because a recipient's slot table was full.",
+                c.slot_full_drops(),
+            ),
         ];
         // Queued broker only (ADR 0011 B4).
         if let Some(b) = self.realtime.broker_counters() {
             v.extend([
-                ("wsprism_broker_outbox_refused_total", b.refused()),
-                ("wsprism_broker_retries_total", b.retries()),
-                ("wsprism_broker_failed_total", b.failed()),
+                (
+                    "wsprism_broker_outbox_refused_total",
+                    "Frames the cluster outbox refused (full, or waiting too long).",
+                    b.refused(),
+                ),
+                (
+                    "wsprism_broker_retries_total",
+                    "Cluster broker calls retried after a failure.",
+                    b.retries(),
+                ),
+                (
+                    "wsprism_broker_failed_total",
+                    "Frames and commands the cluster broker rejected (dropped).",
+                    b.failed(),
+                ),
             ]);
         }
         v

@@ -161,7 +161,7 @@ impl Gateway {
 
     /// The Prometheus exposition served at `/metrics`.
     pub fn metrics_text(&self) -> String {
-        self.state.metrics().render(&[])
+        self.state.metrics().render(&self.state.metrics_extra())
     }
 
     /// Connected sessions across all tenants.
