@@ -36,12 +36,19 @@ fn jwt(sub: &str, ttl: u64, subscribe: Option<Value>) -> String {
     .unwrap()
 }
 
+/// Written once per process: the tests run in parallel, and rewriting the
+/// file (truncate, then write) let another test read it empty ("secret must
+/// be at least 32 bytes (got 0)", seen in CI).
 fn secret_file() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("wsprism-refresh-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let p = dir.join("secret");
-    std::fs::write(&p, SECRET).unwrap();
-    p
+    static FILE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    FILE.get_or_init(|| {
+        let dir = std::env::temp_dir().join(format!("wsprism-refresh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("secret");
+        std::fs::write(&p, SECRET).unwrap();
+        p
+    })
+    .clone()
 }
 
 /// Connect-proxy backend: `u:<user>` admits at once, `slow:<user>` after 400 ms.
