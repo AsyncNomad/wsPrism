@@ -22,6 +22,9 @@ pub fn wire_close_code(protocol: ProtocolVersion, code: u16, reason: &str) -> u1
         "decode_error" => 4010,
         "capacity" => 4100,
         "slow_consumer" => 4101,
+        // The cluster's session store is down (standard 1013 "try again
+        // later"): reconnect after a backoff.
+        "unavailable" => 4102,
         "draining" => 4103,
         "idle_timeout" => 4200,
         _ => code,
@@ -44,5 +47,7 @@ mod tests {
             wire_close_code(ProtocolVersion::V2, 1011, "something new"),
             1011
         );
+        assert_eq!(wire_close_code(ProtocolVersion::V2, 1013, "unavailable"), 4102);
+        assert_eq!(wire_close_code(ProtocolVersion::V1, 1013, "unavailable"), 1013);
     }
 }

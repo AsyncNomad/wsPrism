@@ -148,7 +148,8 @@ gateway:
   exactly (one Redis script decides; concurrent connects cannot both win).
   The server API's `disconnect` reaches every node. A node that dies takes
   its sessions out of the count. If Redis is down, new connections are
-  refused with 1013 (try again later); connected sessions stay.
+  closed right after the upgrade with 4102 `unavailable` (v1: 1013; both
+  mean try again later); connected sessions stay.
 - **Presence is cluster-wide** (ADR 0011 R4-2): `GET /api/v1/rooms/{room}/presence`
   and the `sys.joined` snapshot list every node's members. When a node
   dies, the others notice within its `slot_ttl_s` plus a few seconds,

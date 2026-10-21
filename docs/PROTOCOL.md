@@ -16,6 +16,31 @@ Key contracts:
 - Ingress pipeline for Ext Lane: **Policy → Service** (a WASM plugin stage is
   planned, not implemented: docs/PLUGIN_ABI.md).
 
+### Compatibility and field conventions (fixed from 0.1.0)
+
+The wire contract only grows (docs/API.md): new fields, message types and
+codes may appear; existing names, types and meanings do not change. Clients
+must ignore fields they do not know.
+
+- **Top level or `data`:** the result of the client's own request and
+  positions travel at the top level (`sys.joined`: `room`, `chan`,
+  `member_id`, `members`, `epoch`, `offset`, `recovered`; a room message's
+  `offset`); a payload, or an event about someone else, travels in `data`
+  (`sys.authed`, `sys.refreshed`, `sys.error`, `sys.kicked`,
+  `sys.member_joined` / `member_left`, server publishes).
+- **Opaque values:** `epoch`, `trace_id`, `chan` and `member_id` are
+  identifiers to compare and send back, never to parse (a `member_id`
+  encodes a node slot today; that may change).
+- **`offset`:** a JSON integer, per room and epoch, starting at 1 and rising
+  by one per kept message (within 2^53, safe as a JavaScript number).
+- **`recovered`:** present only when the join asked to `recover`. Absent is
+  not `false`.
+- **`sys.gap`:** with `epoch`, the room's history restarted (start counting
+  again from that epoch); without, messages of the room may be missing
+  (reload the room's state). A reason field may be added later.
+- **`"v": 1`** in Ext envelopes, also on v2 sessions, is the envelope format
+  version, not the protocol version (which the subprotocol negotiates).
+
 ---
 
 ## 1) WebSocket Handshake
@@ -314,7 +339,7 @@ there is one) and then a close frame:
 | 1009 | `message too big` | — | Message exceeded the tenant `max_frame_bytes` |
 | 1008 | `disconnected` | `sys.kicked{reason}` | The tenant's backend disconnected the user (server API) |
 | 1013 | `capacity` | `sys.error RESOURCE_EXHAUSTED` | Tenant capacity reached during admission |
-| 1013 | `unavailable` | `sys.error UNAVAILABLE` | The cluster's session table is unavailable (v2 too: 1013, try again later) |
+| 1013 | `unavailable` | `sys.error UNAVAILABLE` | The cluster's session table is unavailable: try again later (v2: 4102) |
 | 1008 | `auth_expired` | `sys.kicked` | The credential's `exp` passed without `sys.refresh` (v2: 4001) |
 
 ### Protocol v2 close codes (ADR 0006 §6)
@@ -325,7 +350,7 @@ but 4000-range codes whose **range tells the client how to reconnect**:
 | Range | Client should | Codes |
 |---|---|---|
 | 4000-4099 | **not reconnect unchanged** (new ticket / config needed) | 4001 `auth_expired` (the credential's `exp` passed: get a fresh token, then reconnect), 4003 `policy`, 4004 `too_many_sessions`, 4005 `replaced`, 4006 `max_sessions_exceeded`, 4007 `disconnected`, 4009 `message too big`, 4010 `decode_error` |
-| 4100-4199 | reconnect **after backoff** (≥ 1 s, exponential + jitter) | 4100 `capacity`, 4101 `slow_consumer`, 4103 `draining` |
+| 4100-4199 | reconnect **after backoff** (≥ 1 s, exponential + jitter) | 4100 `capacity`, 4101 `slow_consumer`, 4102 `unavailable` (a cluster store is down), 4103 `draining` |
 | 4200-4299 | reconnect **immediately** | 4200 `idle_timeout` |
 
 Clients should treat a standard 1009 like 4009. (Planned: `sys.reconnect{after_ms}`

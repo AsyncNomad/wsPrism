@@ -17,7 +17,9 @@ the Rust API may break in 0.x minor releases, always listed here.
   sender, and keyed frames are conflated per recipient — latest value wins —
   optionally paced with `hot_tick_hz`).
 - Protocol v2 (`wsprism.v2.json`) alongside v1, with close codes whose range
-  tells clients how to reconnect.
+  tells clients how to reconnect (4102 `unavailable` when a cluster store is
+  down; v1 1013). The wire contract only grows from 0.1.0; the field
+  conventions are in docs/PROTOCOL.md.
 - Authentication chain per tenant: one-time tickets, JWT (HS/RS/PS/ES/EdDSA,
   pinned algorithm, `kid` rotation, tenant binding, permission claims,
   session closed on expiry), connect proxy to your backend, and custom
