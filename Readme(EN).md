@@ -213,6 +213,7 @@ graph TD
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones toward production grade |
 | [`docs/adr/`](docs/adr/README.md) | Architecture decision records |
 | [`docs/HARDENING.md`](docs/HARDENING.md) | Security & correctness fix log |
+| [`SECURITY.md`](SECURITY.md) | How to report a vulnerability (privately) |
 
 ---
 

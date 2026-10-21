@@ -221,6 +221,7 @@ graph TD
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | 상용 수준을 향한 단계별 계획 |
 | [`docs/adr/`](docs/adr/README.md) | 설계 결정 기록 |
 | [`docs/HARDENING.md`](docs/HARDENING.md) | 보안·정확성 결함 수정 기록 |
+| [`SECURITY.md`](SECURITY.md) | 취약점 신고 방법(비공개) |
 
 ---
 
