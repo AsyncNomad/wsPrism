@@ -38,6 +38,7 @@ pub struct AppState {
     // Sprint 5
     handshake: Arc<HandshakeDefender>,
     trusted_proxies: Arc<TrustedProxies>,
+    log_identities: Arc<crate::obs::identity::LogIdentities>,
 }
 
 struct AppStateInner {
@@ -254,6 +255,10 @@ impl AppState {
             }
         }
 
+        let log_identities = Arc::new(crate::obs::identity::LogIdentities::new(
+            cfg.gateway.log_identities,
+            cfg.gateway.log_identity_key_env.as_deref(),
+        )?);
         Ok(Self {
             inner: Arc::new(AppStateInner {
                 tenant_auth,
@@ -275,7 +280,13 @@ impl AppState {
             metrics,
             handshake,
             trusted_proxies,
+            log_identities,
         })
+    }
+
+    /// How session logs show identities (`gateway.log_identities`).
+    pub fn log_identities(&self) -> &crate::obs::identity::LogIdentities {
+        &self.log_identities
     }
 
     pub fn cfg(&self) -> &GatewayConfig {

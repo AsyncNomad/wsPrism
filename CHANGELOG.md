@@ -81,7 +81,10 @@ the Rust API may break in 0.x minor releases, always listed here.
   `# HELP` on every family; the dispatch histogram is
   `wsprism_dispatch_duration_seconds` (seconds, was `_micros`).
   `Gateway::metrics_text()` now includes the egress, Hot slot and broker
-  counters, like `/metrics`. Guide: docs/OPERATIONS.md.
+  counters, like `/metrics`. `gateway.log_identities: plain | hashed |
+  off` decides how user ids, client sids and IPs appear in logs (hashed:
+  HMAC-SHA256, key from `log_identity_key_env`); delivery warnings name the
+  connection id, never the user. Guide: docs/OPERATIONS.md.
 - Container image: `Dockerfile` (distroless, non-root, JSON logs) and a
   two-node compose example on Redis (`deploy/compose/`).
 - The binary prints the cause of internal startup errors (e.g. a missing

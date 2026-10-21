@@ -4,4 +4,5 @@
 //! external crates. Metrics are stored as atomics and rendered by the `/metrics`
 //! handler.
 
+pub mod identity;
 pub mod metrics;

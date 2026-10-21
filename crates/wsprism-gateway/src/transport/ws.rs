@@ -88,7 +88,26 @@ pub async fn ws_upgrade(
             let ip = admitted.client_ip;
             // C6: instrument the whole session future instead of entering the
             // span across awaits (clippy.toml bans holding span guards there).
-            let span = tracing::info_span!("ws", %trace_id, t=%q.tenant, u=%user_id, s=%sid, %ip);
+            // Identities as `gateway.log_identities` says (personal data).
+            let span = tracing::info_span!(
+                "ws",
+                %trace_id,
+                t = %q.tenant,
+                u = tracing::field::Empty,
+                s = tracing::field::Empty,
+                ip = tracing::field::Empty,
+                c = tracing::field::Empty
+            );
+            let ids = app.log_identities();
+            for (field, value) in [
+                ("u", user_id.as_str()),
+                ("s", sid.as_str()),
+                ("ip", &ip.to_string()),
+            ] {
+                if let Some(shown) = ids.show(value) {
+                    span.record(field, tracing::field::display(shown));
+                }
+            }
             let protocol = subprotocol::version_of(admitted.subprotocol);
             let id = SessionIdentity {
                 protocol,

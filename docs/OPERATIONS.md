@@ -28,12 +28,27 @@ log pipelines (Loki, Elasticsearch, Cloud Logging, ...):
 - `ts` (UTC, RFC 3339), `level`, `target` (module), `msg`, and the
   event's own fields (keys in alphabetical order).
 - `span`: the session the event happened in: `trace_id` (also in the
-  errors the client receives, so a user report can be matched), `t` tenant, `u` user, `s` session
-  id, `ip` client address. Use `trace_id` to follow one session.
+  errors the client receives, so a user report can be matched), `t`
+  tenant, `u` user, `s` session id, `ip` client address, `c` connection id
+  (what delivery warnings such as "closing slow consumer" name). Use
+  `trace_id` to follow one session.
 - **Not logged:** tickets, tokens, API keys, backend credentials, message
   bodies. Backend URLs are logged without user info and with query values
-  replaced by `***`. User ids and client IPs are logged (personal data
-  under some regulations: keep log retention accordingly).
+  replaced by `***`.
+- **Personal data** (`u`, `s`, `ip`): `gateway.log_identities` decides how
+  they appear.
+
+  | Value | Logs show |
+  |---|---|
+  | `plain` (default) | the values as they are |
+  | `hashed` | `h:` + 16 hex characters of an HMAC-SHA256: one person keeps one hash, the value cannot be read back |
+  | `off` | nothing (the fields are left out) |
+
+  With `hashed`, set `gateway.log_identity_key_env` to a variable holding
+  a key of at least 16 bytes, the same on every node, to compare hashes
+  across nodes and restarts (without it each process picks a random key).
+  To find one user's sessions, hash their id with the same key (HMAC-SHA256,
+  first 16 hex characters).
 
 ## Stopping and updating
 

@@ -412,7 +412,7 @@ impl RealtimeCore {
                 QoS::Lossy => {
                     let n = self.counters.drops.fetch_add(1, Ordering::Relaxed);
                     if sample_every_1024(n) {
-                        tracing::warn!(%session_key, drops=%n, "lossy egress drop");
+                        tracing::warn!(conn = conn_tag(session_key), drops=%n, "lossy egress drop");
                     }
                 }
                 QoS::Reliable => {
@@ -421,7 +421,11 @@ impl RealtimeCore {
                         .slow_consumer_closes
                         .fetch_add(1, Ordering::Relaxed);
                     if sample_every_1024(n) {
-                        tracing::warn!(%session_key, closes=%n, "reliable egress: closing slow consumer");
+                        tracing::warn!(
+                            conn = conn_tag(session_key),
+                            closes = %n,
+                            "reliable egress: closing slow consumer"
+                        );
                     }
                     let notice =
                         sys::error(ClientCode::SlowConsumer, "outbound queue full", "").to_string();
@@ -890,6 +894,14 @@ fn offset_of(frame: &OutFrame) -> Option<u64> {
     let rest = t.as_bytes().strip_prefix(b"{\"offset\":")?;
     let end = rest.iter().position(|b| !b.is_ascii_digit())?;
     std::str::from_utf8(&rest[..end]).ok()?.parse().ok()
+}
+
+/// The connection part of a session key (`...#<conn id>`) for logs: the
+/// key also holds the user id and client sid, personal data the gateway
+/// logs only as `gateway.log_identities` says (its session span carries
+/// the same connection id as `c`).
+fn conn_tag(session_key: &str) -> &str {
+    session_key.rsplit_once('#').map_or("", |(_, c)| c)
 }
 
 /// A `sys.gap` that announces a new history epoch (`sys::gap_epoch`).

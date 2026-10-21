@@ -40,6 +40,10 @@ The annotated reference is the repository's [`wsprism.yaml`](../wsprism.yaml)
 API, RPC, history and the cluster broker are documented in the sections
 below.
 
+Logging of personal data (`gateway.log_identities`,
+`gateway.log_identity_key_env`) is described in
+[OPERATIONS.md](OPERATIONS.md) "Logs".
+
 ## Minimal example
 
 ```yaml

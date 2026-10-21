@@ -64,7 +64,9 @@ impl Drop for SessionCleanup {
         if self.shared {
             release_shared(&self.core, &self.user_key, &self.session_key);
         }
-        tracing::debug!(s=%self.session_key, "session raii cleanup done");
+        // Inside the session span (identities as `gateway.log_identities`
+        // says); the session key would carry the user id and sid in clear.
+        tracing::debug!("session raii cleanup done");
     }
 }
 
@@ -215,6 +217,8 @@ impl Session {
         // would alias.
         let conn_id = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
         let session_key = format!("{}::{}::{}#{:x}", id.tenant, id.user_id, id.sid, conn_id);
+        // The connection id is what engine warnings name (not personal data).
+        tracing::Span::current().record("c", format_args!("{conn_id:x}"));
 
         let sp = policy.session_policy();
         let shared = core.broker().sessions().is_some();

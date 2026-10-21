@@ -87,6 +87,19 @@ pub struct GatewaySection {
     #[serde(default)]
     pub public_metrics: bool,
 
+    /// How session logs show user ids, client session ids and IP addresses
+    /// (personal data): `plain` (default), `hashed` (HMAC-SHA256, 16 hex
+    /// characters), or `off` (left out). docs/OPERATIONS.md.
+    #[serde(default)]
+    pub log_identities: LogIdentitiesMode,
+
+    /// With `log_identities: hashed`: an environment variable holding the
+    /// HMAC key (at least 16 bytes). The same key on every node and across
+    /// restarts makes one person's hashes equal everywhere. Without it, each
+    /// process uses a random key.
+    #[serde(default)]
+    pub log_identity_key_env: Option<String>,
+
     /// How room traffic reaches other gateway nodes (ADR 0011). Default:
     /// `memory` (one node).
     #[serde(default)]
@@ -225,11 +238,23 @@ fn default_hs_max_entries() -> usize {
     50_000
 }
 
+/// `gateway.log_identities`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogIdentitiesMode {
+    #[default]
+    Plain,
+    Hashed,
+    Off,
+}
+
 impl Default for GatewaySection {
     fn default() -> Self {
         Self {
             listen: default_listen(),
             public_metrics: false,
+            log_identities: LogIdentitiesMode::default(),
+            log_identity_key_env: None,
             broker: BrokerConfig::default(),
             ping_interval_ms: default_ping_interval_ms(),
             idle_timeout_ms: default_idle_timeout_ms(),
