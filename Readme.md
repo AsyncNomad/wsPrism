@@ -63,12 +63,18 @@ RUST_LOG=wsprism_gateway=info cargo run --release -p wsprism-gateway -- --config
 
 # 빌드된 바이너리
 ./target/release/wsprism-gateway --config wsprism.yaml
+
+# 컨테이너 (distroless, non-root; 설정은 마운트, 로그는 JSON)
+docker build -t wsprism-gateway .
+docker run -v $PWD/my.yaml:/etc/wsprism/wsprism.yaml:ro -p 8080:8080 wsprism-gateway
+# Redis를 쓰는 2노드 클러스터 예제: deploy/compose/
 ```
 
 ### 3. 실행 확인 (Verify)
 
 ```
-INFO wsprism_gateway: wsprism-gateway starting listen=0.0.0.0:8080 config=wsprism.yaml
+INFO wsprism_gateway: wsprism-gateway starting config=wsprism.yaml
+INFO wsprism_gateway::gateway: wsprism-gateway serving listen=0.0.0.0:8080 api=127.0.0.1:8081
 ```
 
 ```bash
@@ -86,7 +92,8 @@ curl http://127.0.0.1:8081/metrics   # Prometheus 메트릭 (내부 리스너 ga
 - 브라우저에서 접속하려면 그 Origin이 테넌트의 `policy.allowed_origins`에 있어야 합니다.
 
 ```js
-// 브라우저 (현재 인증은 개발용 스텁: 티켓 "dev"만 통과)
+// 브라우저. 예시 설정의 테넌트는 auth가 비어 있어 개발용 스텁으로 동작합니다(티켓 "dev"만 통과).
+// 실제 배포는 1회용 티켓·JWT·백엔드 프록시 중에서 고릅니다 (docs/CONFIG.md).
 const ws = new WebSocket("ws://localhost:8080/v1/ws?tenant=starter_plan", ["wsprism.v1", "wsprism.auth.dev"]);
 ```
 
@@ -155,6 +162,9 @@ wsPrism은 이 둘을 동시에 지원합니다.
 - **🛡️ 정책 엔진:** 기본 보안 설계, 테넌트별 허용 목록·레이트 리미트·페이로드 제한
 - **🧠 결정적 QoS:** 게임 상태는 손실 허용, 채팅은 신뢰 전달 등 우선순위 기반 전송
 - **🔌 전송 계층 독립성:** 비즈니스 로직은 전송 방식과 분리 (현재 WebSocket, 향후 QUIC/TCP)
+- **📜 이력과 복구:** 룸별 메시지 이력(offset/epoch), 재접속 시 놓친 메시지를 순서대로 재전송
+- **🌐 클러스터 (실험적):** Redis로 여러 노드가 룸·세션·presence·이력을 공유. 노드 강제 종료·롤링 업데이트·Redis 재시작을 카오스 테스트로 검증 ([`docs/CLUSTER.md`](docs/CLUSTER.md))
+- **🔧 운영:** JSON 로그(세션 `trace_id`, 비밀값 마스킹), 설정 값의 `${VAR}`, Prometheus 메트릭, 정상 종료 시 무손실 드레인, Docker 이미지 ([`docs/OPERATIONS.md`](docs/OPERATIONS.md))
 
 ---
 
@@ -194,7 +204,9 @@ graph TD
 | 문서 | 내용 |
 |---|---|
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | 와이어 프로토콜 계약: 핸드셰이크·인증, 두 레인, 룸, 에러 코드, 종료 코드 |
-| [`docs/CONFIG.md`](docs/CONFIG.md) | 설정: 인증(티켓·JWT·프록시·플러그인), 서버 API, RPC 프록시 |
+| [`docs/CONFIG.md`](docs/CONFIG.md) | 설정: 인증(티켓·JWT·프록시·플러그인), 서버 API, RPC 프록시, 클러스터, 환경변수 |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | 운영: 명령행, JSON 로그, 메트릭 목록, 종료·업데이트, 컨테이너 |
+| [`docs/CLUSTER.md`](docs/CLUSTER.md) | 클러스터: 배포 구성, 장애 시 동작, 롤링 업데이트, 전달 의미, 용량 |
 | [`CHANGELOG.md`](CHANGELOG.md) | 변경 기록 (모든 크레이트 같은 버전) |
 | [`docs/RELEASING.md`](docs/RELEASING.md) | 배포 절차 |
 | [`docs/API.md`](docs/API.md) | Rust API: `Gateway::builder`로 사용자 서비스·인증기 붙이기, API 등급과 호환성 정책 |

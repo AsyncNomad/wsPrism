@@ -143,7 +143,7 @@ impl Gateway {
             })?),
         };
         let api_listen = gw.api.as_ref().map_or("off", |a| a.listen.as_str());
-        tracing::info!(%listen, api = api_listen, "wsprism-gateway serving");
+        tracing::info!(%listen, api = %api_listen, "wsprism-gateway serving");
         self.serve_on(listener, api, shutdown_signal())
             .await
             .map_err(|e| WsPrismError::BadRequest(format!("server failed: {e}")))

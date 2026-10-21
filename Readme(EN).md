@@ -65,12 +65,18 @@ RUST_LOG=wsprism_gateway=info cargo run --release -p wsprism-gateway -- --config
 
 # Built binary
 ./target/release/wsprism-gateway --config wsprism.yaml
+
+# Container (distroless, non-root; mount the config; JSON logs)
+docker build -t wsprism-gateway .
+docker run -v $PWD/my.yaml:/etc/wsprism/wsprism.yaml:ro -p 8080:8080 wsprism-gateway
+# Two-node cluster on Redis: deploy/compose/
 ```
 
 ### 3. Verify
 
 ```
-INFO wsprism_gateway: wsprism-gateway starting listen=0.0.0.0:8080 config=wsprism.yaml
+INFO wsprism_gateway: wsprism-gateway starting config=wsprism.yaml
+INFO wsprism_gateway::gateway: wsprism-gateway serving listen=0.0.0.0:8080 api=127.0.0.1:8081
 ```
 
 ```bash
@@ -88,7 +94,8 @@ curl http://127.0.0.1:8081/metrics   # Prometheus metrics (internal listener gat
 - Browser origins must be listed in the tenant's `policy.allowed_origins`.
 
 ```js
-// Browser (authentication is currently a dev stub: only ticket "dev" passes)
+// Browser. The example tenants have no `auth`, so the development stub applies (only ticket "dev").
+// Real deployments choose one-time tickets, JWT or a backend proxy (docs/CONFIG.md).
 const ws = new WebSocket("ws://localhost:8080/v1/ws?tenant=starter_plan", ["wsprism.v1", "wsprism.auth.dev"]);
 ```
 
@@ -148,6 +155,9 @@ Most frameworks force you to choose between "Easy JSON" or "Fast Binary." wsPris
 - **🛡️ Policy Engine:** "Secure by Default." Define strict allowlists, rate limits, and payload sizes per tenant.
 - **🧠 Deterministic QoS:** Prioritized message delivery. "Lossy" channels for game state, "Reliable" channels for chat.
 - **🔌 Transport Agnostic:** The business logic is decoupled from the transport layer (WebSocket today, QUIC/TCP tomorrow).
+- **📜 History & Recovery:** Per-room message history (offset/epoch); reconnecting clients get what they missed, in order.
+- **🌐 Cluster (experimental):** Nodes share rooms, sessions, presence and history through Redis. Node kills, rolling updates and Redis restarts are chaos-tested ([`docs/CLUSTER.md`](docs/CLUSTER.md)).
+- **🔧 Operations:** JSON logs (session `trace_id`, secrets masked), `${VAR}` in config values, Prometheus metrics, lossless graceful drain, Docker image ([`docs/OPERATIONS.md`](docs/OPERATIONS.md)).
 
 ---
 
@@ -186,6 +196,14 @@ graph TD
 | Document | Contents |
 |---|---|
 | [`docs/PROTOCOL.md`](docs/PROTOCOL.md) | Wire protocol contract: handshake & auth, both lanes, rooms, error codes, close codes |
+| [`docs/CONFIG.md`](docs/CONFIG.md) | Configuration: authentication (tickets, JWT, proxy, plugins), server API, RPC proxy, cluster, environment values |
+| [`docs/OPERATIONS.md`](docs/OPERATIONS.md) | Operations: command line, JSON logs, metrics catalogue, stopping & updating, containers |
+| [`docs/CLUSTER.md`](docs/CLUSTER.md) | Cluster: what to deploy, failure behaviour, rolling updates, delivery semantics, capacity |
+| [`docs/API.md`](docs/API.md) | Rust API: custom services and authenticators via `Gateway::builder`, API tiers and compatibility |
+| [`sdk/js/`](sdk/js/README.md) | JavaScript client SDK (no dependencies, protocol v2) |
+| [`examples/chat-and-state/`](examples/chat-and-state/README.md) | Example app: Node backend + SDK (chat, RPC, Hot state) |
+| [`CHANGELOG.md`](CHANGELOG.md) | Changes (all crates share one version) |
+| [`docs/RELEASING.md`](docs/RELEASING.md) | Release procedure |
 | [`wsprism.yaml`](wsprism.yaml) | Annotated reference for every configuration option |
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Methodology and performance numbers |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Milestones toward production grade |

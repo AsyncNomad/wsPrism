@@ -74,6 +74,10 @@ the Rust API may break in 0.x minor releases, always listed here.
   `wsprism_dispatch_duration_seconds` (seconds, was `_micros`).
   `Gateway::metrics_text()` now includes the egress, Hot slot and broker
   counters, like `/metrics`. Guide: docs/OPERATIONS.md.
+- Container image: `Dockerfile` (distroless, non-root, JSON logs) and a
+  two-node compose example on Redis (`deploy/compose/`).
+- The binary prints the cause of internal startup errors (e.g. a missing
+  configuration file) instead of "internal error".
 - Graceful stop hands over a cluster node's queued frames (publishes it
   accepted, members leaving) before exiting, and refuses server API
   publishes (503) while draining. Rolling updates are chaos-tested.
