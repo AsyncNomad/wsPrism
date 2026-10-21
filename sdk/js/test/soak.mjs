@@ -71,6 +71,27 @@ const note = (what) => {
   if (process.env.SOAK_VERBOSE) console.error(`${at}s ${what}`);
 };
 
+// A run that does not finish is a finding too (something never recovered):
+// past the expected time, print where it stands and fail.
+const watchdogMs = (minutes * 60 + 240) * 1000;
+setTimeout(() => {
+  const state = {
+    stuck: true,
+    seed,
+    nextN,
+    acked: acked.size,
+    nodes: nodes.map((n, i) => ({ i, alive: n.alive, exit: n.proc.exitCode, signal: n.proc.signalCode })),
+    clients: recs.map((r) => {
+      const m = r.events.filter((e) => !e.gap);
+      return `${r.name}: ${m.length} msgs, last n=${m.at(-1)?.n}, state=${r.client.state}, reconnects=${r.reconnects}`;
+    }),
+  };
+  console.log(JSON.stringify(state, null, 2));
+  console.error(timeline.join("\n"));
+  killAll();
+  process.exit(3);
+}, watchdogMs).unref();
+
 process.on("exit", killAll);
 const redisCli = (...args) => docker("exec", CONTAINER, "redis-cli", ...args);
 const dropSnapshot = () => docker("exec", CONTAINER, "rm", "-f", "/data/dump.rdb");
