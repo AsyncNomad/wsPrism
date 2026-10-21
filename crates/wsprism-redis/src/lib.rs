@@ -68,6 +68,14 @@ use wsprism_engine::spi::Recover;
 /// resync.
 const POSITION_TTL: Duration = Duration::from_secs(24 * 3600);
 
+/// rustls needs one process-wide crypto provider. With none enabled, or
+/// with both ring and aws-lc-rs (an application may enable the other),
+/// the first TLS connection panics; pick ring unless the application
+/// installed one already.
+fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
+}
+
 /// One room's part of an outbox batch, in order (A15: one script call per
 /// room and batch, not per message — per message only the PUBLISH is left).
 /// KEYS: state, log. ARGV: channel, size, ttl ms, max bytes, epoch
@@ -224,6 +232,44 @@ pub struct RedisConfig {
     pub pubsub_connections: usize,
     /// How long a node's slot survives without a heartbeat.
     pub slot_ttl: Duration,
+    /// Certificates for `rediss://` beyond the system trust store.
+    pub tls: Option<RedisTls>,
+}
+
+/// TLS material for a `rediss://` Redis: a private CA to trust instead of
+/// the system store, and a client certificate for mutual TLS (PEM).
+#[derive(Clone, Default)]
+#[non_exhaustive]
+pub struct RedisTls {
+    /// CA certificate(s) the server's certificate must chain to; `None` =
+    /// the system trust store.
+    pub ca_pem: Option<Vec<u8>>,
+    /// Client certificate and private key (mutual TLS).
+    pub client_pem: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+impl RedisTls {
+    /// Trust `ca_pem` (PEM) instead of the system store.
+    pub fn ca(mut self, ca_pem: Vec<u8>) -> Self {
+        self.ca_pem = Some(ca_pem);
+        self
+    }
+
+    /// Present this client certificate and key (PEM): mutual TLS.
+    pub fn client(mut self, cert_pem: Vec<u8>, key_pem: Vec<u8>) -> Self {
+        self.client_pem = Some((cert_pem, key_pem));
+        self
+    }
+}
+
+impl std::fmt::Debug for RedisTls {
+    /// Never prints the key.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RedisTls")
+            .field("ca", &self.ca_pem.is_some())
+            .field("client_cert", &self.client_pem.is_some())
+            .finish()
+    }
 }
 
 impl RedisConfig {
@@ -234,7 +280,14 @@ impl RedisConfig {
             prefix: "wsp".into(),
             pubsub_connections: 4,
             slot_ttl: Duration::from_secs(30),
+            tls: None,
         }
+    }
+
+    /// Certificates for a `rediss://` URL (private CA, mutual TLS).
+    pub fn tls(mut self, tls: RedisTls) -> Self {
+        self.tls = Some(tls);
+        self
     }
 
     /// Key and channel prefix.
@@ -416,8 +469,35 @@ const RECONNECT_MAX: Duration = Duration::from_secs(2);
 impl RedisBroker {
     /// A broker for `cfg` (checks the URL; connects in `start`).
     pub fn new(cfg: RedisConfig) -> Result<Self, BrokerError> {
-        let client = redis::Client::open(cfg.url.as_str())
-            .map_err(|e| BrokerError::Rejected(format!("redis url: {e}")))?;
+        let client = match &cfg.tls {
+            None => {
+                if cfg.url.starts_with("rediss://") {
+                    install_crypto_provider();
+                }
+                redis::Client::open(cfg.url.as_str())
+            }
+            Some(tls) => {
+                install_crypto_provider();
+                if !cfg.url.starts_with("rediss://") {
+                    return Err(BrokerError::Rejected(
+                        "redis tls settings need a rediss:// url".into(),
+                    ));
+                }
+                redis::Client::build_with_tls(
+                    cfg.url.as_str(),
+                    redis::TlsCertificates {
+                        client_tls: tls.client_pem.as_ref().map(|(cert, key)| {
+                            redis::ClientTlsConfig {
+                                client_cert: cert.clone(),
+                                client_key: key.clone(),
+                            }
+                        }),
+                        root_cert: tls.ca_pem.clone(),
+                    },
+                )
+            }
+        }
+        .map_err(|e| BrokerError::Rejected(format!("redis url: {e}")))?;
         let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_QUEUE);
         Ok(Self {
             client,

@@ -484,6 +484,27 @@ pub struct RedisBrokerConfig {
     /// waited this long, 10-60000 ms: fail fast instead of piling up latency.
     #[serde(default = "default_outbox_max_wait_ms")]
     pub outbox_max_wait_ms: u64,
+    /// With a `rediss://` URL: a private CA and/or a client certificate
+    /// (mutual TLS). Without it, `rediss://` trusts the system store.
+    #[serde(default)]
+    pub tls: Option<RedisTlsConfig>,
+}
+
+/// `gateway.broker.tls` (PEM files, read at startup).
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RedisTlsConfig {
+    /// CA certificate(s) the Redis server's certificate must chain to,
+    /// instead of the system trust store.
+    #[serde(default)]
+    pub ca_file: Option<String>,
+    /// Client certificate for mutual TLS (with `client_key_file`).
+    #[serde(default)]
+    pub client_cert_file: Option<String>,
+    /// Its private key.
+    #[serde(default)]
+    pub client_key_file: Option<String>,
 }
 
 fn default_redis_prefix() -> String {
@@ -527,6 +548,17 @@ impl RedisBrokerConfig {
         if let Some(u) = &self.url {
             if !(u.starts_with("redis://") || u.starts_with("rediss://")) {
                 return bad("url must start with redis:// or rediss://");
+            }
+            if self.tls.is_some() && !u.starts_with("rediss://") {
+                return bad("tls needs a rediss:// url");
+            }
+        }
+        if let Some(t) = &self.tls {
+            if t.client_cert_file.is_some() != t.client_key_file.is_some() {
+                return bad("tls: client_cert_file and client_key_file go together");
+            }
+            if t.ca_file.is_none() && t.client_cert_file.is_none() {
+                return bad("tls: set ca_file and/or client_cert_file + client_key_file");
             }
         }
         if self.prefix.is_empty()

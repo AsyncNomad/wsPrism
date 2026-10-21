@@ -418,10 +418,28 @@ fn configured_broker(cfg: &BrokerConfig) -> Result<ConfiguredBroker> {
         BrokerConfig::Memory => Ok(None),
         #[cfg(feature = "redis")]
         BrokerConfig::Redis(r) => {
-            let redis_cfg = wsprism_redis::RedisConfig::new(r.resolve_url()?)
+            let mut redis_cfg = wsprism_redis::RedisConfig::new(r.resolve_url()?)
                 .prefix(r.prefix.clone())
                 .pubsub_connections(r.pubsub_connections)
                 .slot_ttl(std::time::Duration::from_secs(r.slot_ttl_s));
+            if let Some(t) = &r.tls {
+                let read = |what: &str, path: &str| {
+                    std::fs::read(path).map_err(|e| {
+                        WsPrismError::BadRequest(format!("gateway.broker.tls.{what} {path}: {e}"))
+                    })
+                };
+                let mut tls = wsprism_redis::RedisTls::default();
+                if let Some(ca) = &t.ca_file {
+                    tls = tls.ca(read("ca_file", ca)?);
+                }
+                if let (Some(cert), Some(key)) = (&t.client_cert_file, &t.client_key_file) {
+                    tls = tls.client(
+                        read("client_cert_file", cert)?,
+                        read("client_key_file", key)?,
+                    );
+                }
+                redis_cfg = redis_cfg.tls(tls);
+            }
             let broker = wsprism_redis::RedisBroker::new(redis_cfg)
                 .map_err(|e| WsPrismError::BadRequest(format!("gateway.broker: {e}")))?;
             Ok(Some((
