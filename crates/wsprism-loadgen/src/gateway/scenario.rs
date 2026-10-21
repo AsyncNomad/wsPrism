@@ -32,7 +32,9 @@ pub enum Lane {
 pub struct Args {
     #[arg(long, value_enum, default_value_t = Target::Wsprism)]
     pub target: Target,
-    /// Gateway base URL (the protocol adds its own path).
+    /// Gateway base URL (the protocol adds its own path). wsPrism: several,
+    /// comma-separated, for a cluster: each room's members are spread over
+    /// them (see `Wsprism::url_of`).
     #[arg(long, default_value = "ws://127.0.0.1:8080")]
     pub url: String,
     #[arg(long, default_value = "bench")]
@@ -75,9 +77,10 @@ pub struct Args {
     pub phase: Phase,
     #[arg(long, default_value_t = 1)]
     pub seed: u64,
-    /// Server process to sample CPU/RSS from.
-    #[arg(long)]
-    pub server_pid: Option<u32>,
+    /// Server process(es) to sample CPU/RSS from (comma-separated: summed,
+    /// e.g. every node of a cluster).
+    #[arg(long, value_delimiter = ',')]
+    pub server_pid: Vec<u32>,
     /// Free-form label copied into the JSON output.
     #[arg(long, default_value = "")]
     pub label: String,

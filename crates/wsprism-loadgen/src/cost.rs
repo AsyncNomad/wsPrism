@@ -10,6 +10,23 @@ pub struct ProcSample {
     pub rss_kb: u64,
 }
 
+/// The sum over several processes (gateway nodes); `None` if any is gone
+/// or `pids` is empty.
+pub fn sample_all(pids: &[u32]) -> Option<ProcSample> {
+    let mut total: Option<ProcSample> = None;
+    for &pid in pids {
+        let s = sample(pid)?;
+        total = Some(match total {
+            Some(t) => ProcSample {
+                cpu_secs: t.cpu_secs + s.cpu_secs,
+                rss_kb: t.rss_kb + s.rss_kb,
+            },
+            None => s,
+        });
+    }
+    total
+}
+
 pub fn sample(pid: u32) -> Option<ProcSample> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // Fields after the parenthesised command name; utime/stime are fields 14/15.

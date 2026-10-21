@@ -39,6 +39,7 @@ pub async fn run(args: Args) {
                 tenant: args.tenant.clone(),
                 ticket: args.ticket.clone(),
                 distinct_users: args.distinct_users,
+                rooms: args.rooms.max(1),
                 lane: args.lane,
                 chans: Default::default(),
             };
@@ -59,7 +60,7 @@ pub async fn run(args: Args) {
 async fn run_with<P: Protocol>(proto: Arc<P>, args: Args) {
     let args = Arc::new(args);
     probe::now_nanos(); // pin the epoch before any probe is sent
-    let rss_before = args.server_pid.and_then(cost::sample).map(|s| s.rss_kb);
+    let rss_before = cost::sample_all(&args.server_pid).map(|s| s.rss_kb);
 
     // Ramp up: connect + join with bounded concurrency.
     let ramp = Instant::now();
@@ -107,21 +108,21 @@ async fn run_with<P: Protocol>(proto: Arc<P>, args: Args) {
     let start = Instant::now() + Duration::from_millis(500);
     let end = start + args.duration();
     let period = Duration::from_nanos(1_000_000_000 / args.rate.max(1));
-    let cost_at = |pid: Option<u32>, at: Instant| {
+    let cost_at = |pids: Vec<u32>, at: Instant| {
         tokio::spawn(async move {
             tokio::time::sleep_until(at).await;
-            pid.and_then(cost::sample)
+            cost::sample_all(&pids)
         })
     };
     // Until the end of the grace period: deliveries are counted until then too.
     let window = (start, end + GRACE);
     let (cost_start, cost_end) = (
-        cost_at(args.server_pid, window.0),
-        cost_at(args.server_pid, window.1),
+        cost_at(args.server_pid.clone(), window.0),
+        cost_at(args.server_pid.clone(), window.1),
     );
     // Our own CPU: if the load generator saturates, the comparison is void.
-    let me = Some(std::process::id());
-    let (self_start, self_end) = (cost_at(me, window.0), cost_at(me, window.1));
+    let me = vec![std::process::id()];
+    let (self_start, self_end) = (cost_at(me.clone(), window.0), cost_at(me, window.1));
     let mut runs = Vec::with_capacity(conns.len());
     for (conn, ws) in conns.into_iter().enumerate() {
         let me = u32::try_from(conn).expect("conn index fits u32");

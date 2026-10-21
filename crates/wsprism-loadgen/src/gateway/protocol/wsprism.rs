@@ -13,12 +13,15 @@ use super::{await_text, open, Incoming, Probe, Protocol, Ws};
 use crate::gateway::scenario::Lane;
 
 pub struct Wsprism {
-    /// Base URL, e.g. `ws://10.77.0.1:8080`.
+    /// Base URL, e.g. `ws://10.77.0.1:8080`, or several comma-separated
+    /// (cluster nodes).
     pub url: String,
     pub tenant: String,
     pub ticket: String,
     /// Ticket `<ticket>:u<conn>`: one user per connection.
     pub distinct_users: bool,
+    /// Rooms in the scenario (connection `c` is in room `c % rooms`).
+    pub rooms: usize,
     pub lane: Lane,
     /// v2: room name -> room id from `sys.joined` (the same for every member).
     pub chans: RwLock<HashMap<String, u32>>,
@@ -32,11 +35,22 @@ const HOT_HEADER: [u8; 4] = [1, 1, 1, 0];
 /// Ext probe text: sender (10 digits) + timestamp (20 digits) + padding.
 const EXT_PREFIX: usize = 30;
 
+impl Wsprism {
+    /// The node connection `conn` uses: the `conn / rooms`-th member of each
+    /// room goes to node `(conn / rooms) % nodes`, so every room spans every
+    /// node (`conn % nodes` would put a whole room on one node whenever the
+    /// counts share a factor).
+    fn url_of(&self, conn: usize) -> &str {
+        let nodes: Vec<&str> = self.url.split(',').collect();
+        nodes[(conn / self.rooms.max(1)) % nodes.len()]
+    }
+}
+
 impl Protocol for Wsprism {
     async fn setup(&self, conn: usize, room: &str) -> Result<Ws, String> {
         let url = format!(
             "{}/v1/ws?tenant={}&sid=c{conn}",
-            self.url.trim_end_matches('/'),
+            self.url_of(conn).trim_end_matches('/'),
             self.tenant
         );
         let mut req = url.into_client_request().map_err(|e| e.to_string())?;
@@ -191,9 +205,24 @@ mod tests {
             tenant: "t".into(),
             ticket: "x".into(),
             distinct_users: false,
+            rooms: 1,
             lane,
             chans: Default::default(),
         }
+    }
+
+    #[test]
+    fn every_room_spans_every_node() {
+        let mut p = proto(Lane::Ext);
+        p.url = "ws://a,ws://b".into();
+        p.rooms = 20;
+        for room in 0..20 {
+            let nodes: std::collections::HashSet<&str> =
+                (0..4).map(|k| p.url_of(room + k * 20)).collect();
+            assert_eq!(nodes.len(), 2, "room {room}");
+        }
+        p.url = "ws://only".into();
+        assert_eq!(p.url_of(7), "ws://only");
     }
 
     #[test]
