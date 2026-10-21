@@ -53,5 +53,5 @@ pub mod __internal {
     pub use crate::policy::origin::OriginPolicy;
     pub use crate::policy::TenantPolicyRuntime;
     pub use crate::transport::client_ip::TrustedProxies;
-    pub use crate::transport::subprotocol::{Negotiated, Offered, V1};
+    pub use crate::transport::subprotocol::{Negotiated, Offered, V1, V2_JSON};
 }
