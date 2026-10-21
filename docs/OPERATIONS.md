@@ -22,11 +22,11 @@ Logs go to stderr. `--log-format json` writes one JSON object per line for
 log pipelines (Loki, Elasticsearch, Cloud Logging, ...):
 
 ```json
-{"ts":"2026-10-21T09:00:00.123456Z","level":"WARN","target":"wsprism_gateway::rpc","msg":"rpc backend call failed","url":"https://api.example.com/rpc?key=***","error":"Timeout","span":{"trace_id":"5f0c...","t":"acme","u":"alice","s":"tab-1","ip":"203.0.113.7"}}
+{"error":"Timeout","level":"WARN","msg":"rpc backend call failed","span":{"ip":"203.0.113.7","s":"tab-1","t":"acme","trace_id":"5f0c...","u":"alice"},"target":"wsprism_gateway::rpc","ts":"2026-10-21T09:00:00.123456Z","url":"https://api.example.com/rpc?key=***"}
 ```
 
-- `ts` (UTC, RFC 3339), `level`, `target` (module), `msg`, then the
-  event's own fields.
+- `ts` (UTC, RFC 3339), `level`, `target` (module), `msg`, and the
+  event's own fields (keys in alphabetical order).
 - `span`: the session the event happened in: `trace_id` (also in the
   errors the client receives, so a user report can be matched), `t` tenant, `u` user, `s` session
   id, `ip` client address. Use `trace_id` to follow one session.
@@ -45,6 +45,15 @@ exits. Give your orchestrator a longer stop timeout than that.
 
 Several nodes: restart them one at a time ([CLUSTER.md](CLUSTER.md)
 "Rolling update"); the chaos tests check that nothing is lost or repeated.
+
+## Container image
+
+`Dockerfile` at the repository root builds a distroless image (non-root,
+no shell) with `WSPRISM_LOG_FORMAT=json`; mount the configuration at
+`/etc/wsprism/wsprism.yaml`. `deploy/compose/` runs two nodes and Redis
+with one configuration file whose differences come from the environment.
+The image has no shell or curl: use your orchestrator's HTTP probes on
+`/healthz` and `/readyz`.
 
 ## Probes and metrics
 

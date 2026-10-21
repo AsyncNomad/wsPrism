@@ -1,0 +1,20 @@
+# Configuration of every node in compose.yaml (the same file; what differs
+# comes from the environment, docs/CONFIG.md "Values from the environment").
+version: 1
+gateway:
+  listen: "0.0.0.0:8080"
+  # Server API, /metrics, probes. Keep this port on an internal network.
+  api: { listen: "0.0.0.0:8081" }
+  # SIGTERM drains within this (compose stop_grace_period is longer).
+  drain_grace_ms: 5000
+  broker: { kind: redis, url_env: REDIS_URL, prefix: "${WSPRISM_PREFIX:-wsp}" }
+tenants:
+  - id: demo
+    # Clients log in with one-time tickets your backend gets from
+    # POST /api/v1/tickets (any node), authenticated by this API key.
+    auth: [{ kind: ticket }]
+    api_keys: [{ name: backend, sha256: "${DEMO_API_KEY_SHA256}" }]
+    policy:
+      ext_allowlist: ["room:*", "chat:*"]
+      allowed_origins: ["${DEMO_ORIGIN:-http://localhost:3000}"]
+    history: [{ rooms: "chat:*", size: 200, ttl_s: 600 }]

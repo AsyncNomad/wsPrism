@@ -1,8 +1,8 @@
 //! Log output of the gateway binary (M6): human-readable text (default) or
 //! one JSON object per line for log pipelines (`--log-format json`).
 //!
-//! JSON lines look like
-//! `{"ts":"2026-10-21T09:00:00.000000Z","level":"WARN","target":"wsprism_redis","msg":"...","shard":2,"span":{"trace_id":"...","t":"acme"}}`:
+//! JSON lines look like (keys sorted)
+//! `{"level":"WARN","msg":"...","shard":2,"span":{"t":"acme","trace_id":"..."},"target":"wsprism_redis","ts":"2026-10-21T09:00:00.000000Z"}`:
 //! the event's fields at the top level (never replacing `ts`, `level`,
 //! `target`, `msg` or `span`), the fields of the spans it happened in (outer
 //! first, inner wins) under `span`. Built on `tracing-subscriber`'s
