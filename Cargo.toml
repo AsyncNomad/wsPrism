@@ -32,7 +32,8 @@ bytes = "1"
 # internal crates
 wsprism-protocol = { path = "crates/wsprism-protocol", version = "0.1.0" }
 wsprism-engine = { path = "crates/wsprism-engine", version = "0.1.0" }
-wsprism-gateway = { path = "crates/wsprism-gateway", version = "0.1.0" }
+# No default features: the facade forwards `redis` (so embedders can turn it off).
+wsprism-gateway = { path = "crates/wsprism-gateway", version = "0.1.0", default-features = false }
 wsprism-redis = { path = "crates/wsprism-redis", version = "0.1.0" }
 # Redis broker (ADR 0011 R3). TLS via rustls like the HTTP client.
 redis = { version = "1.7", default-features = false, features = ["aio", "tokio-comp", "connection-manager", "script", "tokio-rustls-comp"] }
@@ -49,7 +50,12 @@ clap = { version = "4.6", features = ["derive"] }
 async-trait = "0.1"
 ipnet = "2"
 
-# CPU profiling builds (bench/profile-gateway.sh): release codegen plus symbols.
+# Dev/test builds: file and line numbers in backtraces, no full debug info.
+# Test binaries are 2-3x smaller; every code change leaves new copies in
+# target/debug, so this keeps it from growing by tens of GB a day.
+[profile.dev]
+debug = "line-tables-only"
+
 # One codegen unit for release builds (ADR 0009 §6): with the default 16,
 # LLVM's inlining of tokio's mpsc send path into the fan-out loop depends on
 # how units are partitioned, and the fan-out micro-benchmark is 9-10% slower
@@ -57,15 +63,10 @@ ipnet = "2"
 # Applies to binaries built from this workspace; embedders set it in their
 # own profile (docs/API.md). End-to-end effect is ~0.1% (fan-out is ~1% of a
 # delivery's cost).
-# Dev/test builds: file and line numbers in backtraces, no full debug info.
-# Test binaries are 2-3x smaller; every code change leaves new copies in
-# target/debug, so this keeps it from growing by tens of GB a day.
-[profile.dev]
-debug = "line-tables-only"
-
 [profile.release]
 codegen-units = 1
 
+# CPU profiling builds (bench/profile-gateway.sh): release codegen plus symbols.
 [profile.profiling]
 inherits = "release"
 debug = "line-tables-only"

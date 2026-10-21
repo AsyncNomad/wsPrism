@@ -17,6 +17,13 @@ wsprism-gateway = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
 
+[features]
+default = ["redis"]
+# Cluster broker on Redis (`gateway.broker.kind: redis`, ADR 0011). Without
+# it the gateway has no Redis dependency and a redis broker config is an
+# error at startup.
+redis = ["wsprism-gateway/redis"]
+
 [dev-dependencies]
 tokio = { workspace = true }
 tokio-tungstenite = "0.24"
