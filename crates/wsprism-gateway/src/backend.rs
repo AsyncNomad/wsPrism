@@ -31,6 +31,8 @@ pub struct Backend {
 /// One configured backend URL with its timeout and credential.
 pub struct Endpoint {
     url: reqwest::Url,
+    /// `url` without user info and query values, for logs.
+    shown: String,
     timeout: Duration,
     bearer: Option<HeaderValue>,
 }
@@ -57,6 +59,7 @@ impl Endpoint {
             }
         };
         Ok(Self {
+            shown: shown_url(&url),
             url,
             timeout: Duration::from_millis(timeout_ms),
             bearer,
@@ -65,10 +68,27 @@ impl Endpoint {
 }
 
 impl Endpoint {
-    /// For logs (never includes the credential).
+    /// For logs: never the credential, nor a password or query values the
+    /// URL itself may carry (`https://user:pw@host/jwks?key=...`).
     pub fn url(&self) -> &str {
-        self.url.as_str()
+        &self.shown
     }
+}
+
+/// `url` with the user info dropped and every query value replaced by `***`
+/// (names kept: they help to tell endpoints apart).
+fn shown_url(url: &reqwest::Url) -> String {
+    let mut u = url.clone();
+    let _ = u.set_username("");
+    let _ = u.set_password(None);
+    if u.query().is_some() {
+        let names: Vec<String> = u.query_pairs().map(|(k, _)| k.into_owned()).collect();
+        u.query_pairs_mut()
+            .clear()
+            .extend_pairs(names.iter().map(|k| (k.as_str(), "***")));
+    }
+    u.set_fragment(None);
+    u.to_string()
 }
 
 impl Backend {
@@ -140,4 +160,24 @@ async fn read_bounded(mut resp: reqwest::Response) -> std::result::Result<(u16, 
         buf.extend_from_slice(&chunk);
     }
     Ok((status, buf.freeze()))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logged_urls_hide_credentials_and_query_values() {
+        let ep = Endpoint::new(
+            "jwks",
+            "https://svc:s3cret@auth.example.com/keys?api_key=abc&v=2#x",
+            1000,
+            None,
+        )
+        .unwrap();
+        assert_eq!(ep.url(), "https://auth.example.com/keys?api_key=***&v=***");
+        let plain = Endpoint::new("rpc", "http://10.0.0.1:8080/rpc", 1000, None).unwrap();
+        assert_eq!(plain.url(), "http://10.0.0.1:8080/rpc");
+    }
 }

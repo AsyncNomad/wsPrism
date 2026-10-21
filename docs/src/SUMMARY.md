@@ -5,5 +5,6 @@
 
 # Reference
 - [Configuration](guide/configuration.md)
+- [Operating wsPrism](guide/operations.md)
 - [Running a cluster](guide/cluster.md)
 - [Architecture and Decisions](architecture/overview.md)
