@@ -622,3 +622,40 @@ async fn reconcile_restores_what_was_lost_and_closes_what_was_replaced() {
     assert!(b.signals.close_requested(), "b is closed");
     assert!(!a.signals.close_requested(), "a is not");
 }
+
+/// Graceful shutdown (M6): `flush` waits for what was accepted, including a
+/// batch the drain task holds at a slow broker, and says when it gave up.
+#[tokio::test]
+async fn flush_waits_for_accepted_frames() {
+    let n = node(0, OutboxLimits::default()).await;
+    let mut a = client(&n, "t", "a", false);
+    a.ctx.join_room("r").unwrap();
+    settle().await;
+    assert!(
+        n.core.flush(tokio::time::Instant::now()).await,
+        "nothing pending"
+    );
+    n.broker.take_published();
+
+    n.broker.pause();
+    a.ctx.publish_room_reliable("r", text("one")).unwrap();
+    settle().await; // the drain task now holds it at the paused broker
+    let soon = tokio::time::Instant::now() + Duration::from_millis(100);
+    assert!(!n.core.flush(soon).await, "held at the broker: not flushed");
+    a.ctx.publish_room_reliable("r", text("two")).unwrap(); // queued behind
+
+    let broker = n.broker.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        broker.resume();
+    });
+    let later = tokio::time::Instant::now() + Duration::from_secs(5);
+    assert!(n.core.flush(later).await);
+    assert_eq!(
+        published_rooms(&n.broker),
+        vec![
+            ("t::r".to_string(), "one".to_string()),
+            ("t::r".to_string(), "two".to_string())
+        ]
+    );
+}

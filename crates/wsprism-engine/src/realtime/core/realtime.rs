@@ -169,6 +169,32 @@ impl RealtimeCore {
         Ok(BrokerTasks(tasks))
     }
 
+    /// Wait until everything queued for the cluster broker has been handed
+    /// over (or rejected), or until `deadline`; true if it was. Call on
+    /// graceful shutdown after the sessions closed, before dropping the
+    /// [`BrokerTasks`]: dropping them abandons the queue, and with it
+    /// publishes the server API already answered 200 to and the
+    /// membership removals of the closed sessions (M6). Nothing to wait for
+    /// with one node.
+    pub async fn flush(&self, deadline: tokio::time::Instant) -> bool {
+        let Some(outbox) = &self.outbox else {
+            return true;
+        };
+        loop {
+            if outbox.pending() == 0 {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    pending = outbox.pending(),
+                    "broker queue not empty at shutdown; those frames are lost"
+                );
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
     /// Record a membership change for the cluster (queued broker that keeps
     /// membership; ADR 0011 R4-2). Nothing for one node.
     fn record_presence(&self, op: PresenceOp) {

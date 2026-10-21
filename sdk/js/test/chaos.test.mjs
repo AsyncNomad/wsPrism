@@ -1,6 +1,7 @@
 // Chaos tests (ADR 0011 R5): two gateway nodes on Redis, SDK clients in a
 // history room, a backend publishing through the server API — then a node
-// is killed (-9), Redis restarts empty, or Redis pauses. An offset checker
+// is killed (-9), the nodes are restarted one by one (rolling update),
+// Redis restarts empty, or Redis pauses. An offset checker
 // judges what every client received: no duplicate, no reordering, and no
 // gap unless the gateway announced one (sys.gap / recovered:false).
 //
@@ -46,9 +47,10 @@ after(() => {
   for (const p of procs) p.kill("SIGKILL");
 });
 
-/** One gateway node on Redis with prefix `prefix`. */
-async function startNode(prefix) {
-  const [ws, api] = [await freePort(), await freePort()];
+/** One gateway node on Redis with prefix `prefix` (on `ports` if given:
+ * a restarted node keeps its address). */
+async function startNode(prefix, ports) {
+  const [ws, api] = ports ?? [await freePort(), await freePort()];
   const digest = createHash("sha256").update(API_KEY).digest("hex");
   const cfg = join(mkdtempSync(join(tmpdir(), "wsprism-chaos-")), "gw.yaml");
   writeFileSync(
@@ -94,7 +96,23 @@ tenants:
     });
     return { status: r.status, body: await r.json().catch(() => null) };
   };
-  return { url: `ws://127.0.0.1:${ws}/v1/ws`, call, proc, alive: true };
+  return { url: `ws://127.0.0.1:${ws}/v1/ws`, call, proc, alive: true, prefix, ports: [ws, api] };
+}
+
+/** Stop one node gracefully (SIGTERM: drain) and wait for it to exit.
+ * While draining it may still answer; the backend keeps using it until it
+ * stops, like a load balancer that has not noticed yet. */
+async function stopNode(node) {
+  const exited = new Promise((r) => node.proc.once("exit", r));
+  node.proc.kill("SIGTERM");
+  await exited;
+  node.alive = false;
+}
+
+/** Rolling update of one node: stop it, start it again on the same ports. */
+async function restartNode(nodes, i) {
+  await stopNode(nodes[i]);
+  nodes[i] = await startNode(nodes[i].prefix, nodes[i].ports);
 }
 
 /** Ask any live node's server API; retries until one answers 200. */
@@ -228,6 +246,29 @@ test("a node killed with -9: its clients resume on the other node, nothing lost 
   assert.ok(recs.filter((r) => r.reconnects > 0).length >= 5, "the killed node's clients reconnected");
 });
 
+test("rolling update: each node restarted in turn, nothing lost or repeated", { skip }, async (t) => {
+  const nodes = await cluster("rolling");
+  const recs = Array.from({ length: 10 }, (_, i) => recorder(nodes, `u${i}`, i % 2));
+  t.after(() => recs.forEach((r) => r.client.close()));
+  await joinAll(recs);
+  const total = 900;
+  // The backend sends to node 0 first, so the first restart catches
+  // publishes accepted by a node that is about to stop.
+  const publishing = publish(nodes, 1, total, 5);
+  for (const [i, at] of [[0, 150], [1, 450]]) {
+    await until(() => recs.every((r) => (lastOffset(r) ?? 0) >= at), 30000, `${at} before restarting node ${i}`, recs);
+    await restartNode(nodes, i);
+  }
+  await publishing;
+  await until(() => recs.every((r) => lastOffset(r) === total), 30000, "everyone at the last offset", recs);
+  for (const r of recs) {
+    const stretches = check(r);
+    assert.equal(stretches.length, 1, `${r.name}: no gap announced`);
+    assert.deepEqual(stretches[0], Array.from({ length: total }, (_, i) => i + 1), `${r.name}: every offset once`);
+  }
+  assert.ok(recs.every((r) => r.reconnects > 0), "every client moved at least once");
+});
+
 function docker(...args) {
   return execFileSync("docker", args, { stdio: ["ignore", "pipe", "pipe"] }).toString();
 }
@@ -283,5 +324,32 @@ test("Redis pauses: publishing waits or is refused, nothing is lost or repeated"
     assert.deepEqual(stretches.flat(), Array.from({ length: 300 }, (_, i) => i + 1), `${r.name}: every offset once`);
     const ns = r.events.filter((e) => !e.gap).map((e) => e.n).sort((a, b) => a - b);
     assert.deepEqual(ns, Array.from({ length: 300 }, (_, i) => i + 1), `${r.name}: every message once`);
+  }
+});
+
+test("a node stopped while Redis is slow still delivers what it accepted", { skip: dockerSkip }, async (t) => {
+  const nodes = await cluster("slowstop");
+  const recs = Array.from({ length: 6 }, (_, i) => recorder(nodes, `s${i}`, i % 2));
+  t.after(() => recs.forEach((r) => r.client.close()));
+  await joinAll(recs);
+  await publish(nodes, 1, 50);
+  await until(() => recs.every((r) => lastOffset(r) === 50), 20000, "first 50", recs);
+  // Redis stalls writes; node 0 accepts (200) and queues 51..80, then is
+  // stopped gracefully before Redis answers again.
+  docker("exec", CONTAINER, "redis-cli", "CLIENT", "PAUSE", "1500", "WRITE");
+  for (let n = 51; n <= 80; n++) {
+    const r = await nodes[0].call("POST", "/api/v1/publish", { room: ROOM, data: { n } });
+    assert.equal(r.status, 200, `publish ${n} accepted while Redis is paused`);
+  }
+  const paused = Date.now();
+  await stopNode(nodes[0]);
+  // A node cannot start while Redis does not answer: wait for the pause.
+  await sleep(Math.max(0, paused + 1600 - Date.now()));
+  nodes[0] = await startNode(nodes[0].prefix, nodes[0].ports);
+  await publish(nodes, 81, 100);
+  await until(() => recs.every((r) => lastOffset(r) === 100), 30000, "everyone at 100", recs);
+  for (const r of recs) {
+    const stretches = check(r);
+    assert.deepEqual(stretches.flat(), Array.from({ length: 100 }, (_, i) => i + 1), `${r.name}: every offset once`);
   }
 });

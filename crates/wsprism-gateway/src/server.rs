@@ -86,17 +86,22 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// After `shutdown`: stop admitting (readiness 503, upgrades rejected), ask
-/// every session to close with 1001, and wait up to `drain_grace_ms` for the
-/// registry to empty.
+/// After `shutdown`: stop admitting (readiness 503, upgrades rejected,
+/// server API publishes 503 so back-ends move to another node), ask every
+/// session to close with 1001, wait for the registry to empty, then for the
+/// cluster broker's queue to be handed over (publishes already answered 200
+/// and the closed sessions' membership removals; M6) — all within
+/// `drain_grace_ms`.
 async fn drain(state: AppState, shutdown: impl Future<Output = ()>) {
     shutdown.await;
     tracing::info!("shutdown signal received; entering draining mode");
     state.enter_draining();
     state.realtime().best_effort_shutdown_all("draining");
 
-    let deadline = Instant::now() + Duration::from_millis(state.cfg().gateway.drain_grace_ms);
+    let grace = Duration::from_millis(state.cfg().gateway.drain_grace_ms);
+    let deadline = Instant::now() + grace;
     while Instant::now() < deadline && state.realtime().sessions.len_sessions() > 0 {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    state.realtime().flush(deadline).await;
 }

@@ -127,6 +127,11 @@ async fn publish(
     if let Some(r) = room_error(&req.room) {
         return r;
     }
+    if app.is_draining() {
+        // This node is stopping: what it accepted now might not be handed
+        // over before it exits. Publish to another node.
+        return unavailable("draining");
+    }
     let qos = match req.qos.as_deref() {
         None => None,
         Some("reliable") => Some(QoS::Reliable),
@@ -175,14 +180,19 @@ async fn publish(
     match core.publish_room(&room_key, out) {
         Ok(n) => Json(json!({"recipients": n})).into_response(),
         // The cluster broker's outbox is full (ADR 0011 B4): retry later.
-        Err(e @ WsPrismError::Unavailable(_)) => (
-            StatusCode::SERVICE_UNAVAILABLE,
-            [(header::RETRY_AFTER, "1")],
-            Json(json!({"error": e.client_message()})),
-        )
-            .into_response(),
+        Err(e @ WsPrismError::Unavailable(_)) => unavailable(e.client_message()),
         Err(e) => bad_request(e.client_message()),
     }
+}
+
+/// 503 + `Retry-After: 1`.
+fn unavailable(message: &str) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::RETRY_AFTER, "1")],
+        Json(json!({"error": message})),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]

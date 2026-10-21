@@ -3,7 +3,7 @@
 //! publishes, drained in order by one task.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -98,6 +98,8 @@ struct Queue {
 pub(crate) struct BrokerOutbox {
     queue: Mutex<Queue>,
     ready: Notify,
+    /// Items the drain task took and has not finished with.
+    busy: AtomicUsize,
     limits: OutboxLimits,
     counters: OutboxCounters,
 }
@@ -110,6 +112,7 @@ impl BrokerOutbox {
         Self {
             queue: Mutex::default(),
             ready: Notify::new(),
+            busy: AtomicUsize::new(0),
             limits,
             counters: OutboxCounters::default(),
         }
@@ -160,11 +163,21 @@ impl BrokerOutbox {
         self.ready.notify_one();
     }
 
+    /// Items queued or being handed to the broker (0 = everything accepted
+    /// so far has been applied or rejected).
+    pub(crate) fn pending(&self) -> usize {
+        // Read under the lock `take` holds while it moves items to `busy`,
+        // so an item is never counted in neither.
+        let q = self.lock();
+        q.items.len() + self.busy.load(Ordering::Acquire)
+    }
+
     /// Move up to `max` items into `out` (in order), freeing their quota.
     fn take(&self, out: &mut Vec<Item>, max: usize) {
         let mut guard = self.lock();
         let q = &mut *guard;
         let n = max.min(q.items.len());
+        self.busy.store(n, Ordering::Release);
         for item in q.items.drain(..n) {
             if let Item::Frame(f, _) = &item {
                 if let Some(used) = q.per_tenant.get_mut(&f.tenant) {
@@ -226,6 +239,7 @@ pub(crate) async fn run_outbox(outbox: Arc<BrokerOutbox>, broker: Arc<dyn Broker
         }
         publish(&outbox, &*broker, &mut frames).await;
         apply_presence(&outbox, &*broker, &mut ops).await;
+        outbox.busy.store(0, Ordering::Release);
     }
 }
 

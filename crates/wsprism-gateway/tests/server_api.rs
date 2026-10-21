@@ -258,3 +258,24 @@ async fn server_state_in_two_rooms_does_not_collide() {
     chans.sort();
     assert_eq!(got, chans);
 }
+
+/// M6: a draining node refuses publishes (503) so a back-end
+/// moves to another node instead of handing frames to one that is leaving.
+#[tokio::test]
+async fn a_draining_node_refuses_publishes() {
+    let gw = spawn_with_api(&yaml()).await;
+    let body = json!({"room": "r", "data": {"x": 1}});
+    let (status, _) = http(
+        gw.api,
+        "POST",
+        "/api/v1/publish",
+        Some(KEY_A),
+        Some(body.clone()),
+    )
+    .await;
+    assert_eq!(status, 200);
+    gw.state.enter_draining();
+    let (status, raw) = http_raw(gw.api, "POST", "/api/v1/publish", Some(KEY_A), Some(body)).await;
+    assert_eq!(status, 503, "{raw}");
+    assert!(raw.contains("draining"), "{raw}");
+}
