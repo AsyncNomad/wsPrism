@@ -62,17 +62,41 @@ async fn identities_are_logged_as_configured() {
     .unwrap();
 
     let plain = session_logs(&buf, "plain").await;
-    let line = plain.lines().find(|l| l.contains("cleanup done")).expect(&plain);
-    assert!(line.contains("u=alice") && line.contains("s=tab-7") && line.contains("ip=127.0.0.1"), "{line}");
+    let line = plain
+        .lines()
+        .find(|l| l.contains("cleanup done"))
+        .expect(&plain);
+    assert!(
+        line.contains("u=alice") && line.contains("s=tab-7") && line.contains("ip=127.0.0.1"),
+        "{line}"
+    );
     assert!(line.contains(" c="), "the connection id: {line}");
 
     let hashed = session_logs(&buf, "hashed").await;
-    let line = hashed.lines().find(|l| l.contains("cleanup done")).expect(&hashed);
-    assert!(line.contains("u=h:") && line.contains("s=h:") && line.contains("ip=h:"), "{line}");
-    assert!(!hashed.contains("alice") && !hashed.contains("tab-7") && !hashed.contains("127.0.0.1"), "{hashed}");
+    let line = hashed
+        .lines()
+        .find(|l| l.contains("cleanup done"))
+        .expect(&hashed);
+    assert!(
+        line.contains("u=h:") && line.contains("s=h:") && line.contains("ip=h:"),
+        "{line}"
+    );
+    assert!(
+        !hashed.contains("alice") && !hashed.contains("tab-7") && !hashed.contains("127.0.0.1"),
+        "{hashed}"
+    );
 
     let off = session_logs(&buf, "off").await;
-    let line = off.lines().find(|l| l.contains("cleanup done")).expect(&off);
-    assert!(!line.contains("u=") && !line.contains(" s=") && !line.contains("ip="), "{line}");
-    assert!(!off.contains("alice") && !off.contains("tab-7") && !off.contains("127.0.0.1"), "{off}");
+    let line = off
+        .lines()
+        .find(|l| l.contains("cleanup done"))
+        .expect(&off);
+    assert!(
+        !line.contains("u=") && !line.contains(" s=") && !line.contains("ip="),
+        "{line}"
+    );
+    assert!(
+        !off.contains("alice") && !off.contains("tab-7") && !off.contains("127.0.0.1"),
+        "{off}"
+    );
 }

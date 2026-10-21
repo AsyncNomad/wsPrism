@@ -47,7 +47,13 @@ mod tests {
             wire_close_code(ProtocolVersion::V2, 1011, "something new"),
             1011
         );
-        assert_eq!(wire_close_code(ProtocolVersion::V2, 1013, "unavailable"), 4102);
-        assert_eq!(wire_close_code(ProtocolVersion::V1, 1013, "unavailable"), 1013);
+        assert_eq!(
+            wire_close_code(ProtocolVersion::V2, 1013, "unavailable"),
+            4102
+        );
+        assert_eq!(
+            wire_close_code(ProtocolVersion::V1, 1013, "unavailable"),
+            1013
+        );
     }
 }
