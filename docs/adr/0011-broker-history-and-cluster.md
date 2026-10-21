@@ -173,10 +173,10 @@ R4는 둘로 나눈다. **R4-1** 세션 소유권·노드 간 제어(이 절), *
 | 항목 | 위치 | 내용 |
 |---|---|---|
 | 보관 프레임 | 엔진 `BrokerFrame.keep`·`offset`, 노드 간 형식 kind 4 | 이력 룸의 메시지는 `keep`(규칙의 한도)을 달고 송신 큐로 간다. 본문에는 `room`만 붙이고(`stamp(None)`), offset은 Broker가 정한다. kind 4는 offset을 본문 바로 앞에 `u8 길이 + 10진수`로 둔다. Lua가 헤더와 본문 사이에 끼워 넣을 수 있도록 하기 위해서다 |
-| Redis 발행 | `PUBLISH_KEPT` Lua(`EVALSHA`, 파이프라인 안) | `INCR` offset → `ZADD`(점수 = offset, 멤버 = `<ms>:<프레임>`) → 개수·바이트·나이로 정리 → `PUBLISH`. 하나의 스크립트라 offset 순서 = 저장 순서 = 전달 순서다. 키는 룸 해시 태그 하나: `:seq`·`:epoch`·`:log`·`:bytes` |
+| Redis 발행 | `PUBLISH_KEPT` Lua(`EVALSHA`, 파이프라인 안) | offset 부여 → `ZADD`(점수 = offset, 멤버 = `<unix 초>:<프레임>`) → 개수·바이트로 정리 → `PUBLISH`. 하나의 스크립트라 offset 순서 = 저장 순서 = 전달 순서다. 키는 룸 해시 태그 하나에 둘: `:st`(해시: `seq`·`ep`·`b`·노드별 `n:<id>`)와 `:log`. (M5에서 키 4+1개를 해시 하나로 합쳤다, 위 「M5: 이력 Lua 고정비」) |
 | Redis 읽기 | `READ_KEPT` Lua | 위치(`epoch`, 꼭대기)와 재개 가능 여부(같은 epoch, 앞서지 않음, 틈 없음) 및 놓친 프레임 |
-| 일부 유실 감지 | 두 스크립트 공통 | `:seq`나 `:epoch` 중 하나라도 없으면 새 epoch를 만들고 저장분을 지운다. 축출·재시작 뒤 "같은 epoch, 다른 의미의 offset"이 생기지 않는다 |
-| 위치 수명 | `POSITION_TTL` 24시간 | 조용한 룸의 `:seq`·`:epoch`는 마지막 메시지·입장 뒤 24시간 유지. `:log`·`:bytes`는 `ttl_s` |
+| 일부 유실 감지 | 두 스크립트 공통 | `:st`(또는 그 안의 `seq`·`ep`)가 없으면 새 epoch를 만들고 저장분을 지운다. 축출·재시작 뒤 "같은 epoch, 다른 의미의 offset"이 생기지 않는다 |
+| 위치 수명 | `POSITION_TTL` 24시간 | 조용한 룸의 `:st`는 마지막 메시지·입장 뒤 24시간 유지. `:log`는 `ttl_s`(로그가 먼저 만료되면 다음 발행이 `b`를 다시 센다) |
 | 수신 노드 | `deliver_incoming` | offset을 본문 앞에 한 번 붙여 수신자들이 공유. 멤버의 `skip_upto` 이하는 건너뜀(아래 3) |
 | 복구 입장 | `RealtimeCtx::join_room_recovering`(비동기), `RoomService` | 아래 「순서 보장」 |
 | SDK | 변경 없음 | 같은 프로토콜(`offset`, `recover`, `recovered`) |
@@ -209,7 +209,7 @@ R4는 둘로 나눈다. **R4-1** 세션 소유권·노드 간 제어(이 절), *
 - 실제 Redis 2노드:
   - 두 노드가 같은 epoch·offset을 본다.
   - A 노드에서 끊긴 사용자가 B 노드에서 재개해 2~4를 받고, 이어서 A 노드 발신 5를 받는다.
-  - `:seq`만 지우면 새 epoch가 되고 `recovered: false`.
+  - 상태(당시 `:seq`, 현재 `:st`)만 지우면 새 epoch가 되고 `recovered: false`.
 - ACL 최소 권한을 스크립트 안 명령까지 포함해 다시 실측했다(CONFIG.md).
 
 ### B2 (단일 노드 기본 경로, `bench/results/icount-r3-2.jsonl`, `mem-r3-2.jsonl`)

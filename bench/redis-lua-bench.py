@@ -9,7 +9,8 @@ one: it FLUSHALLs), steady state (every room's log full, so each call
 trims), with one pattern subscriber draining the room channels. Prints
 Redis CPU per message: EVALSHA usec from INFO commandstats / messages.
 Env: REDIS (host:port, default 172.21.0.2:6379), PER_CALL (messages per
-call, default 16), CALLS (default 20000), ROOMS (default 240).
+call, default 16), CALLS (default 20000), ROOMS (default 240), BODY (message
+bytes, default 60).
 """
 import os, re, socket, sys, threading, time
 
@@ -79,7 +80,7 @@ def drain(stop):
 
 
 HEAD = b'\x01\x04\x00\x00\x01\x07\x00room-xx\xff\xff'
-BODY = b'{"t":"msg","data":"' + b'x' * 40 + b'"}'
+BODY = b'{"t":"msg","data":"' + b'x' * (int(os.environ.get('BODY', '60')) - 22) + b'"}'
 
 
 def run(src):
@@ -90,13 +91,15 @@ def run(src):
     threading.Thread(target=drain, args=(stop,), daemon=True).start()
     time.sleep(0.2)
     seq = 0
+    # KEYS: before M5 seq, epoch, log, bytes, applied; since: state, log.
+    keys = 'selba' if 'KEYS[5]' in src else 'sl'
 
     def batch(n):
         nonlocal seq
         out = []
         for i in range(n):
             r = i % ROOMS
-            args = ['EVALSHA', sha, 5] + [f'lb:{k}:{{{r}}}' for k in 'selba'] + [
+            args = ['EVALSHA', sha, len(keys)] + [f'lb:{k}:{{{r}}}' for k in keys] + [
                 f'lb:ch:{r}', SIZE, 600000, 1 << 20, f'ep{r}', 86400000, 'node1']
             for _ in range(PER_CALL):
                 seq += 1
@@ -119,7 +122,8 @@ def run(src):
     info = c.cmd('INFO', 'commandstats').decode()
     stop.set()
     m = re.search(r'cmdstat_evalsha:calls=(\d+),usec=(\d+)', info)
-    assert int(c.cmd('ZCARD', 'lb:l:{0}')) == SIZE
+    if os.environ.get('CHECK', '1') == '1':  # CHECK=0 for scripts that keep nothing
+        assert int(c.cmd('ZCARD', 'lb:l:{0}')) >= SIZE  # == SIZE unless trimming is skipped
     return int(m[2]) / int(m[1]) / PER_CALL
 
 

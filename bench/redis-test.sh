@@ -13,6 +13,8 @@ fi
 docker network inspect $NET >/dev/null 2>&1 || docker network create --internal $NET >/dev/null
 docker inspect $NAME >/dev/null 2>&1 || docker run -d --name $NAME --network $NET redis:7.2 \
   redis-server --save "" --appendonly no >/dev/null
+# Left stopped (e.g. after a reboot): start it again.
+[[ $(docker inspect -f '{{.State.Running}}' $NAME) == true ]] || docker start $NAME >/dev/null
 IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' $NAME)
 for _ in $(seq 50); do
   (exec 3<>/dev/tcp/$IP/6379) 2>/dev/null && break

@@ -344,11 +344,11 @@ async fn lost_history_starts_a_new_epoch() {
     };
     assert_eq!(m["offset"], 1);
 
-    // Only the counter is lost.
+    // Only the state is lost (the log survives).
     let client = redis::Client::open(url.as_str()).unwrap();
     let mut c = client.get_multiplexed_async_connection().await.unwrap();
     let _: i64 = redis::cmd("DEL")
-        .arg(format!("{p}:h:{{t::chat:1}}:seq"))
+        .arg(format!("{p}:h:{{t::chat:1}}:st"))
         .query_async(&mut c)
         .await
         .unwrap();
@@ -869,7 +869,7 @@ async fn a_lost_history_is_announced_before_new_offsets() {
     }
     let client = redis::Client::open(url.as_str()).unwrap();
     let mut c = client.get_multiplexed_async_connection().await.unwrap();
-    let keys: Vec<String> = ["seq", "epoch", "log", "bytes"]
+    let keys: Vec<String> = ["st", "log"]
         .iter()
         .map(|k| format!("{p}:h:{{t::chat:1}}:{k}"))
         .collect();

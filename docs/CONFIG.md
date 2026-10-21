@@ -100,7 +100,7 @@ gateway:
   commands the Lua scripts run; `wsp` = your prefix):
 
   ```
-  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +getdel +del +exists +incr +incrby +decrby +pexpire +time +zadd +zcard +zrange +zrangebyscore +zremrangebyrank +zpopmin +hget +hgetall +hset +hdel +hexists +sadd +srem +smembers +eval +evalsha +script|load +client|setinfo
+  ACL SETUSER wsprism on >PASSWORD ~wsp:* &wsp:* -@all +publish +subscribe +unsubscribe +set +get +getdel +del +pexpire +time +zadd +zcard +zrange +zrangebyscore +zremrangebyrank +zpopmin +hmget +hgetall +hset +hincrby +hdel +hexists +sadd +srem +smembers +eval +evalsha +script|load +client|setinfo
   ```
 
   (`client|setinfo` is optional: without it the client library's

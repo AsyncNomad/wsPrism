@@ -30,9 +30,10 @@
 //!   that removed it, so each `member_left` is sent once (A10).
 //! - **History** (§3, R3-2): a kept message gets its offset, is stored and
 //!   published by one Lua script (`PUBLISH_KEPT`), so offsets, history and
-//!   delivery order agree on every node. Per room (one hash tag):
-//!   `:seq` (last offset), `:epoch`, `:log` (sorted set, score = offset,
-//!   member = `<ms>:<frame>`), `:bytes`. If Redis loses part of them
+//!   delivery order agree on every node. Per room (one hash tag): `:st`
+//!   (hash: last offset `seq`, epoch `ep`, log bytes `b`, last frame seq
+//!   applied per node `n:<node id>`) and `:log` (sorted set, score =
+//!   offset, member = `<unix s>:<frame>`). If Redis loses the state
 //!   (restart, eviction), a new epoch starts: clients resync instead of
 //!   resuming from offsets that mean something else now.
 
@@ -61,37 +62,38 @@ use wsprism_engine::broker::{
 };
 use wsprism_engine::spi::Recover;
 
-/// How long a quiet room's position (`seq`, `epoch`) outlives its last
-/// join or read (and, refreshed every 64th message, its messages): a client
+/// How long a quiet room's position (its `:st` hash) outlives its last
+/// message, join or read: a client
 /// may resume that long after (with nothing missed) without being told to
 /// resync.
 const POSITION_TTL: Duration = Duration::from_secs(24 * 3600);
 
 /// One room's part of an outbox batch, in order (A15: one script call per
 /// room and batch, not per message — per message only the PUBLISH is left).
-/// KEYS: seq, epoch, log, bytes, applied. ARGV: channel, size, ttl ms, max
-/// bytes, epoch candidate, position ttl ms, node id, then triples (head,
-/// text, frame seq) per message: a kept message gets the next offset;
-/// head = '' publishes text as is. A frame whose seq this node already had
-/// applied here is skipped: the outbox retries a batch whose reply timed
-/// out, and the first try may have run (R5). Returns the last offset.
+/// KEYS: state, log. ARGV: channel, size, ttl ms, max bytes, epoch
+/// candidate, position ttl ms, node id, then triples (head, text, frame seq)
+/// per message: a kept message gets the next offset; head = '' publishes
+/// text as is. A frame whose seq this node already had applied here is
+/// skipped: the outbox retries a batch whose reply timed out, and the first
+/// try may have run (R5). Returns the last offset.
+///
+/// The state is one hash (`seq`, `ep`, `b` = bytes in the log, `n:<node>` =
+/// last frame seq applied from that node) read and written once per call:
+/// the fixed cost of a call is mostly its `redis.call`s (M5,
+/// `bench/redis-lua-bench.py`). Times are whole seconds (`TIME`'s first
+/// field as is; `ttl_s` is configured in seconds anyway).
 const PUBLISH_KEPT: &str = r"
 local ch, size, ttl, maxb, pttl = ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4]), tonumber(ARGV[6])
-if redis.call('EXISTS', KEYS[1], KEYS[2]) < 2 then
-  redis.call('SET', KEYS[2], ARGV[5], 'PX', pttl)
-  redis.call('SET', KEYS[1], 0, 'PX', pttl)
-  redis.call('DEL', KEYS[3], KEYS[4], KEYS[5])
+local node = 'n:' .. ARGV[7]
+local st = redis.call('HMGET', KEYS[1], 'seq', 'ep', 'b', node)
+local o, ep, b, done = tonumber(st[1]), st[2], tonumber(st[3] or '0'), tonumber(st[4] or '0')
+if not o or not ep then
+  -- First use, or Redis lost the room's state: a new epoch.
+  o, ep, b, done = 0, ARGV[5], 0, 0
+  redis.call('DEL', KEYS[1], KEYS[2])
 end
-local ep = redis.call('GET', KEYS[2])
-local done = tonumber(redis.call('HGET', KEYS[5], ARGV[7]) or '0')
 local last = done
-local kept = 0
-for i = 8, #ARGV, 3 do
-  if ARGV[i] ~= '' and tonumber(ARGV[i + 2]) > done then kept = kept + 1 end
-end
-local o = redis.call('INCRBY', KEYS[1], kept) - kept
-local t = redis.call('TIME')
-local now = (tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)) .. ':'
+local now = redis.call('TIME')[1] .. ':'
 local z, added = {}, 0
 for i = 8, #ARGV, 3 do
   local fseq = tonumber(ARGV[i + 2])
@@ -102,7 +104,7 @@ for i = 8, #ARGV, 3 do
     else
       o = o + 1
       -- `<offset>:<epoch>`: receivers notice when the history restarted.
-      local s = tostring(o) .. ':' .. ep
+      local s = o .. ':' .. ep
       local msg = ARGV[i] .. string.char(#s) .. s .. ARGV[i + 1]
       z[#z + 1] = o
       z[#z + 1] = now .. msg
@@ -111,72 +113,67 @@ for i = 8, #ARGV, 3 do
     end
   end
 end
-if last > done then
-  redis.call('HSET', KEYS[5], ARGV[7], last)
-  redis.call('PEXPIRE', KEYS[5], pttl)
-end
-if kept > 0 then
-  redis.call('ZADD', KEYS[3], unpack(z))
-  local b = redis.call('INCRBY', KEYS[4], added)
-  local n = redis.call('ZCARD', KEYS[3])
+if #z > 0 then
+  redis.call('ZADD', KEYS[2], unpack(z))
+  local n = redis.call('ZCARD', KEYS[2])
+  -- Only what was just added: the log expired (quiet room) while the
+  -- state lived on, so `b` counted messages that are gone.
+  if n * 2 == #z then b = added else b = b + added end
   -- Count and byte limits (age is enforced when reading).
   if n > size then
-    local gone = redis.call('ZPOPMIN', KEYS[3], n - size)
-    local freed = 0
+    local gone = redis.call('ZPOPMIN', KEYS[2], n - size)
     for i = 1, #gone, 2 do
-      freed = freed + #gone[i] - string.find(gone[i], ':', 1, true)
+      b = b - (#gone[i] - string.find(gone[i], ':', 1, true))
     end
-    b = redis.call('DECRBY', KEYS[4], freed)
     n = size
   end
   while b > maxb and n > 1 do
-    local head = redis.call('ZPOPMIN', KEYS[3])[1]
-    b = redis.call('DECRBY', KEYS[4], #head - string.find(head, ':', 1, true))
+    local head = redis.call('ZPOPMIN', KEYS[2])[1]
+    b = b - (#head - string.find(head, ':', 1, true))
     n = n - 1
   end
-  redis.call('PEXPIRE', KEYS[3], ttl)
-  redis.call('PEXPIRE', KEYS[4], ttl)
-  redis.call('PEXPIRE', KEYS[1], pttl)
-  redis.call('PEXPIRE', KEYS[2], pttl)
+  redis.call('PEXPIRE', KEYS[2], ttl)
 end
+redis.call('HSET', KEYS[1], 'seq', o, 'ep', ep, 'b', b, node, last)
+redis.call('PEXPIRE', KEYS[1], pttl)
 return o
 ";
 
-/// KEYS: seq, epoch, log, bytes. ARGV: since ('' = position only), epoch
-/// asked, ttl ms, epoch candidate, position ttl ms. Returns
-/// `{epoch, top}` or `{epoch, top, ok, {members...}}`.
+/// KEYS: state, log. ARGV: since ('' = position only), epoch asked, ttl ms,
+/// epoch candidate, position ttl ms. Returns `{epoch, top}` or
+/// `{epoch, top, ok, {members...}}`.
 const READ_KEPT: &str = r"
-local ttl, pttl = tonumber(ARGV[3]), tonumber(ARGV[5])
-if redis.call('EXISTS', KEYS[1], KEYS[2]) < 2 then
-  redis.call('SET', KEYS[2], ARGV[4])
-  redis.call('SET', KEYS[1], 0)
-  redis.call('DEL', KEYS[3], KEYS[4])
+local ttl, pttl = tonumber(ARGV[3]) / 1000, tonumber(ARGV[5])
+local st = redis.call('HMGET', KEYS[1], 'seq', 'ep')
+local top, ep = tonumber(st[1]), st[2]
+if not top or not ep then
+  top, ep = 0, ARGV[4]
+  redis.call('DEL', KEYS[1], KEYS[2])
+  redis.call('HSET', KEYS[1], 'seq', 0, 'ep', ep, 'b', 0)
 end
 redis.call('PEXPIRE', KEYS[1], pttl)
-redis.call('PEXPIRE', KEYS[2], pttl)
-local ep = redis.call('GET', KEYS[2])
-local top = tonumber(redis.call('GET', KEYS[1]))
 if ARGV[1] == '' then return {ep, top} end
 local since = tonumber(ARGV[1])
 if ARGV[2] ~= ep or since > top then return {ep, top, 0} end
-local t = redis.call('TIME')
-local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
+local now = tonumber(redis.call('TIME')[1])
+local freed = 0
 while true do
-  local head = redis.call('ZRANGE', KEYS[3], 0, 0)[1]
+  local head = redis.call('ZRANGE', KEYS[2], 0, 0)[1]
   if not head then break end
   local sep = string.find(head, ':', 1, true)
   if now - tonumber(string.sub(head, 1, sep - 1)) > ttl then
-    redis.call('ZREMRANGEBYRANK', KEYS[3], 0, 0)
-    redis.call('DECRBY', KEYS[4], #head - sep)
+    redis.call('ZREMRANGEBYRANK', KEYS[2], 0, 0)
+    freed = freed + #head - sep
   else
     break
   end
 end
-local first = redis.call('ZRANGE', KEYS[3], 0, 0, 'WITHSCORES')
+if freed > 0 then redis.call('HINCRBY', KEYS[1], 'b', -freed) end
+local first = redis.call('ZRANGE', KEYS[2], 0, 0, 'WITHSCORES')
 local f = top + 1
 if first[2] then f = tonumber(first[2]) end
 if since + 1 < f then return {ep, top, 0} end
-return {ep, top, 1, redis.call('ZRANGEBYSCORE', KEYS[3], '(' .. since, '+inf')}
+return {ep, top, 1, redis.call('ZRANGEBYSCORE', KEYS[2], '(' .. since, '+inf')}
 ";
 
 /// How to reach Redis and how to use it.
@@ -318,14 +315,9 @@ end
 return out
 ";
 
-/// The four keys of a room's history (one hash tag).
-fn history_keys(prefix: &str, room_key: &str) -> [String; 4] {
-    ["seq", "epoch", "log", "bytes"].map(|k| format!("{prefix}:h:{{{room_key}}}:{k}"))
-}
-
-/// Per room: the last frame seq applied from each node (idempotent retries).
-fn applied_key(prefix: &str, room_key: &str) -> String {
-    format!("{prefix}:h:{{{room_key}}}:applied")
+/// A room's history keys (one hash tag): state hash and log.
+fn history_keys(prefix: &str, room_key: &str) -> [String; 2] {
+    ["st", "log"].map(|k| format!("{prefix}:h:{{{room_key}}}:{k}"))
 }
 
 struct ShardCmd {
@@ -559,16 +551,13 @@ impl Broker for RedisBroker {
         for (first, all) in &kept_rooms {
             let Some(keep) = first.keep else { continue };
             for frames in all.chunks(SCRIPT_CHUNK) {
-                let [seq, epoch, log, bytes] = history_keys(&self.cfg.prefix, &first.room_key);
+                let [state, log] = history_keys(&self.cfg.prefix, &first.room_key);
                 let cmd = pipe
                     .cmd("EVALSHA")
                     .arg(self.publish_kept.get_hash())
-                    .arg(5)
-                    .arg(seq)
-                    .arg(epoch)
+                    .arg(2)
+                    .arg(state)
                     .arg(log)
-                    .arg(bytes)
-                    .arg(applied_key(&self.cfg.prefix, &first.room_key))
                     .arg(self.channel(&first.room_key))
                     .arg(keep.size)
                     .arg(keep.ttl.as_millis() as u64)
@@ -650,13 +639,11 @@ impl Broker for RedisBroker {
             .get()
             .cloned()
             .ok_or_else(|| BrokerError::Unavailable("not started".into()))?;
-        let [seq, epoch, log, bytes] = history_keys(&self.cfg.prefix, room_key);
+        let [state, log] = history_keys(&self.cfg.prefix, room_key);
         let reply: redis::Value = self
             .read_kept
-            .key(seq)
-            .key(epoch)
+            .key(state)
             .key(log)
-            .key(bytes)
             .arg(from.map_or(String::new(), |f| f.offset.to_string()))
             .arg(from.map_or("", |f| f.epoch.as_str()))
             .arg(keep.ttl.as_millis() as u64)
@@ -1250,7 +1237,7 @@ fn parse_read(v: &redis::Value) -> Result<HistoryRead, BrokerError> {
                 let V::BulkString(b) = m else {
                     return Err(bad());
                 };
-                // `<ms>:<frame>`
+                // `<unix s>:<frame>`
                 let at = b.iter().position(|&c| c == b':').ok_or_else(bad)?;
                 let frame = wire::decode(&Bytes::copy_from_slice(&b[at + 1..]))
                     .map_err(|e| BrokerError::Rejected(e.to_string()))?;
