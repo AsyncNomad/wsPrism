@@ -50,34 +50,46 @@ jobs:
         env:
           WSPRISM_TEST_BROKER: queued
 
-  # Two gateway nodes sharing rooms through a Redis service container
+  # Two gateway nodes sharing rooms through a Redis container
   # (ADR 0011 R3). The service is only reachable from this job.
   cluster:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    services:
-      redis:
-        image: redis:7.2
-        ports: ["6379:6379"]
+    # For every step: without it the Rust cluster tests skip themselves
+    # (and pass), which they silently did here before.
+    env:
+      WSPRISM_TEST_REDIS: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # A named container (not a service): the chaos tests restart, pause and
+      # snapshot it by name (WSPRISM_TEST_REDIS_CONTAINER, default wsp-redis).
+      - name: Redis
+        run: docker run -d --name wsp-redis -p 6379:6379 redis:7.2 redis-server --save "" --appendonly no
       - name: Cluster tests
         run: |
-          cargo test -p wsprism-gateway --locked --test cluster --test cluster_gap
+          cargo test -p wsprism-gateway --locked --test cluster --test cluster_gap --test history
           cargo test -p wsprism-redis --locked
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Node kill -9 with SDK clients (the Redis restart / pause scenarios
-      # need the docker container and are skipped here).
+      # Every scenario: node kill, rolling update, Redis restart (empty and
+      # from an older snapshot), Redis pause, stop while Redis is slow.
       - name: Chaos tests
         run: |
           cargo build -p wsprism-gateway --locked
           node --test --test-force-exit sdk/js/test/chaos.test.mjs
-        env:
-          WSPRISM_TEST_REDIS: redis://127.0.0.1:6379
+
+  # The container image builds (Dockerfile, deploy/compose).
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build the image
+        run: docker build -t wsprism-gateway:ci .
+      - name: The binary runs in it
+        run: docker run --rm --network none wsprism-gateway:ci --version
 
   # Minimum supported Rust version (workspace rust-version; ADR 0009 §5-4).
   msrv:
