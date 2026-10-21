@@ -36,13 +36,9 @@ const HOT_HEADER: [u8; 4] = [1, 1, 1, 0];
 const EXT_PREFIX: usize = 30;
 
 impl Wsprism {
-    /// The node connection `conn` uses: the `conn / rooms`-th member of each
-    /// room goes to node `(conn / rooms) % nodes`, so every room spans every
-    /// node (`conn % nodes` would put a whole room on one node whenever the
-    /// counts share a factor).
+    /// See [`super::url_of`].
     fn url_of(&self, conn: usize) -> &str {
-        let nodes: Vec<&str> = self.url.split(',').collect();
-        nodes[(conn / self.rooms.max(1)) % nodes.len()]
+        super::url_of(&self.url, self.rooms, conn)
     }
 }
 

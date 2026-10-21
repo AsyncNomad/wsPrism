@@ -25,6 +25,15 @@ pub use wsprism::Wsprism;
 
 pub type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
+/// The node connection `conn` uses when `urls` lists several (comma-
+/// separated): the `conn / rooms`-th member of each room goes to node
+/// `(conn / rooms) % nodes`, so every room spans every node (`conn % nodes`
+/// would put a whole room on one node whenever the counts share a factor).
+pub fn url_of(urls: &str, rooms: usize, conn: usize) -> &str {
+    let nodes: Vec<&str> = urls.split(',').collect();
+    nodes[(conn / rooms.max(1)) % nodes.len()]
+}
+
 /// How long connect + join may take per connection.
 pub const SETUP_TIMEOUT: Duration = Duration::from_secs(10);
 

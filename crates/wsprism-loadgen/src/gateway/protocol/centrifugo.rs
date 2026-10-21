@@ -14,16 +14,20 @@ use tokio_tungstenite::tungstenite::Message;
 use super::{await_text, json_body, open, probe_from_json, Incoming, Probe, Protocol, Ws};
 
 pub struct Centrifugo {
-    /// Base URL, e.g. `ws://10.77.0.1:8000`.
+    /// Base URL, e.g. `ws://10.77.0.1:8000`, or several comma-separated
+    /// (cluster nodes; [`super::url_of`]).
     pub url: String,
+    /// Rooms in the scenario.
+    pub rooms: usize,
 }
 
 /// Command ids 1 and 2 are connect/subscribe; publishes count up from here.
 const FIRST_PUBLISH_ID: u32 = 100;
 
 impl Protocol for Centrifugo {
-    async fn setup(&self, _conn: usize, room: &str) -> Result<Ws, String> {
-        let url = format!("{}/connection/websocket", self.url.trim_end_matches('/'));
+    async fn setup(&self, conn: usize, room: &str) -> Result<Ws, String> {
+        let base = super::url_of(&self.url, self.rooms, conn);
+        let url = format!("{}/connection/websocket", base.trim_end_matches('/'));
         let req = url.into_client_request().map_err(|e| e.to_string())?;
         let mut ws = open(req).await?;
         command(&mut ws, 1, "connect", serde_json::json!({})).await?;
@@ -106,7 +110,11 @@ mod tests {
             push(p2)
         );
         let mut out = Vec::new();
-        Centrifugo { url: String::new() }.decode(&Message::Text(frame), &mut out);
+        Centrifugo {
+            url: String::new(),
+            rooms: 1,
+        }
+        .decode(&Message::Text(frame), &mut out);
         assert_eq!(
             out,
             vec![
@@ -119,7 +127,11 @@ mod tests {
 
     #[test]
     fn publish_ids_do_not_collide_with_setup_commands() {
-        let Message::Text(t) = Centrifugo { url: String::new() }.encode(
+        let Message::Text(t) = Centrifugo {
+            url: String::new(),
+            rooms: 1,
+        }
+        .encode(
             "r",
             Probe {
                 sender: 0,

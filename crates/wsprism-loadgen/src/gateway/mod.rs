@@ -45,7 +45,10 @@ pub async fn run(args: Args) {
             };
             run_with(Arc::new(p), args).await
         }
-        Target::Centrifugo => run_with(Arc::new(Centrifugo { url }), args).await,
+        Target::Centrifugo => {
+            let rooms = args.rooms.max(1);
+            run_with(Arc::new(Centrifugo { url, rooms }), args).await
+        }
         Target::Pusher => {
             let p = Pusher {
                 url,
