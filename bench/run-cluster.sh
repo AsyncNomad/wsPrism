@@ -11,7 +11,9 @@
 # the gateway keeps cores 0-7 and the load generator gets 8-22. Redis's CPU
 # and command counts come from INFO before and after each run and are written
 # as a second JSON line ({"label": ..., "redis": {...}}) next to the
-# loadgen's. Binaries: the redis:7.2 image's redis-server / redis-cli,
+# loadgen's. NODES=2: the Redis targets run two gateway nodes (cores
+# NODE_CPUS, default "0-3 4-7", ports 18080/18081) with every room spread
+# over both; CPU/RSS are summed over the nodes. Binaries: the redis:7.2 image's redis-server / redis-cli,
 # copied to ~/.cache/wsprism-bench/redis-7.2 (docker cp; no download).
 set -euo pipefail
 
@@ -23,6 +25,8 @@ TARGETS="${4:-memory-ext redis-ext redis-hot redis-hist}"
 SERVER_CPUS="${SERVER_CPUS:-0-7}"
 LOADGEN_CPUS="${LOADGEN_CPUS:-8-22}"
 REDIS_CPU="${REDIS_CPU:-23}"
+NODES="${NODES:-1}"
+read -r NODE1_CPUS NODE2_CPUS <<<"${NODE_CPUS:-0-3 4-7}"
 REDIS_DIR="${REDIS_DIR:-$HOME/.cache/wsprism-bench/redis-7.2}"
 RS="$REDIS_DIR/redis-server"; RC="$REDIS_DIR/redis-cli"
 [[ -x $RS && -x $RC ]] || { echo "missing $RS / $RC (docker cp from redis:7.2)" >&2; exit 1; }
@@ -40,6 +44,7 @@ sed 's|^gateway:|gateway:\n  broker: { kind: redis, url: "redis://10.77.0.1:6390
 sed 's|^    policy:|    history: [{ rooms: "*", size: 200, ttl_s: 600 }]\n    policy:|' \
   "$WORK/redis.yaml" > "$WORK/hist.yaml"
 grep -q 'kind: redis' "$WORK/redis.yaml" && grep -q 'history:' "$WORK/hist.yaml"
+for c in redis hist; do sed 's|10.77.0.1:18080|10.77.0.1:18081|' "$WORK/$c.yaml" > "$WORK/${c}2.yaml"; done
 
 scenario() {
   local kind="${1%%:*}" rate="${1#*:}"
@@ -66,6 +71,7 @@ total=0
 for run in $(seq "$RUNS"); do for sc in $SCENARIOS; do for t in $TARGETS; do
   total=$((total + 1))
   label="scenario=$sc target=$t run=$run"
+  [[ $NODES == 2 && $t != memory-* ]] && label="scenario=$sc target=$t nodes=2 run=$run"
   if [[ -f "$OUT" ]] && grep -qF "\"label\":\"$label\"" "$OUT"; then
     echo "[$total] skip (done): $label" >&2; continue
   fi
@@ -75,6 +81,29 @@ for run in $(seq "$RUNS"); do for sc in $SCENARIOS; do for t in $TARGETS; do
   lg="taskset -c $LOADGEN_CPUS $LG gateway --target wsprism --lane $lane --url ws://10.77.0.1:18080 --distinct-users $(scenario "$sc") --seed $run --json --server-pid \$SERVER_PID --label '$label'"
   if [[ $cfg == memory ]]; then
     server="$gw"; client="$lg"
+  elif [[ $NODES == 2 ]]; then
+    # Node 2 starts in the background (its pid in a file); node 1 is exec'd
+    # (SERVER_PID). The client waits for node 2, then stops it afterwards.
+    cat > "$WORK/server.sh" <<SRV
+taskset -c $REDIS_CPU $RS --bind 10.77.0.1 --port 6390 --save "" --appendonly no --protected-mode no --loglevel warning >/dev/null &
+until $RC -h 10.77.0.1 -p 6390 ping >/dev/null 2>&1; do sleep 0.05; done
+taskset -c $NODE2_CPUS env RUST_LOG=warn $GW --config $WORK/${cfg}2.yaml &
+echo \$! > $WORK/pid2
+exec taskset -c $NODE1_CPUS env RUST_LOG=warn $GW --config $WORK/$cfg.yaml
+SRV
+    lg2="taskset -c $LOADGEN_CPUS $LG gateway --target wsprism --lane $lane --url ws://10.77.0.1:18080,ws://10.77.0.1:18081 --distinct-users $(scenario "$sc") --seed $run --json --server-pid \$SERVER_PID,\$(cat $WORK/pid2) --label '$label'"
+    cat > "$WORK/client.sh" <<CLI
+until [ -s $WORK/pid2 ] && (exec 3<>/dev/tcp/10.77.0.1/18081) 2>/dev/null; do sleep 0.05; done
+info() { $RC -h 10.77.0.1 -p 6390 info all | tr -d '\r' > "\$1"; }
+info $WORK/before
+$lg2
+info $WORK/after
+kill \$(cat $WORK/pid2) 2>/dev/null || true
+rm -f $WORK/pid2
+$RC -h 10.77.0.1 -p 6390 shutdown nosave >/dev/null 2>&1 || true
+python3 $ROOT/bench/redis-info-delta.py $WORK/before $WORK/after '$label'
+CLI
+    server="sh $WORK/server.sh"; client="bash $WORK/client.sh"
   else
     # Redis next to the gateway (same namespace, its own core); the gateway
     # is exec'd so SERVER_PID is the gateway. The client records Redis INFO
