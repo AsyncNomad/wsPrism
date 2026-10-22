@@ -196,8 +196,25 @@ gateway:
   connections when it changes (tested: delivery resumes ~4.5 s after the
   primary's container is stopped). A promoted replica may lack the last
   writes: history rooms start a new epoch and clients are told, as after
-  any Redis restart; nodes put their sessions and memberships back. Not
-  with TLS yet.
+  any Redis restart; nodes put their sessions and memberships back.
+
+  With TLS: `rediss://` sentinel addresses connect to the sentinels over
+  TLS, a `rediss://` URL to the Redis nodes; `tls` (CA, client
+  certificate) applies to both. Sentinel names the nodes by address, so
+  their certificates must name those addresses (IP SANs), or the nodes
+  announce host names (`replica-announce-ip`, Redis docs). Tested with
+  mutual TLS everywhere (`bench/redis-sentinel-tls-test.sh`): delivery
+  resumed 2.3-3.2 s after the primary stopped.
+
+  ```yaml
+  broker:
+    kind: redis
+    url_env: REDIS_URL       # rediss://user:password@primary/0
+    sentinel:
+      addresses: ["rediss://sentinel-1:26379", "rediss://sentinel-2:26379", "rediss://sentinel-3:26379"]
+      master_name: mymaster
+    tls: { ca_file: /etc/wsprism/redis-ca.pem, client_cert_file: /etc/wsprism/client.pem, client_key_file: /etc/wsprism/client.key }
+  ```
 - **Replica acknowledgement** (`replica_ack`): consuming a one-time ticket
   is the one write a failover could undo without anything repairing it (a
   promoted replica that missed it would accept the ticket again). So the

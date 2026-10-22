@@ -251,6 +251,10 @@ ID는 커밋 메시지/테스트 이름에서 참조한다. 상태: ☐ 미착�
 
 - 펜싱: 슬롯 없는 노드의 룸 발행을 Redis가 거부(`PUBLISH_FENCED`, 이력 스크립트). BENCHMARKS 「0.2: Redis 펜싱 비용」.
 - Sentinel: `crates/wsprism-redis/src/link.rs`, 시험 환경 `bench/redis-sentinel-test.sh`, CI 단계.
+- Sentinel + TLS(2026-10-22): `SentinelClientBuilder`로 센티널 쪽 TLS와 Redis 노드 쪽 TLS를 각각 켠다(`rediss://` 주소·URL). 인증서(사설 CA, 클라이언트 인증서)는 둘 다에 쓴다.
+  - 시험 환경 `bench/redis-sentinel-tls-test.sh`: 주·복제·Sentinel이 모두 TLS 전용이고 클라이언트 인증서를 요구한다. 복제와 Sentinel의 Redis 연결도 TLS다.
+  - `cluster_sentinel_tls.rs`: 장애 조치 뒤 2.3~3.2초에 전달이 재개됐다(새 환경에서 2회).
+  - 첫 실행의 "0.75초"는 `docker stop` 자체가 이 기계에서 1초 남짓 걸려서 생긴 착시였다. Sentinel 로그로 `switch-master`를 확인했다.
 
 ### 0.2: soak 확장·장애 조치 일관성 (2026-10-22, 외부 검토 #2)
 

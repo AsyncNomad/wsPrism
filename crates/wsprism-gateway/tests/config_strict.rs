@@ -295,3 +295,24 @@ fn admission_defaults_and_bounds() {
         assert!(e.contains("admission"), "{e}");
     }
 }
+
+/// Sentinel with TLS (0.2): `rediss://` sentinel addresses and URL, with
+/// `tls`, are accepted; other schemes are not.
+#[test]
+fn sentinel_takes_tls() {
+    let load = |addr: &str, url: &str, tls: &str| {
+        let yaml = format!(
+            "version: 1\ngateway:\n  broker: {{ kind: redis, url: \"{url}\", sentinel: {{ addresses: [\"{addr}\"], master_name: m }}{tls} }}\ntenants:\n  - id: t\n"
+        );
+        config::load_from_str(&yaml).map_err(|e| e.to_string())
+    };
+    assert!(load(
+        "rediss://s:26379",
+        "rediss://primary",
+        ", tls: { ca_file: \"/x/ca.crt\" }"
+    )
+    .is_ok());
+    assert!(load("rediss://s:26379", "redis://primary", "").is_ok());
+    let e = load("http://s:26379", "redis://primary", "").unwrap_err();
+    assert!(e.contains("sentinel.addresses"), "{e}");
+}

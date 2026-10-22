@@ -490,7 +490,8 @@ pub struct RedisBrokerConfig {
     pub tls: Option<RedisTlsConfig>,
     /// Follow the primary through Redis Sentinel. `url` / `url_env` then
     /// only carry the primary's credentials and database (the host is not
-    /// used). Not with TLS yet.
+    /// used); `rediss://` there = TLS to the Redis nodes, `rediss://`
+    /// sentinel addresses = TLS to the sentinels, `tls` for both.
     #[serde(default)]
     pub sentinel: Option<RedisSentinelConfig>,
     /// Consuming a one-time ticket waits until replicas have it, so a
@@ -569,7 +570,8 @@ fn default_ack_timeout_ms() -> u64 {
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct RedisSentinelConfig {
-    /// Sentinel addresses, `redis://host:26379`.
+    /// Sentinel addresses, `redis://host:26379` (`rediss://` for TLS;
+    /// credentials of the sentinels themselves in the address).
     pub addresses: Vec<String>,
     /// The primary's name in the Sentinel configuration (`mymaster`).
     pub master_name: String,
@@ -649,14 +651,15 @@ impl RedisBrokerConfig {
             }
         }
         if let Some(s) = &self.sentinel {
-            if s.addresses.is_empty() || s.addresses.iter().any(|a| !a.starts_with("redis://")) {
-                return bad("sentinel.addresses: one or more redis://host:port");
+            if s.addresses.is_empty()
+                || s.addresses
+                    .iter()
+                    .any(|a| !(a.starts_with("redis://") || a.starts_with("rediss://")))
+            {
+                return bad("sentinel.addresses: one or more redis:// or rediss://host:port");
             }
             if s.master_name.is_empty() {
                 return bad("sentinel.master_name must not be empty");
-            }
-            if self.tls.is_some() {
-                return bad("sentinel with tls is not supported yet");
             }
         }
         let adm = &self.admission;

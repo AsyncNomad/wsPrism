@@ -247,6 +247,86 @@ end
 return 0
 ";
 
+/// The Sentinel client of `cfg` (0.2): `rediss://` sentinel addresses =
+/// TLS to the sentinels, a `rediss://` URL = TLS to the Redis nodes they
+/// name; `cfg.tls` (private CA, client certificate) applies to both. The
+/// sentinels' credentials come from their addresses, the nodes' and the
+/// database from the URL (its host is not used). Sentinel names nodes by
+/// address, so with TLS their certificates must name those addresses (or
+/// the nodes announce host names; `replica-announce-ip`, Redis docs).
+fn sentinel_client(
+    cfg: &RedisConfig,
+    sentinel: &RedisSentinel,
+) -> Result<redis::sentinel::SentinelClient, BrokerError> {
+    use redis::sentinel::{SentinelClientBuilder, SentinelServerType};
+    let bad =
+        |what: &str, e: redis::RedisError| BrokerError::Rejected(format!("redis {what}: {e}"));
+    let mut addrs = Vec::with_capacity(sentinel.addresses.len());
+    let mut sentinel_tls = false;
+    let mut sentinel_auth: Option<(Option<String>, Option<String>)> = None;
+    for a in &sentinel.addresses {
+        let info = redis::IntoConnectionInfo::into_connection_info(a.as_str())
+            .map_err(|e| bad("sentinel address", e))?;
+        sentinel_tls |= matches!(info.addr(), redis::ConnectionAddr::TcpTls { .. });
+        let r = info.redis_settings();
+        if sentinel_auth.is_none() && (r.username().is_some() || r.password().is_some()) {
+            sentinel_auth = Some((
+                r.username().map(str::to_string),
+                r.password().map(str::to_string),
+            ));
+        }
+        addrs.push(info.addr().clone());
+    }
+    let info = redis::IntoConnectionInfo::into_connection_info(cfg.url.as_str())
+        .map_err(|e| bad("url", e))?;
+    let redis_tls = matches!(info.addr(), redis::ConnectionAddr::TcpTls { .. });
+    let r = info.redis_settings();
+    let mut b =
+        SentinelClientBuilder::new(addrs, &sentinel.master_name, SentinelServerType::Master)
+            .map_err(|e| bad("sentinel", e))?
+            .set_client_to_redis_db(r.db());
+    if let Some(u) = r.username() {
+        b = b.set_client_to_redis_username(u);
+    }
+    if let Some(p) = r.password() {
+        b = b.set_client_to_redis_password(p);
+    }
+    if let Some((u, p)) = sentinel_auth {
+        if let Some(u) = u {
+            b = b.set_client_to_sentinel_username(u);
+        }
+        if let Some(p) = p {
+            b = b.set_client_to_sentinel_password(p);
+        }
+    }
+    if sentinel_tls || redis_tls {
+        install_crypto_provider();
+    }
+    let certs = cfg.tls.as_ref().map(|tls| redis::TlsCertificates {
+        client_tls: tls
+            .client_pem
+            .as_ref()
+            .map(|(cert, key)| redis::ClientTlsConfig {
+                client_cert: cert.clone(),
+                client_key: key.clone(),
+            }),
+        root_cert: tls.ca_pem.clone(),
+    });
+    if sentinel_tls {
+        b = b.set_client_to_sentinel_tls_mode(redis::TlsMode::Secure);
+        if let Some(c) = &certs {
+            b = b.set_client_to_sentinel_certificates(c.clone());
+        }
+    }
+    if redis_tls {
+        b = b.set_client_to_redis_tls_mode(redis::TlsMode::Secure);
+        if let Some(c) = certs {
+            b = b.set_client_to_redis_certificates(c);
+        }
+    }
+    b.build().map_err(|e| bad("sentinel", e))
+}
+
 /// How to reach Redis and how to use it.
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -646,23 +726,7 @@ impl RedisBroker {
         let locator = match &cfg.sentinel {
             None => Locator::Fixed(client),
             Some(sentinel) => {
-                if cfg.tls.is_some() || cfg.url.starts_with("rediss://") {
-                    return Err(BrokerError::Rejected(
-                        "redis sentinel with TLS is not supported yet".into(),
-                    ));
-                }
-                let info = redis::IntoConnectionInfo::into_connection_info(cfg.url.as_str())
-                    .map_err(|e| BrokerError::Rejected(format!("redis url: {e}")))?;
-                let node = redis::sentinel::SentinelNodeConnectionInfo::default()
-                    .set_redis_connection_info(info.redis_settings().clone());
-                let sc = redis::sentinel::SentinelClient::build(
-                    sentinel.addresses.iter().map(String::as_str).collect(),
-                    &sentinel.master_name,
-                    Some(node),
-                    redis::sentinel::SentinelServerType::Master,
-                )
-                .map_err(|e| BrokerError::Rejected(format!("redis sentinel: {e}")))?;
-                Locator::Sentinel(tokio::sync::Mutex::new(sc))
+                Locator::Sentinel(tokio::sync::Mutex::new(sentinel_client(&cfg, sentinel)?))
             }
         };
         let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_QUEUE);

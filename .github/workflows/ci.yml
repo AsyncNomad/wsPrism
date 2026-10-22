@@ -92,6 +92,12 @@ jobs:
           eval "$(WSPRISM_SENTINEL_DOWN_AFTER_MS=5000 bench/redis-sentinel-test.sh)"
           sleep 3
           cargo test -p wsprism-gateway --locked --test cluster_sentinel_ticket
+      # Sentinel, primary and replica all TLS-only with client certificates.
+      - name: Cluster over Sentinel with TLS (failover)
+        run: |
+          eval "$(bench/redis-sentinel-tls-test.sh)"
+          sleep 3
+          cargo test -p wsprism-gateway --locked --test cluster_sentinel_tls
       - uses: actions/setup-node@v4
         with:
           node-version: 22

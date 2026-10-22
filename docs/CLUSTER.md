@@ -112,8 +112,7 @@ from Redis come in batches); the default 1024 is fine.
 
 - Tenant-wide limits (`max_sessions_total`, room limits) are per node.
 - One Redis (or one Sentinel-managed primary): no Redis Cluster yet, so
-  room history is bounded by one Redis core. Sentinel with TLS is not
-  supported yet.
+  room history is bounded by one Redis core.
 - Fencing covers room traffic: once another node holds a node's slot,
   Redis refuses that node's publishes (plain and history), and the node
   drains and exits at its first refused write or its next heartbeat
