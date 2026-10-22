@@ -38,7 +38,7 @@ first release that drops the label.
 | A node is killed (`kill -9`, crash) | Its clients reconnect to another node and resume history rooms from their last offset: nothing lost, nothing twice (chaos test) | Within `slot_ttl_s` + ~5 s the other nodes remove its members and send `member_left` once (presence events on); its sessions stop counting toward limits |
 | A node stops gracefully (SIGTERM) | `/readyz` 503; server API publishes 503 (publish elsewhere); sessions closed (v2 4103 `draining`, v1 1001) and resume on another node: nothing lost or repeated (chaos tests: rolling update, stop while Redis is slow) | Within `drain_grace_ms` the node hands over its queue (publishes it accepted, members leaving) before exiting |
 | Redis restarts (without data, or from an older snapshot) | History rooms: the nodes refill from the new history and tell clients the history restarted (`sys.gap` with the new epoch); every message published after the restart arrives once. Rooms without history: `sys.gap` (resync). Nobody is disconnected | Nodes reconnect, re-subscribe, reload scripts, and within ~15 s put their sessions and memberships back |
-| Sentinel fails the primary over | Like a Redis restart: history rooms start a new epoch (clients told), rooms without history get `sys.gap`; nobody is disconnected | Nodes notice within ~1 s and move every connection to the new primary; delivery resumed ~4.5 s after the primary stopped (test) |
+| Sentinel fails the primary over | Like a Redis restart: history rooms start a new epoch (clients told), rooms without history get `sys.gap`; nobody is disconnected. A one-time ticket is accepted once even if the promoted replica had fallen behind (`replica_ack`; test) | Nodes notice within ~1 s and move every connection to the new primary; delivery resumed ~4.5 s after the primary stopped (test) |
 | Redis pauses or is slow | Publishes wait; past `outbox_max_wait_ms` (1 s) new ones are refused (`UNAVAILABLE`, server API 503). Nothing is lost or delivered twice (chaos test) | Automatic when Redis answers again |
 | Redis is down | New connections closed with 4102 `unavailable` (v1 1013; try again later); Reliable publishes `UNAVAILABLE`; Hot state still flows between members of the same node; ticket logins 503 | Automatic when Redis is back (as above) |
 | A node is cut off from Redis longer than `slot_ttl_s` | Its rooms look empty to the others for a while (`member_left` sent) | When it reconnects it re-registers and restores its sessions and memberships. If another node took its slot meanwhile, it drains (its clients reconnect to other nodes) and exits with a failure for the orchestrator to restart it (chaos test) |
@@ -74,7 +74,11 @@ orchestrator restarts it. Kubernetes: `terminationGracePeriodSeconds` above
 - **The server API's 200 means "queued on that node"**, not "delivered".
   A node that is killed (crash, `kill -9`) before flushing its queue
   (normally microseconds) loses what it had queued; a node stopped with
-  SIGTERM hands it over first (within `drain_grace_ms`). Back-ends that need certainty publish to rooms with
+  SIGTERM hands it over first (within `drain_grace_ms`). So does a node
+  cut off from Redis past `slot_ttl_s` whose slot another node took: Redis
+  refuses everything from it (fencing), so what it queued while cut off is
+  lost — at most `outbox_max_wait_ms` of publishes, after which it answers
+  503, as it does from the moment it learns it was fenced (soak test). Back-ends that need certainty publish to rooms with
   history and check the offsets their clients report.
 - **Retries never duplicate history messages** (each frame carries a
   per-node sequence the Redis script checks). Plain room messages can be

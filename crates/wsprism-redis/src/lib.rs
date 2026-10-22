@@ -265,6 +265,37 @@ pub struct RedisConfig {
     /// Find the primary through Redis Sentinel (then `url` only gives the
     /// credentials and database).
     pub sentinel: Option<RedisSentinel>,
+    /// Writes a failover must not undo wait for this many replicas; `None`
+    /// = they do not wait.
+    pub replica_ack: Option<ReplicaAck>,
+}
+
+/// Consuming a one-time ticket waits (`WAIT`) until `replicas` replicas
+/// have it, at most `timeout`; fewer = the redemption fails (closed).
+///
+/// Why only tickets (0.2, pre-release review #2): a promoted replica that
+/// missed the last writes is a new Redis process (`run_id`), and what the
+/// nodes wrote is repaired from it — history starts a new epoch, nodes
+/// register again and put their sessions and memberships back (R5-1), and
+/// the slot heartbeat takes its slot again. A consumed ticket is the one
+/// write nothing repairs: the promoted replica would accept it again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ReplicaAck {
+    /// Replicas that must acknowledge (at least 1).
+    pub replicas: u16,
+    /// The longest wait.
+    pub timeout: Duration,
+}
+
+impl ReplicaAck {
+    /// Wait for `replicas` (at least 1) at most `timeout` (at least 1 ms).
+    pub fn new(replicas: u16, timeout: Duration) -> Self {
+        Self {
+            replicas: replicas.max(1),
+            timeout: timeout.max(Duration::from_millis(1)),
+        }
+    }
 }
 
 /// Redis Sentinel: where the sentinels are and which primary to follow.
@@ -334,7 +365,14 @@ impl RedisConfig {
             slot_ttl: Duration::from_secs(30),
             tls: None,
             sentinel: None,
+            replica_ack: None,
         }
+    }
+
+    /// Consuming a ticket waits for replicas ([`ReplicaAck`]).
+    pub fn replica_ack(mut self, ack: ReplicaAck) -> Self {
+        self.replica_ack = Some(ack);
+        self
     }
 
     /// Find the primary through Redis Sentinel; `url` then only gives the
@@ -584,6 +622,7 @@ impl RedisBroker {
                 locator,
                 PUBLISH_TIMEOUT,
                 &[PUBLISH_KEPT, PUBLISH_FENCED],
+                cfg.replica_ack.map(|a| a.timeout),
             )),
             publish_kept: redis::Script::new(PUBLISH_KEPT),
             publish_fenced: redis::Script::new(PUBLISH_FENCED),
@@ -1360,11 +1399,39 @@ impl SharedKv for RedisBroker {
     }
 
     async fn take(&self, key: &str) -> Result<Option<Bytes>, BrokerError> {
+        let Some(ack) = self.cfg.replica_ack else {
+            let v: Option<Vec<u8>> = redis::cmd("GETDEL")
+                .arg(self.kv_key(key))
+                .query_async(&mut self.conn()?)
+                .await
+                .map_err(unavailable)?;
+            return Ok(v.map(Bytes::from));
+        };
+        // `WAIT` covers this connection's writes, and blocks it meanwhile.
+        let mut conn = self
+            .link
+            .acked()
+            .ok_or_else(|| BrokerError::Unavailable("not started".into()))?;
         let v: Option<Vec<u8>> = redis::cmd("GETDEL")
             .arg(self.kv_key(key))
-            .query_async(&mut self.conn()?)
+            .query_async(&mut conn)
             .await
             .map_err(unavailable)?;
+        if v.is_some() {
+            let got: i64 = redis::cmd("WAIT")
+                .arg(ack.replicas)
+                .arg(ack.timeout.as_millis() as u64)
+                .query_async(&mut conn)
+                .await
+                .map_err(unavailable)?;
+            if got < i64::from(ack.replicas) {
+                // A failover now could hand the ticket out again.
+                return Err(BrokerError::Unavailable(format!(
+                    "{got} of {} replicas acknowledged consuming the ticket",
+                    ack.replicas
+                )));
+            }
+        }
         Ok(v.map(Bytes::from))
     }
 }

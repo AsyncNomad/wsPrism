@@ -196,7 +196,28 @@ gateway:
   connections when it changes (tested: delivery resumes ~4.5 s after the
   primary's container is stopped). A promoted replica may lack the last
   writes: history rooms start a new epoch and clients are told, as after
-  any Redis restart. Not with TLS yet.
+  any Redis restart; nodes put their sessions and memberships back. Not
+  with TLS yet.
+- **Replica acknowledgement** (`replica_ack`): consuming a one-time ticket
+  is the one write a failover could undo without anything repairing it (a
+  promoted replica that missed it would accept the ticket again). So the
+  node waits (`WAIT`, on its own connection) until replicas have it:
+
+  ```yaml
+  broker:
+    replica_ack: { replicas: 1, timeout_ms: 500 }   # default with sentinel
+  ```
+
+  Fewer acknowledgements within `timeout_ms` = that login fails (503, fail
+  closed): with every replica down, ticket logins stop until one is back.
+  With one primary and one replica that includes the time after a
+  failover until the old primary returns as a replica; run two replicas
+  to keep logins going through a failover. Other logins (dev, JWT) and
+  connected sessions are not affected.
+  On by default with `sentinel`, off without (one Redis has no replica to
+  promote); `replicas: 0` turns it off. Other writes need no wait: history,
+  sessions, memberships and node slots are repaired after a failover (new
+  epoch, nodes register again).
 - **Scope:** one Redis (or one Sentinel-managed primary). No Redis Cluster
   yet; keys use Redis Cluster hash tags already (`wsp:r:{tenant::room}`),
   so Cluster support will not change them.

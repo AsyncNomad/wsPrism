@@ -8,6 +8,9 @@
 //! What a failover means for the data (a promoted replica may miss the last
 //! writes) is handled where the data is: a new `run_id` starts new history
 //! epochs and makes the nodes register again (ADR 0011 pre-release review).
+//! The one write that nothing repairs, a consumed one-time ticket, waits
+//! for replicas on its own connection (`acked`; `WAIT` blocks the
+//! connection it runs on).
 
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -36,6 +39,11 @@ pub(crate) struct Link {
     scripts: &'static [&'static str],
     conn: RwLock<Option<ConnectionManager>>,
     publish: RwLock<Option<ConnectionManager>>,
+    /// For writes followed by `WAIT` (only when replica acks are asked for).
+    acked: RwLock<Option<ConnectionManager>>,
+    /// The longest `WAIT` asked for: the `acked` connection's response
+    /// timeout leaves room for it. `None` = no `acked` connection.
+    acked_wait: Option<Duration>,
     /// The primary the connections point at (Sentinel mode).
     primary: RwLock<Option<String>>,
     moved: watch::Sender<u64>,
@@ -56,6 +64,7 @@ impl Link {
         locator: Locator,
         publish_timeout: Duration,
         scripts: &'static [&'static str],
+        acked_wait: Option<Duration>,
     ) -> Self {
         Self {
             locator,
@@ -63,6 +72,8 @@ impl Link {
             scripts,
             conn: RwLock::new(None),
             publish: RwLock::new(None),
+            acked: RwLock::new(None),
+            acked_wait,
             primary: RwLock::new(None),
             moved: watch::channel(0).0,
         }
@@ -104,6 +115,16 @@ impl Link {
                     .set_connection_timeout(Some(CONNECT_TIMEOUT)),
             )
             .await?;
+        if let Some(wait) = self.acked_wait {
+            let acked = client
+                .get_connection_manager_with_config(
+                    redis::aio::ConnectionManagerConfig::new()
+                        .set_response_timeout(Some(wait + CONNECT_TIMEOUT))
+                        .set_connection_timeout(Some(CONNECT_TIMEOUT)),
+                )
+                .await?;
+            write(&self.acked, acked);
+        }
         write(&self.conn, conn);
         write(&self.publish, publish);
         write(&self.primary, address(&client));
@@ -116,6 +137,11 @@ impl Link {
 
     pub(crate) fn publish(&self) -> Option<ConnectionManager> {
         read(&self.publish)
+    }
+
+    /// The connection for writes followed by `WAIT` (see `acked`).
+    pub(crate) fn acked(&self) -> Option<ConnectionManager> {
+        read(&self.acked)
     }
 
     /// Changes when the primary moved (pub/sub tasks reconnect).

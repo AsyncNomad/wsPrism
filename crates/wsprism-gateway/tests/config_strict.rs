@@ -219,3 +219,50 @@ tenants:
 fn err_has(e: &wsprism_protocol::error::WsPrismError, s: &str) -> bool {
     e.to_string().contains(s)
 }
+
+/// `replica_ack`: on by default with Sentinel only, `replicas: 0` turns it
+/// off, and its bounds are checked.
+#[test]
+fn replica_ack_defaults_and_bounds() {
+    let effective = |broker: &str| -> Result<Option<(u16, u64)>, String> {
+        let yaml = format!("version: 1\ngateway:\n  broker: {broker}\ntenants:\n  - id: t\n");
+        let cfg = config::load_from_str(&yaml).map_err(|e| e.to_string())?;
+        match &cfg.gateway.broker {
+            config::schema::BrokerConfig::Redis(r) => Ok(r
+                .effective_replica_ack()
+                .map(|a| (a.replicas, a.timeout_ms))),
+            other => panic!("{other:?}"),
+        }
+    };
+    let sentinel = r#"sentinel: { addresses: ["redis://s:26379"], master_name: m }"#;
+    assert_eq!(effective(r#"{ kind: redis, url: "redis://r" }"#), Ok(None));
+    assert_eq!(
+        effective(&format!(
+            r#"{{ kind: redis, url: "redis://r", {sentinel} }}"#
+        )),
+        Ok(Some((1, 500)))
+    );
+    assert_eq!(
+        effective(&format!(
+            r#"{{ kind: redis, url: "redis://r", {sentinel}, replica_ack: {{ replicas: 0 }} }}"#
+        )),
+        Ok(None)
+    );
+    assert_eq!(
+        effective(
+            r#"{ kind: redis, url: "redis://r", replica_ack: { replicas: 2, timeout_ms: 50 } }"#
+        ),
+        Ok(Some((2, 50)))
+    );
+    for bad in [
+        "{ replicas: 17 }",
+        "{ timeout_ms: 0 }",
+        "{ timeout_ms: 10001 }",
+    ] {
+        let e = effective(&format!(
+            r#"{{ kind: redis, url: "redis://r", replica_ack: {bad} }}"#
+        ))
+        .expect_err(bad);
+        assert!(e.contains("replica_ack"), "{e}");
+    }
+}

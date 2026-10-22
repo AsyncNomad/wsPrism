@@ -493,6 +493,40 @@ pub struct RedisBrokerConfig {
     /// used). Not with TLS yet.
     #[serde(default)]
     pub sentinel: Option<RedisSentinelConfig>,
+    /// Consuming a one-time ticket waits until replicas have it, so a
+    /// failover cannot accept it again. Default: on with `sentinel`
+    /// (1 replica, 500 ms), off without; `replicas: 0` turns it off.
+    #[serde(default)]
+    pub replica_ack: Option<RedisReplicaAckConfig>,
+}
+
+/// `gateway.broker.replica_ack`.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RedisReplicaAckConfig {
+    /// Replicas that must acknowledge, 0-16 (0 = do not wait).
+    #[serde(default = "default_ack_replicas")]
+    pub replicas: u16,
+    /// The longest wait, 1-10000 ms; past it the redemption fails (closed).
+    #[serde(default = "default_ack_timeout_ms")]
+    pub timeout_ms: u64,
+}
+
+impl Default for RedisReplicaAckConfig {
+    fn default() -> Self {
+        Self {
+            replicas: default_ack_replicas(),
+            timeout_ms: default_ack_timeout_ms(),
+        }
+    }
+}
+
+fn default_ack_replicas() -> u16 {
+    1
+}
+fn default_ack_timeout_ms() -> u64 {
+    500
 }
 
 /// `gateway.broker.sentinel`.
@@ -543,6 +577,16 @@ fn default_outbox_max_wait_ms() -> u64 {
 }
 
 impl RedisBrokerConfig {
+    /// `replica_ack` in effect: as set, else on with Sentinel (a failover
+    /// is expected) and off without. `None` = off.
+    pub fn effective_replica_ack(&self) -> Option<RedisReplicaAckConfig> {
+        match self.replica_ack {
+            Some(a) if a.replicas == 0 => None,
+            Some(a) => Some(a),
+            None => self.sentinel.is_some().then(RedisReplicaAckConfig::default),
+        }
+    }
+
     /// The URL (from `url` or the `url_env` variable).
     pub fn resolve_url(&self) -> Result<String> {
         match (&self.url, &self.url_env) {
@@ -578,6 +622,14 @@ impl RedisBrokerConfig {
             }
             if self.tls.is_some() {
                 return bad("sentinel with tls is not supported yet");
+            }
+        }
+        if let Some(a) = &self.replica_ack {
+            if a.replicas > 16 {
+                return bad("replica_ack.replicas must be 0-16");
+            }
+            if !(1..=10_000).contains(&a.timeout_ms) {
+                return bad("replica_ack.timeout_ms must be 1-10000");
             }
         }
         if let Some(t) = &self.tls {

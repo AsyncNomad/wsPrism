@@ -446,6 +446,12 @@ fn configured_broker(cfg: &BrokerConfig) -> Result<ConfiguredBroker> {
                     s.master_name.clone(),
                 ));
             }
+            if let Some(a) = r.effective_replica_ack() {
+                redis_cfg = redis_cfg.replica_ack(wsprism_redis::ReplicaAck::new(
+                    a.replicas,
+                    std::time::Duration::from_millis(a.timeout_ms),
+                ));
+            }
             let broker = wsprism_redis::RedisBroker::new(redis_cfg)
                 .map_err(|e| WsPrismError::BadRequest(format!("gateway.broker: {e}")))?;
             Ok(Some((

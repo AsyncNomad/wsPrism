@@ -84,6 +84,14 @@ jobs:
           eval "$(bench/redis-sentinel-test.sh)"
           sleep 3
           cargo test -p wsprism-gateway --locked --test cluster_sentinel
+      # Afresh (the test above stopped the primary); the replica is cut off
+      # while a ticket is redeemed, then promoted.
+      - name: Ticket once across a lagging Sentinel failover
+        run: |
+          bench/redis-sentinel-test.sh stop
+          eval "$(WSPRISM_SENTINEL_DOWN_AFTER_MS=5000 bench/redis-sentinel-test.sh)"
+          sleep 3
+          cargo test -p wsprism-gateway --locked --test cluster_sentinel_ticket
       - uses: actions/setup-node@v4
         with:
           node-version: 22

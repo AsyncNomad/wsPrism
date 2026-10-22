@@ -3,8 +3,13 @@
 # detected after 1 s) on an isolated docker network (--internal: no route
 # out) at fixed addresses, for the Sentinel failover test. Prints the
 # variables to export:
-#   eval "$(bench/redis-sentinel-test.sh)"   # WSPRISM_TEST_SENTINEL, ..._PRIMARY
+#   eval "$(bench/redis-sentinel-test.sh)"   # WSPRISM_TEST_SENTINEL, ..._PRIMARY, ..._REPLICA
 #   bench/redis-sentinel-test.sh stop
+# WSPRISM_SENTINEL_DOWN_AFTER_MS (default 1000): how long the primary must
+# be unreachable. Sentinel only promotes a replica whose link to the
+# primary has been down less than 10x that (plus the primary's down time);
+# a Sentinel in TILT mode (30 s, entered when its clock jumps, as WSL's
+# does) can push a replica past it, so the lagging-failover test uses 5000.
 set -euo pipefail
 NET=wsp-sentinel; SUBNET=172.30.78.0/24
 P=172.30.78.10; R=172.30.78.11; S=172.30.78.20
@@ -33,7 +38,7 @@ if ! docker container inspect wsp-sen-sentinel >/dev/null 2>&1; then
   cat > "$CONF_DIR/sentinel.conf" <<CONF
 port 26379
 sentinel monitor mymaster $P 6379 1
-sentinel down-after-milliseconds mymaster 1000
+sentinel down-after-milliseconds mymaster ${WSPRISM_SENTINEL_DOWN_AFTER_MS:-1000}
 sentinel failover-timeout mymaster 3000
 sentinel parallel-syncs mymaster 1
 CONF
@@ -48,3 +53,4 @@ for _ in $(seq 100); do
 done
 echo "export WSPRISM_TEST_SENTINEL=redis://$S:26379"
 echo "export WSPRISM_TEST_SENTINEL_PRIMARY=wsp-sen-primary"
+echo "export WSPRISM_TEST_SENTINEL_REPLICA=wsp-sen-replica"

@@ -77,7 +77,9 @@ the Rust API may break in 0.x minor releases, always listed here.
   older snapshot), Redis pause, stop while Redis is slow (docs/CLUSTER.md).
   Least-privilege ACL in docs/CONFIG.md. `rediss://` with a private CA and
   mutual TLS (`gateway.broker.tls`); a Sentinel-managed primary followed
-  across failovers (`gateway.broker.sentinel`). A randomized soak
+  across failovers (`gateway.broker.sentinel`); consuming a one-time
+  ticket waits for a replica (`gateway.broker.replica_ack`, on by default
+  with Sentinel) so a failover cannot accept it twice. A randomized soak
   (`sdk/js/test/soak.mjs`, manual CI workflow) mixes node and Redis faults
   and checks for silent loss.
 - Server API publish answers 503 + `Retry-After` when a cluster broker's queue
