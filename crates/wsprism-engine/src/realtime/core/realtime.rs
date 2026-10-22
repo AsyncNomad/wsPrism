@@ -1506,10 +1506,25 @@ impl RealtimeCtx {
     }
 
     /// Until this node's subscription to `rk` is in effect (at most 5 s).
-    async fn wait_subscribed(&self, rk: &str) {
-        if let Some(mut subscribed) = self.core.presence.subscribed(rk) {
-            let _ = tokio::time::timeout(SUBSCRIBE_WAIT, subscribed.wait_for(|s| *s)).await;
+    /// Past that (Redis stalled), the join fails instead of answering
+    /// `sys.joined` before this node receives the room: messages from other
+    /// nodes in between would be lost without a gap (0.2, review #3). The
+    /// member is removed again; the client may retry.
+    async fn wait_subscribed(&mut self, room: &str, rk: &str) -> Result<()> {
+        let Some(mut subscribed) = self.core.presence.subscribed(rk) else {
+            return Ok(());
+        };
+        let confirmed = matches!(
+            tokio::time::timeout(SUBSCRIBE_WAIT, subscribed.wait_for(|s| *s)).await,
+            Ok(Ok(_))
+        );
+        if confirmed {
+            return Ok(());
         }
+        self.leave_room(room);
+        Err(WsPrismError::Unavailable(
+            "the cluster did not confirm the room subscription; retry".into(),
+        ))
     }
 
     /// The `sys.joined` snapshot from the cluster's membership (tenants
@@ -1579,7 +1594,7 @@ impl RealtimeCtx {
             // event this node now gets).
             let joined = self.join_room(room)?;
             let rk = self.room_key(room).into_owned();
-            self.wait_subscribed(&rk).await;
+            self.wait_subscribed(room, &rk).await?;
             let outcome = JoinOutcome {
                 joined,
                 history: None,
@@ -1598,7 +1613,7 @@ impl RealtimeCtx {
         let rk = self.room_key(room).into_owned();
         // History read before this node receives the room would miss what
         // is published in between.
-        self.wait_subscribed(&rk).await;
+        self.wait_subscribed(room, &rk).await?;
         let (history, replay) = match self.core.broker.history(&rk, &keep, recover).await {
             Ok(r) => (
                 Some(HistoryPos {

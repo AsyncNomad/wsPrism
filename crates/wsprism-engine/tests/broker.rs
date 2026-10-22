@@ -433,8 +433,9 @@ async fn subscriptions_follow_rooms_exactly_under_races() {
 }
 
 /// Subscriptions queued together go out in one call (0.2: one at a time
-/// capped a node's joins), but never after a later frame of their room:
-/// this node's Ext frames reach its members through the subscription.
+/// capped a node's joins), and a later frame of their room waits for them
+/// (this node's Ext frames reach its members through the subscription)
+/// instead of flushing them early.
 #[tokio::test]
 async fn subscriptions_go_out_together_but_before_their_rooms_frames() {
     let n = node(0, OutboxLimits::default()).await;
@@ -464,9 +465,87 @@ async fn subscriptions_go_out_together_but_before_their_rooms_frames() {
             .unwrap_or_else(|| panic!("{e} in {events:?}"))
     };
     assert!(at("sub:t::r2") < at("pub:t::r2"), "{events:?}");
-    // r1-r3 together (flushed by the frame of r2), then r4.
-    assert_eq!(n.broker.sub_batches(), vec![1, 3, 1], "{events:?}");
+    // r1-r4 together; the frame of r2 after them.
+    assert_eq!(n.broker.sub_batches(), vec![1, 4], "{events:?}");
     quiet(&mut a).await;
+}
+
+/// With presence events, joins and leaves alternate membership changes and
+/// frames. Each room keeps its order (a `member_joined` after the
+/// membership it announces), but other rooms' items do not force a round
+/// trip each (0.2: every switch of kinds did, ~1 Redis round trip per join).
+#[tokio::test]
+async fn membership_changes_and_frames_keep_order_per_room_only() {
+    let n = node(0, OutboxLimits::default()).await;
+    let rooms = ["p1", "p2", "p3", "p4", "p5"];
+    let mut stay = client(&n, "t", "stay", true);
+    for r in rooms {
+        stay.ctx.join_room(r).unwrap();
+    }
+    settle().await;
+    // The drain task is held in a publish while the joins queue up.
+    n.broker.pause();
+    stay.ctx.publish_room_reliable("p1", text("hold")).unwrap();
+    settle().await;
+    let mut b = client(&n, "t", "b", true);
+    for r in rooms {
+        b.ctx.join_room(r).unwrap(); // add:<room>, then a member_joined frame
+    }
+    let before = n.broker.presence_batches().len();
+    n.broker.resume();
+    settle().await;
+
+    let events = n.broker.events();
+    for r in rooms {
+        let add = events
+            .iter()
+            .rposition(|e| *e == format!("add:t::{r}"))
+            .unwrap();
+        let joined = events
+            .iter()
+            .rposition(|e| *e == format!("pub:t::{r}"))
+            .unwrap();
+        assert!(add < joined, "{r}: {events:?}");
+    }
+    // b's five memberships went out together, not one per frame.
+    assert_eq!(n.broker.presence_batches()[before..], [5], "{events:?}");
+}
+
+/// A join whose room subscription is not confirmed within 5 s (Redis
+/// stalled) fails and leaves the room, instead of answering `sys.joined`
+/// before this node receives the room (review #3).
+#[tokio::test(start_paused = true)]
+async fn an_unconfirmed_subscription_fails_the_join() {
+    let n = node(0, OutboxLimits::default()).await;
+    let mut a = client(&n, "t", "a", false);
+    n.broker.set_subscription_delay(Duration::from_secs(30));
+    let r = a
+        .ctx
+        .join_room_cluster(
+            "slow",
+            None,
+            None,
+            |_, _| serde_json::json!({"joined": true}),
+        )
+        .await;
+    assert!(matches!(r, Err(WsPrismError::Unavailable(_))), "{r:?}");
+    assert!(!a.ctx.is_in_room("slow"));
+    // No sys.joined was sent.
+    assert!(a.rx.try_recv().is_err());
+
+    // Confirmed in time: joined.
+    n.broker.set_subscription_delay(Duration::ZERO);
+    tokio::time::sleep(Duration::from_secs(60)).await; // the slow command drains
+    a.ctx
+        .join_room_cluster(
+            "fast",
+            None,
+            None,
+            |_, _| serde_json::json!({"joined": true}),
+        )
+        .await
+        .unwrap();
+    assert!(a.ctx.is_in_room("fast"));
 }
 
 #[tokio::test]

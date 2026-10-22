@@ -27,3 +27,5 @@ testing = []
 [dev-dependencies]
 # Integration tests use the test brokers.
 wsprism-engine = { path = ".", features = ["testing"] }
+# Paused clock (`start_paused`) for timeouts measured in seconds.
+tokio = { workspace = true, features = ["test-util"] }

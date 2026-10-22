@@ -67,10 +67,12 @@ pub struct TestBroker {
     epochs: std::sync::atomic::AtomicU64,
     /// False after [`TestBroker::fence`].
     healthy: std::sync::atomic::AtomicBool,
-    /// `sub:<room>` / `unsub:<room>` / `pub:<room>` in the order applied.
+    /// `sub:` / `unsub:` / `pub:` / `add:` / `rm:<room>` in the order applied.
     events: Mutex<Vec<String>>,
     /// Sizes of the `subscriptions` calls.
     sub_batches: Mutex<Vec<usize>>,
+    /// Sizes of the presence `apply` calls.
+    presence_batches: Mutex<Vec<usize>>,
 }
 
 impl TestBroker {
@@ -101,6 +103,7 @@ impl TestBroker {
             healthy: std::sync::atomic::AtomicBool::new(true),
             events: Mutex::default(),
             sub_batches: Mutex::default(),
+            presence_batches: Mutex::default(),
         })
     }
 
@@ -207,10 +210,15 @@ impl TestBroker {
             .store(d.as_micros() as u64, Ordering::SeqCst);
     }
 
-    /// Subscriptions and publishes, in the order applied
-    /// (`sub:<room>`, `unsub:<room>`, `pub:<room>`).
+    /// Subscriptions, publishes and membership changes, in the order
+    /// applied (`sub:`, `unsub:`, `pub:`, `add:`, `rm:<room>`).
     pub fn events(&self) -> Vec<String> {
         lock(&self.events).clone()
+    }
+
+    /// How many membership changes each presence `apply` carried.
+    pub fn presence_batches(&self) -> Vec<usize> {
+        lock(&self.presence_batches).clone()
     }
 
     /// How many subscription changes each `subscriptions` call carried.
@@ -435,6 +443,11 @@ impl Broker for TestBroker {
 #[async_trait]
 impl super::SharedPresence for TestBroker {
     async fn apply(&self, ops: &[super::PresenceOp]) -> Result<(), BrokerError> {
+        lock(&self.presence_batches).push(ops.len());
+        lock(&self.events).extend(ops.iter().map(|op| match op {
+            super::PresenceOp::Add { room_key, .. } => format!("add:{room_key}"),
+            super::PresenceOp::Remove { room_key, .. } => format!("rm:{room_key}"),
+        }));
         let mut all = lock(&self.members);
         for op in ops {
             match op {
