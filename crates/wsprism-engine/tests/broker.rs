@@ -291,6 +291,26 @@ async fn a_full_outbox_refuses_reliable_and_drops_lossy() {
     quiet(&mut a).await;
 }
 
+/// A fenced node (its slot taken): Redis would refuse what it queues, so
+/// it refuses publishes up front instead of accepting and losing them.
+#[tokio::test]
+async fn a_fenced_node_refuses_publishes() {
+    let n = node(0, OutboxLimits::new(100, 100)).await;
+    let mut a = client(&n, "t", "a", false);
+    a.ctx.join_room("r").unwrap();
+    settle().await;
+    let _ = n.broker.take_published();
+    n.broker.fence();
+    let refused = a.ctx.publish_room_reliable("r", text("late"));
+    assert!(
+        matches!(refused, Err(WsPrismError::Unavailable(_))),
+        "{refused:?}"
+    );
+    settle().await;
+    assert!(n.broker.take_published().is_empty());
+    quiet(&mut a).await;
+}
+
 #[tokio::test]
 async fn one_tenant_cannot_take_another_tenants_share() {
     let n = node(0, OutboxLimits::new(100, 3)).await;

@@ -596,6 +596,14 @@ impl RealtimeCore {
         except: Option<&str>,
         keep: Option<Keep>,
     ) -> Result<usize> {
+        // Fenced (another node took this node's slot): Redis refuses all
+        // it sends, so a queued frame would be lost after a 200 / an
+        // accepted publish. Refuse it now; the server stops shortly.
+        if !self.broker.healthy() {
+            return Err(WsPrismError::Unavailable(
+                "this node lost its cluster slot; publish to another node".into(),
+            ));
+        }
         let hot = matches!(frame, OutFrame::Hot(_));
         let n = match (hot, except) {
             (true, None) => self.fan_out(room_key, &frame, &qos),

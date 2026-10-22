@@ -65,6 +65,8 @@ pub struct TestBroker {
     registered: std::sync::atomic::AtomicBool,
     arrivals: AtomicU64,
     epochs: std::sync::atomic::AtomicU64,
+    /// False after [`TestBroker::fence`].
+    healthy: std::sync::atomic::AtomicBool,
 }
 
 impl TestBroker {
@@ -92,6 +94,7 @@ impl TestBroker {
             registered: std::sync::atomic::AtomicBool::new(true),
             arrivals: AtomicU64::new(0),
             epochs: AtomicU64::new(1),
+            healthy: std::sync::atomic::AtomicBool::new(true),
         })
     }
 
@@ -198,6 +201,11 @@ impl TestBroker {
             .store(d.as_micros() as u64, Ordering::SeqCst);
     }
 
+    /// Pretend another node took this node's slot (`healthy()` false).
+    pub fn fence(&self) {
+        self.healthy.store(false, Ordering::Relaxed);
+    }
+
     /// Hold every publish call until [`TestBroker::resume`].
     pub fn pause(&self) {
         self.open.send_replace(false);
@@ -286,6 +294,10 @@ impl Broker for TestBroker {
 
     async fn start(&self) -> Result<u16, BrokerError> {
         Ok(self.slot)
+    }
+
+    fn healthy(&self) -> bool {
+        self.healthy.load(Ordering::Relaxed)
     }
 
     async fn publish(&self, batch: &[BrokerFrame]) -> Result<(), BrokerError> {
