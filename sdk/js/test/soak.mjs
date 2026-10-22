@@ -109,6 +109,14 @@ const p = prefix(`soak${seed}`);
 const proxies = [await startProxy(REDIS), await startProxy(REDIS), await startProxy(REDIS)];
 const nodes = [];
 for (const px of proxies) nodes.push(await startNode(p, undefined, px.url));
+/** Note when node `i` stops by itself (exit 1: fenced), not by a fault. */
+const watchExit = (i) => {
+  const proc = nodes[i].proc;
+  proc.once("exit", (code) => {
+    if (code === 1) note(`node ${i} exited by itself (fenced)`);
+  });
+};
+nodes.forEach((_, i) => watchExit(i));
 let fenced = 0;
 const recs = Array.from({ length: Number(opt.clients) }, (_, i) => recorder(nodes, `s${i}`, i % 3));
 await joinAll(recs);
@@ -124,6 +132,7 @@ async function ensureUp(i) {
   for (let attempt = 0; ; attempt++) {
     try {
       nodes[i] = await startNode(n.prefix, n.ports, n.redisUrl);
+      watchExit(i);
       return;
     } catch (e) {
       // e.g. Redis restarting right now: a node cannot start without it.

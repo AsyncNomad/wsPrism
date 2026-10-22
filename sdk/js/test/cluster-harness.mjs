@@ -168,7 +168,9 @@ export async function startProxy(targetUrl) {
  * While draining it may still answer; the backend keeps using it until it
  * stops, like a load balancer that has not noticed yet. */
 export async function stopNode(node) {
-  const exited = new Promise((r) => node.proc.once("exit", r));
+  // It may have stopped by itself already (fenced): "exit" will not fire again.
+  const gone = node.proc.exitCode !== null || node.proc.signalCode !== null;
+  const exited = gone ? Promise.resolve() : new Promise((r) => node.proc.once("exit", r));
   node.proc.kill("SIGTERM");
   await exited;
   node.alive = false;
