@@ -19,10 +19,17 @@
 //     (sys.gap / recovered:false) - the chaos tests' checker;
 //   - no silent loss: a message the backend got a 200 for and the client
 //     never received needs a gap announced between its acceptance and the
-//     moment the client moved past it (got a later message), or a kill -9
-//     of the node that accepted it within a second (its queue dies with
-//     it: "200 = queued on that node", docs/CLUSTER.md);
-//   - liveness: every client receives the whole final batch.
+//     moment the client moved past it (got a later message), or the
+//     loss of the accepting node's queue: a kill -9 within its queue's
+//     reach (1.5 s plus the link's delay both ways), or a fenced node
+//     (Redis refuses it; "200 = queued on that node", docs/CLUSTER.md).
+//     Times are monotonic (this WSL's wall clock steps back every 30 s);
+//   - liveness: every client receives the whole final batch;
+//   - joins (0.2, review #3): one prober per node joins and leaves three
+//     shared rooms over and over (subscriptions come and go); right after
+//     each join another node's server API publishes into the room, and the
+//     prober must get it unless it reconnected or was told of a gap
+//     meanwhile, or the publishing node lost its queue (kill -9, fenced).
 //
 //   WSPRISM_TEST_REDIS=$(bench/redis-test.sh) node sdk/js/test/soak.mjs [--minutes 5] [--seed N]
 //
@@ -34,9 +41,10 @@ import { parseArgs } from "node:util";
 import { writeFileSync } from "node:fs";
 
 import {
-  CONTAINER, REDIS, ROOM, check, docker, joinAll, killAll, prefix, recorder,
+  CONTAINER, REDIS, ROOM, anyNode, check, docker, joinAll, killAll, now, prefix, recorder,
   sleep, startNode, startProxy, stopNode,
 } from "./cluster-harness.mjs";
+import { WsPrismClient } from "../wsprism.js";
 
 const { values: opt } = parseArgs({
   options: {
@@ -68,11 +76,20 @@ const rand = rng(seed);
 const between = (lo, hi) => lo + Math.floor(rand() * (hi - lo + 1));
 const pick = (xs) => xs[Math.floor(rand() * xs.length)];
 
-const started = Date.now();
+const started = now();
 const timeline = [];
 const violations = [];
+// Where a node's queue may be lost, by design: what node `node` accepted
+// in [from, to] (server API 200 = "queued on that node", docs/CLUSTER.md).
+// kill -9: the last second before it. Fenced (its slot was taken while it
+// was frozen or cut off): what it accepted while it could not reach Redis —
+// Redis refuses everything from a fenced node.
+const queueLost = []; // { node, from, to }
+// How far back a node's queue may reach: the wait limit (1 s), the batch
+// in flight over its link (twice the link's added delay) and some slack.
+const queueSpan = (i) => 1500 + 2 * proxies[i].delayMs;
 const note = (what) => {
-  const at = ((Date.now() - started) / 1000).toFixed(1);
+  const at = ((now() - started) / 1000).toFixed(1);
   timeline.push(`${at}s ${what}`);
   if (process.env.SOAK_VERBOSE) console.error(`${at}s ${what}`);
 };
@@ -113,13 +130,80 @@ for (const px of proxies) nodes.push(await startNode(p, undefined, px.url));
 const watchExit = (i) => {
   const proc = nodes[i].proc;
   proc.once("exit", (code) => {
-    if (code === 1) note(`node ${i} exited by itself (fenced)`);
+    if (code === 1) {
+      // Fenced, whatever caused it (also a Redis that lost the slot keys
+      // while another node started): Redis refused its queue.
+      note(`node ${i} exited by itself (fenced)`);
+      queueLost.push({ node: i, from: now() - queueSpan(i) - 3000, to: now() });
+    }
   });
 };
 nodes.forEach((_, i) => watchExit(i));
 let fenced = 0;
 const recs = Array.from({ length: Number(opt.clients) }, (_, i) => recorder(nodes, `s${i}`, i % 3));
 await joinAll(recs);
+
+// --- probers: join, a publish from another node, leave ---------------------
+const probes = { ok: 0, late: 0, missing: [], skipped: 0 };
+let stopProbing = false;
+const within = (p, ms) => Promise.race([p, sleep(ms).then(() => Promise.reject(new Error("timeout")))]);
+const probers = [0, 1, 2].map((i) =>
+  (async () => {
+    const urls = nodes.map((n) => n.url);
+    const client = new WsPrismClient({
+      url: [...urls.slice(i), ...urls.slice(0, i)],
+      tenant: "t",
+      getTicket: async () => (await anyNode(nodes, "POST", "/api/v1/tickets", { user: `p${i}` })).ticket,
+      reconnect: { minDelayMs: 50, maxDelayMs: 300 },
+    });
+    const got = new Map(); // probe id -> arrival
+    const disturbed = []; // reconnects and gaps
+    client.on("message", (m) => {
+      if (m.svc === "server" && m.data?.probe) got.set(m.data.probe, now());
+    });
+    for (const e of ["gap", "rejoined", "reconnecting", "close"]) client.on(e, () => disturbed.push(now()));
+    client.on("error", () => {});
+    await client.connect();
+    for (let k = 0; !stopProbing; k++) {
+      const room = `probe:${(i + k) % 3}`;
+      try {
+        await within(client.join(room), 10000);
+      } catch (e) {
+        probes.firstError ??= `join: ${e.message}`;
+        probes.skipped += 1;
+        await sleep(200);
+        continue;
+      }
+      const joinedAt = now();
+      const id = `${i}-${k}`;
+      const pi = (i + 1 + (k % 2)) % 3; // another node's server API
+      let acceptedAt = 0;
+      if (nodes[pi].alive) {
+        try {
+          const r = await nodes[pi].call("POST", "/api/v1/publish", { room, data: { probe: id } });
+          if (r.status === 200) acceptedAt = now();
+          else probes.firstError ??= `publish: ${r.status} ${JSON.stringify(r.body)}`;
+        } catch (e) {
+          probes.firstError ??= `publish: ${e.message}`;
+        }
+      }
+      if (!acceptedAt) {
+        probes.skipped += 1;
+      } else {
+        const deadline = now() + 12000; // a blackhole holds up to 7 s
+        while (!got.has(id) && now() < deadline) await sleep(20);
+        if (!got.has(id)) probes.missing.push({ id, room, node: pi, joinedAt, acceptedAt, disturbed });
+        else if (got.get(id) - acceptedAt > 3000) probes.late += 1;
+        else probes.ok += 1;
+      }
+      got.delete(id);
+      try {
+        await within(client.leave(room), 10000);
+      } catch {}
+    }
+    client.close();
+  })(),
+);
 note(`seed=${seed} nodes=3 clients=${recs.length}`);
 
 /** Bring node `i` back on its ports if its process is gone. */
@@ -145,12 +229,6 @@ const exited = (n) => new Promise((r) => (n.proc.exitCode !== null || n.proc.sig
 
 // --- the backend ---------------------------------------------------------
 const acked = new Map(); // n -> { node index, at }
-// Where a node's queue may be lost, by design: what node `node` accepted
-// in [from, to] (server API 200 = "queued on that node", docs/CLUSTER.md).
-// kill -9: the last second before it. Fenced (its slot was taken while it
-// was frozen or cut off): what it accepted while it could not reach Redis —
-// Redis refuses everything from a fenced node.
-const queueLost = []; // { node, from, to }
 let stopPublishing = false;
 let nextN = 1;
 async function publishOne(n) {
@@ -161,7 +239,7 @@ async function publishOne(n) {
       try {
         const r = await nodes[i].call("POST", "/api/v1/publish", { room: ROOM, data: { n } });
         if (r.status === 200) {
-          acked.set(n, { node: i, at: Date.now() });
+          acked.set(n, { node: i, at: now() });
           return;
         }
       } catch {}
@@ -182,7 +260,7 @@ const nodeFaults = {
     const i = between(0, 2);
     note(`kill -9 node ${i}`);
     nodes[i].alive = false;
-    queueLost.push({ node: i, from: Date.now() - 1000, to: Date.now() });
+    queueLost.push({ node: i, from: now() - queueSpan(i), to: now() });
     nodes[i].proc.kill("SIGKILL");
     await exited(nodes[i]);
     await sleep(between(300, 3000));
@@ -202,7 +280,7 @@ const nodeFaults = {
     const ms = pick([between(300, 2000), between(4000, 7000)]); // slot_ttl_s is 3
     note(`SIGSTOP node ${i} for ${ms} ms`);
     nodes[i].alive = false;
-    const at = Date.now();
+    const at = now();
     nodes[i].proc.kill("SIGSTOP");
     await sleep(ms);
     nodes[i].proc.kill("SIGCONT");
@@ -224,7 +302,7 @@ const nodeFaults = {
     note(`SIGSTOP node ${i}; a newcomer takes its slot`);
     const before = slotKeys();
     nodes[i].alive = false;
-    const at = Date.now();
+    const at = now();
     nodes[i].proc.kill("SIGSTOP");
     await sleep(3600); // slot_ttl_s is 3
     const after = slotKeys();
@@ -282,14 +360,14 @@ const linkFaults = {
     const i = between(0, 2);
     const dur = pick([between(300, 2000), between(4000, 7000)]); // slot_ttl_s is 3
     note(`node ${i} <-> Redis: blackhole for ${dur} ms`);
-    const from = Date.now() - 1000;
+    const from = now() - 1000;
     proxies[i].blackhole(true);
     await sleep(dur);
     proxies[i].blackhole(false);
     await sleep(1000);
     if (nodes[i].proc.exitCode !== null) {
       note(`node ${i} stopped itself after the partition`);
-      queueLost.push({ node: i, from, to: Date.now() });
+      queueLost.push({ node: i, from, to: now() });
     }
     await ensureUp(i);
   },
@@ -333,7 +411,7 @@ const names = Object.keys(all);
 
 const until = started + minutes * 60_000;
 let faults = 0;
-while (Date.now() < until) {
+while (now() < until) {
   await sleep(between(1000, 5000));
   if (rand() < 0.2) {
     // Two at once, one of them on a node.
@@ -350,6 +428,7 @@ while (Date.now() < until) {
 
 // --- recovery and the final batch ----------------------------------------
 note("faults stop");
+stopProbing = true;
 for (let i = 0; i < nodes.length; i++) await ensureUp(i);
 await sleep(20000); // reconciliation (15 s) and reconnects settle
 stopPublishing = true;
@@ -359,11 +438,19 @@ const finalCount = Number(opt.final);
 for (let n = firstFinal; n < firstFinal + finalCount; n++) await publishOne(n);
 nextN = firstFinal + finalCount;
 note(`final batch ${firstFinal}..${nextN - 1}`);
-const deadline = Date.now() + 60000;
+const deadline = now() + 60000;
 const gotFinal = (r) => new Set(r.events.filter((e) => !e.gap && e.n >= firstFinal).map((e) => e.n)).size;
-while (Date.now() < deadline && !recs.every((r) => gotFinal(r) === finalCount)) await sleep(200);
+while (now() < deadline && !recs.every((r) => gotFinal(r) === finalCount)) await sleep(200);
 
 // --- verdict ---------------------------------------------------------------
+await Promise.all(probers);
+let probesExempt = 0;
+for (const m of probes.missing) {
+  const reconnected = m.disturbed.some((t) => t >= m.joinedAt - 1000 && t <= m.acceptedAt + 12000);
+  const lostQueue = queueLost.some((q) => q.node === m.node && m.acceptedAt >= q.from && m.acceptedAt <= q.to);
+  if (reconnected || lostQueue) probesExempt += 1;
+  else violations.push(`prober: joined ${m.room}, then ${m.id} published on node ${m.node} never arrived (no reconnect, gap or lost queue)`);
+}
 let queueLostCount = 0; // missing at the first client, exempted above
 for (const r of recs) {
   try {
@@ -407,6 +494,14 @@ const summary = {
   gaps_announced: recs.reduce((s, r) => s + r.events.filter((e) => e.gap).length, 0),
   fenced,
   lost_with_a_queue: queueLostCount,
+  probes: {
+    ok: probes.ok,
+    late: probes.late,
+    exempt: probesExempt,
+    skipped: probes.skipped,
+    missing: probes.missing.length,
+    first_error: probes.firstError,
+  },
   violations,
 };
 console.log(JSON.stringify(summary, null, 2));

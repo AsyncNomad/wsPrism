@@ -21,6 +21,9 @@ export const CONTAINER = process.env.WSPRISM_TEST_REDIS_CONTAINER ?? "wsp-redis"
 export const API_KEY = "chaos-key";
 export const ROOM = "chaos:1";
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/** Milliseconds on a monotonic clock. Not `Date.now()`: this WSL's wall
+ * clock steps back ~2 s every 30 s, which skewed the soak's time windows. */
+export const now = () => performance.now();
 export const skip = REDIS ? false : "WSPRISM_TEST_REDIS not set";
 
 export function freePort() {
@@ -114,15 +117,15 @@ export async function startProxy(targetUrl) {
     let timer = null;
     const pump = () => {
       timer = null;
-      while (queue.length && queue[0].due <= Date.now()) {
+      while (queue.length && queue[0].due <= now()) {
         const chunk = queue.shift().chunk;
         if (state.blackhole) state.held.push(() => to.writable && to.write(chunk));
         else if (to.writable) to.write(chunk);
       }
-      if (queue.length) timer = setTimeout(pump, queue[0].due - Date.now());
+      if (queue.length) timer = setTimeout(pump, queue[0].due - now());
     };
     return (chunk) => {
-      queue.push({ chunk, due: Date.now() + state.delay });
+      queue.push({ chunk, due: now() + state.delay });
       if (!timer) pump();
     };
   };
@@ -146,6 +149,10 @@ export async function startProxy(targetUrl) {
     url: `redis://127.0.0.1:${port}`,
     delay(ms) {
       state.delay = ms;
+    },
+    /** The delay now (ms). */
+    get delayMs() {
+      return state.delay;
     },
     blackhole(on) {
       state.blackhole = on;
@@ -184,7 +191,7 @@ export async function restartNode(nodes, i) {
 
 /** Ask any live node's server API; retries until one answers 200. */
 export async function anyNode(nodes, method, path, body, deadlineMs = 20000) {
-  const end = Date.now() + deadlineMs;
+  const end = now() + deadlineMs;
   for (;;) {
     for (const n of nodes.filter((n) => n.alive)) {
       try {
@@ -192,7 +199,7 @@ export async function anyNode(nodes, method, path, body, deadlineMs = 20000) {
         if (r.status === 200) return r.body;
       } catch {}
     }
-    if (Date.now() > end) throw new Error(`no node answered ${path}`);
+    if (now() > end) throw new Error(`no node answered ${path}`);
     await sleep(50);
   }
 }
@@ -211,12 +218,12 @@ export function recorder(nodes, name, first) {
   });
   const rec = { name, client, events: [], reconnects: 0 };
   client.on("message", (m) => {
-    if (m.svc === "server" && m.room === ROOM) rec.events.push({ offset: m.offset, epoch: m.epoch, n: m.data.n, at: Date.now() });
+    if (m.svc === "server" && m.room === ROOM) rec.events.push({ offset: m.offset, epoch: m.epoch, n: m.data.n, at: now() });
   });
-  client.on("gap", (g) => rec.events.push({ gap: true, epoch: g.epoch, at: Date.now() }));
+  client.on("gap", (g) => rec.events.push({ gap: true, epoch: g.epoch, at: now() }));
   client.on("rejoined", (rooms) => {
     rec.reconnects += 1;
-    for (const r of rooms) if (r.recovered === false) rec.events.push({ gap: true, unrecovered: true, at: Date.now() });
+    for (const r of rooms) if (r.recovered === false) rec.events.push({ gap: true, unrecovered: true, at: now() });
   });
   return rec;
 }
@@ -265,9 +272,9 @@ export async function publish(nodes, from, to, gapMs = 0) {
 }
 
 export async function until(cond, ms, what, recs = []) {
-  const end = Date.now() + ms;
+  const end = now() + ms;
   while (!cond()) {
-    if (Date.now() > end) {
+    if (now() > end) {
       const state = recs.map((r) => {
         const msgs = r.events.filter((e) => !e.gap);
         const gaps = r.events.filter((e) => e.gap).map((e) => (e.unrecovered ? "unrecovered" : e.epoch ? `epoch@${msgs.length}` : `gap@${msgs.length}`));
@@ -280,7 +287,7 @@ export async function until(cond, ms, what, recs = []) {
 }
 
 export const lastOffset = (rec) => rec.events.filter((e) => !e.gap).at(-1)?.offset;
-export const prefix = (name) => `chaos${Date.now() % 1e8}-${name}`;
+export const prefix = (name) => `chaos${Date.now() % 1e8}-${name}`; // wall clock: unique names
 
 export async function cluster(name) {
   const p = prefix(name);
