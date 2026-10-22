@@ -432,6 +432,43 @@ async fn subscriptions_follow_rooms_exactly_under_races() {
         .any(|c| matches!(c, Subscription::Unsubscribe(_))));
 }
 
+/// Subscriptions queued together go out in one call (0.2: one at a time
+/// capped a node's joins), but never after a later frame of their room:
+/// this node's Ext frames reach its members through the subscription.
+#[tokio::test]
+async fn subscriptions_go_out_together_but_before_their_rooms_frames() {
+    let n = node(0, OutboxLimits::default()).await;
+    let mut a = client(&n, "t", "a", false);
+    a.ctx.join_room("first").unwrap();
+    settle().await;
+    // The drain task is held in a publish while the rest queues up.
+    n.broker.pause();
+    a.ctx.publish_room_reliable("first", text("hold")).unwrap();
+    settle().await;
+    for r in ["r1", "r2", "r3"] {
+        a.ctx.join_room(r).unwrap();
+    }
+    a.ctx.publish_room_reliable("r2", text("to r2")).unwrap();
+    a.ctx.join_room("r4").unwrap();
+    n.broker.resume();
+    for _ in ["hold", "to r2"] {
+        let _ = recv_text(&mut a).await;
+    }
+    settle().await;
+
+    let events = n.broker.events();
+    let at = |e: &str| {
+        events
+            .iter()
+            .position(|x| x == e)
+            .unwrap_or_else(|| panic!("{e} in {events:?}"))
+    };
+    assert!(at("sub:t::r2") < at("pub:t::r2"), "{events:?}");
+    // r1-r3 together (flushed by the frame of r2), then r4.
+    assert_eq!(n.broker.sub_batches(), vec![1, 3, 1], "{events:?}");
+    quiet(&mut a).await;
+}
+
 #[tokio::test]
 async fn member_ids_carry_the_node_slot() {
     let n = node(5, OutboxLimits::default()).await;

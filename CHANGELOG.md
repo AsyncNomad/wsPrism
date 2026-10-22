@@ -82,6 +82,10 @@ the Rust API may break in 0.x minor releases, always listed here.
   with Sentinel) so a failover cannot accept it twice. A randomized soak
   (`sdk/js/test/soak.mjs`, manual CI workflow) mixes node and Redis faults
   and checks for silent loss.
+- Cluster: joining rooms new to a node is 8-10x faster (subscriptions go
+  out together and pipelined instead of one at a time; ~30k sessions/s
+  per node on loopback, was ~3,600). `Broker::subscriptions` (default:
+  one by one). Load generator `churn` mode and `bench/run-churn.sh`.
 - Server API publish answers 503 + `Retry-After` when a cluster broker's queue
   is full.
 - Operations: `--log-format json` (`WSPRISM_LOG_FORMAT`) writes one JSON

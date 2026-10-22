@@ -506,6 +506,9 @@ fn history_keys(prefix: &str, room_key: &str) -> [String; 2] {
     ["st", "log"].map(|k| format!("{prefix}:h:{{{room_key}}}:{k}"))
 }
 
+/// Subscription commands one subscriber connection pipelines at most.
+const SUB_PIPELINE: usize = 1024;
+
 struct ShardCmd {
     sub: Subscription,
     ack: oneshot::Sender<Result<(), BrokerError>>,
@@ -904,6 +907,60 @@ impl Broker for RedisBroker {
             let _: i64 = redis::cmd("SREM")
                 .arg(self.nr_key(&self.node_id))
                 .arg(&**room)
+                .query_async(&mut self.conn()?)
+                .await
+                .map_err(unavailable)?;
+        }
+        Ok(())
+    }
+
+    /// Each to its room's subscriber connection, all at once (rooms on
+    /// different connections run concurrently; each connection pipelines
+    /// what it was handed, in order). Then one `SREM` for the rooms this
+    /// node left — those whose last change here is an unsubscribe: a room
+    /// left and joined again in the same batch is in the index again (its
+    /// membership change, applied before, added it).
+    async fn subscriptions(&self, cmds: &[Subscription]) -> Result<(), BrokerError> {
+        let shards = self
+            .shards
+            .get()
+            .ok_or_else(|| BrokerError::Unavailable("not started".into()))?;
+        let stopped = || BrokerError::Unavailable("subscriber stopped".into());
+        let mut acks = Vec::with_capacity(cmds.len());
+        let mut last: std::collections::HashMap<&str, bool> = std::collections::HashMap::new();
+        for cmd in cmds {
+            let (room, sub) = match cmd {
+                Subscription::Subscribe(r) => (r, true),
+                Subscription::Unsubscribe(r) => (r, false),
+                _ => continue,
+            };
+            last.insert(room, sub);
+            let (ack, done) = oneshot::channel();
+            shards[self.shard_of(room, shards.len())]
+                .send(ShardCmd {
+                    sub: cmd.clone(),
+                    ack,
+                })
+                .map_err(|_| stopped())?;
+            acks.push(done);
+        }
+        let mut failed = None;
+        for done in acks {
+            if let Err(e) = done.await.map_err(|_| stopped()).and_then(|r| r) {
+                failed.get_or_insert(e);
+            }
+        }
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        let left: Vec<&str> = last
+            .into_iter()
+            .filter_map(|(room, sub)| (!sub).then_some(room))
+            .collect();
+        if !left.is_empty() {
+            let _: i64 = redis::cmd("SREM")
+                .arg(self.nr_key(&self.node_id))
+                .arg(&left)
                 .query_async(&mut self.conn()?)
                 .await
                 .map_err(unavailable)?;
@@ -1544,19 +1601,45 @@ async fn run_shard(
                 _ = moved.changed() => break,
                 cmd = cmds.recv() => {
                     let Some(cmd) = cmd else { return };
-                    let result = match &cmd.sub {
-                        Subscription::Subscribe(r) => sink.subscribe(channel(r)).await.map(|()| {
-                            rooms.insert(Arc::clone(r));
-                        }),
-                        Subscription::Unsubscribe(r) => sink.unsubscribe(channel(r)).await.map(|()| {
-                            rooms.remove(r);
-                        }),
-                        _ => Ok(()),
-                    };
-                    let failed = result.is_err();
-                    let _ = cmd.ack.send(result.map_err(unavailable));
+                    // Everything handed over meanwhile goes out pipelined:
+                    // one command per channel (a multi-channel SUBSCRIBE
+                    // gets one reply per channel, and the client would match
+                    // the extra ones to later requests), sent in order.
+                    let mut batch = vec![cmd];
+                    while batch.len() < SUB_PIPELINE {
+                        match cmds.try_recv() {
+                            Ok(c) => batch.push(c),
+                            Err(_) => break,
+                        }
+                    }
+                    let results = futures_util::future::join_all(batch.iter().map(|c| {
+                        let mut sink = sink.clone();
+                        let sub = c.sub.clone();
+                        async move {
+                            match &sub {
+                                Subscription::Subscribe(r) => sink.subscribe(channel(r)).await,
+                                Subscription::Unsubscribe(r) => sink.unsubscribe(channel(r)).await,
+                                _ => Ok(()),
+                            }
+                        }
+                    }))
+                    .await;
+                    let mut failed = false;
+                    for (c, result) in batch.into_iter().zip(results) {
+                        match (&c.sub, &result) {
+                            (Subscription::Subscribe(r), Ok(())) => {
+                                rooms.insert(Arc::clone(r));
+                            }
+                            (Subscription::Unsubscribe(r), Ok(())) => {
+                                rooms.remove(r);
+                            }
+                            _ => {}
+                        }
+                        failed |= result.is_err();
+                        let _ = c.ack.send(result.map_err(unavailable));
+                    }
                     if failed {
-                        break; // reconnect; the engine retries the command
+                        break; // reconnect; the engine retries the commands
                     }
                 }
                 msg = stream.next() => {

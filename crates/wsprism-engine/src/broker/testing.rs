@@ -67,6 +67,10 @@ pub struct TestBroker {
     epochs: std::sync::atomic::AtomicU64,
     /// False after [`TestBroker::fence`].
     healthy: std::sync::atomic::AtomicBool,
+    /// `sub:<room>` / `unsub:<room>` / `pub:<room>` in the order applied.
+    events: Mutex<Vec<String>>,
+    /// Sizes of the `subscriptions` calls.
+    sub_batches: Mutex<Vec<usize>>,
 }
 
 impl TestBroker {
@@ -95,6 +99,8 @@ impl TestBroker {
             arrivals: AtomicU64::new(0),
             epochs: AtomicU64::new(1),
             healthy: std::sync::atomic::AtomicBool::new(true),
+            events: Mutex::default(),
+            sub_batches: Mutex::default(),
         })
     }
 
@@ -199,6 +205,17 @@ impl TestBroker {
     pub fn set_subscription_delay(&self, d: Duration) {
         self.subscription_delay_us
             .store(d.as_micros() as u64, Ordering::SeqCst);
+    }
+
+    /// Subscriptions and publishes, in the order applied
+    /// (`sub:<room>`, `unsub:<room>`, `pub:<room>`).
+    pub fn events(&self) -> Vec<String> {
+        lock(&self.events).clone()
+    }
+
+    /// How many subscription changes each `subscriptions` call carried.
+    pub fn sub_batches(&self) -> Vec<usize> {
+        lock(&self.sub_batches).clone()
     }
 
     /// Pretend another node took this node's slot (`healthy()` false).
@@ -311,6 +328,7 @@ impl Broker for TestBroker {
             return Err(BrokerError::Rejected("injected".into()));
         }
         lock(&self.published).extend(batch.iter().cloned());
+        lock(&self.events).extend(batch.iter().map(|f| format!("pub:{}", f.room_key)));
         for f in batch {
             let kept;
             let f = match &f.keep {
@@ -346,6 +364,18 @@ impl Broker for TestBroker {
             self.anomalies.fetch_add(1, Ordering::SeqCst);
         }
         lock(&self.commands).push(cmd.clone());
+        lock(&self.events).push(match cmd {
+            Subscription::Subscribe(r) => format!("sub:{r}"),
+            Subscription::Unsubscribe(r) => format!("unsub:{r}"),
+        });
+        Ok(())
+    }
+
+    async fn subscriptions(&self, cmds: &[Subscription]) -> Result<(), BrokerError> {
+        lock(&self.sub_batches).push(cmds.len());
+        for cmd in cmds {
+            self.subscription(cmd).await?;
+        }
         Ok(())
     }
 

@@ -3,7 +3,8 @@
 //! publishes, drained by one task.
 //!
 //! One FIFO per tenant, drained in turn (0.2): a tenant's items keep their
-//! order (frames, subscriptions and membership changes of its rooms), and a
+//! order where it matters (see `run_outbox`: subscriptions go out together,
+//! ahead of a later frame of their room), and a
 //! light tenant's items no longer wait behind a flooding tenant's backlog
 //! (measured: BENCHMARKS "tenant fairness"). The wait limit is per tenant
 //! too, so only the tenant that falls behind is refused.
@@ -275,12 +276,23 @@ const RETRY_MAX: Duration = Duration::from_secs(2);
 
 /// The outbox's drain task: hands frames and commands to the broker in
 /// order. Runs until aborted.
+///
+/// Order is kept where it matters: frames and membership changes in queue
+/// order (a kind switch flushes the other kind), and subscriptions before a
+/// later frame of their room (this node's Ext frames reach its members
+/// through its subscription). Subscriptions otherwise wait and go out
+/// together (0.2: one at a time, each after a flush, capped a node at
+/// ~3,200 room subscriptions/s whatever Redis could do; BENCHMARKS
+/// "session churn"). Their own room's earlier frames and membership
+/// changes go out first. A membership change may land before its room's
+/// subscription: other nodes then list a member whose node is not
+/// receiving yet, as they would for the moment between its join and its
+/// subscription anyway; the join answers only after the subscription.
 pub(crate) async fn run_outbox(outbox: Arc<BrokerOutbox>, broker: Arc<dyn Broker>) {
     let mut items = Vec::with_capacity(BATCH);
-    // Runs of frames and of membership changes go out as one call each;
-    // switching kinds flushes the other, so the order is kept.
     let mut frames = Vec::with_capacity(BATCH);
     let mut ops = Vec::new();
+    let mut subs = Subs::default();
     loop {
         outbox.take(&mut items, BATCH);
         if items.is_empty() {
@@ -290,6 +302,9 @@ pub(crate) async fn run_outbox(outbox: Arc<BrokerOutbox>, broker: Arc<dyn Broker
         for item in items.drain(..) {
             match item {
                 Item::Frame(f, _) => {
+                    if subs.has(&f.room_key) {
+                        subs.flush(&outbox, &*broker, &mut frames, &mut ops).await;
+                    }
                     apply_presence(&outbox, &*broker, &mut ops).await;
                     frames.push(f);
                 }
@@ -297,19 +312,74 @@ pub(crate) async fn run_outbox(outbox: Arc<BrokerOutbox>, broker: Arc<dyn Broker
                     publish(&outbox, &*broker, &mut frames).await;
                     ops.push(op);
                 }
-                Item::Sub(cmd, done) => {
-                    publish(&outbox, &*broker, &mut frames).await;
-                    apply_presence(&outbox, &*broker, &mut ops).await;
-                    retry(&outbox, 1, || broker.subscription(&cmd)).await;
-                    if let Some(done) = done {
-                        done.send_replace(true);
-                    }
-                }
+                Item::Sub(cmd, done) => subs.push(cmd, done),
             }
         }
         publish(&outbox, &*broker, &mut frames).await;
         apply_presence(&outbox, &*broker, &mut ops).await;
+        subs.flush(&outbox, &*broker, &mut frames, &mut ops).await;
         outbox.busy.store(0, Ordering::Release);
+    }
+}
+
+/// Subscription changes waiting to go out together (see [`run_outbox`]).
+#[derive(Default)]
+struct Subs {
+    cmds: Vec<Subscription>,
+    done: Vec<Subscribed>,
+    rooms: std::collections::HashSet<Arc<str>>,
+}
+
+fn sub_room(cmd: &Subscription) -> &Arc<str> {
+    match cmd {
+        Subscription::Subscribe(r) | Subscription::Unsubscribe(r) => r,
+    }
+}
+
+fn op_room(op: &super::PresenceOp) -> &Arc<str> {
+    match op {
+        super::PresenceOp::Add { room_key, .. } | super::PresenceOp::Remove { room_key, .. } => {
+            room_key
+        }
+    }
+}
+
+impl Subs {
+    fn has(&self, room: &Arc<str>) -> bool {
+        !self.cmds.is_empty() && self.rooms.contains(room)
+    }
+
+    fn push(&mut self, cmd: Subscription, done: Option<Subscribed>) {
+        self.rooms.insert(Arc::clone(sub_room(&cmd)));
+        self.cmds.push(cmd);
+        self.done.extend(done);
+    }
+
+    /// Apply them all: first the pending frames or membership changes of
+    /// their rooms (queued before them, or a membership change after; see
+    /// [`run_outbox`]), then the subscriptions, then tell the joins.
+    async fn flush(
+        &mut self,
+        outbox: &BrokerOutbox,
+        broker: &dyn Broker,
+        frames: &mut Vec<BrokerFrame>,
+        ops: &mut Vec<super::PresenceOp>,
+    ) {
+        if self.cmds.is_empty() {
+            return;
+        }
+        if frames.iter().any(|f| self.rooms.contains(&f.room_key)) {
+            publish(outbox, broker, frames).await;
+        }
+        if ops.iter().any(|op| self.rooms.contains(op_room(op))) {
+            apply_presence(outbox, broker, ops).await;
+        }
+        retry(outbox, self.cmds.len(), || broker.subscriptions(&self.cmds)).await;
+        for done in self.done.drain(..) {
+            done.send_replace(true);
+        }
+        self.cmds.clear();
+        self.rooms.clear();
     }
 }
 

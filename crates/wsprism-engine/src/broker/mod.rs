@@ -240,6 +240,17 @@ pub trait Broker: Send + Sync + 'static {
     /// Apply one subscription change. Queued mode only.
     async fn subscription(&self, cmd: &Subscription) -> Result<(), BrokerError>;
 
+    /// Apply several, in order for each room (different rooms are
+    /// independent, so a broker may apply them concurrently). On an error
+    /// the engine retries all of them: changes must be idempotent.
+    /// Default: one by one.
+    async fn subscriptions(&self, cmds: &[Subscription]) -> Result<(), BrokerError> {
+        for cmd in cmds {
+            self.subscription(cmd).await?;
+        }
+        Ok(())
+    }
+
     /// A history room's position (`from` = `None`) or what was missed after
     /// `from` (ADR 0011 §3). Queued brokers that keep history implement it;
     /// the engine never calls it otherwise.
