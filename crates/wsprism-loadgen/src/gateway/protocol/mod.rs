@@ -64,7 +64,7 @@ pub trait Protocol: Send + Sync + 'static {
 
 /// Open a WebSocket with TCP_NODELAY, like browsers, so client-side Nagle
 /// delays don't pollute the measured latency.
-async fn open(req: Request) -> Result<Ws, String> {
+pub(in crate::gateway) async fn open(req: Request) -> Result<Ws, String> {
     let connect = tokio_tungstenite::connect_async_with_config(req, None, true);
     let (ws, _) = tokio::time::timeout(SETUP_TIMEOUT, connect)
         .await
@@ -75,7 +75,7 @@ async fn open(req: Request) -> Result<Ws, String> {
 
 /// Read text messages until `pick` returns `Some(Ok)` / `Some(Err)`, within
 /// the setup deadline. Each text frame is passed whole.
-async fn await_text<T>(
+pub(in crate::gateway) async fn await_text<T>(
     ws: &mut Ws,
     what: &str,
     mut pick: impl FnMut(&str) -> Option<Result<T, String>>,

@@ -8,6 +8,7 @@
 //! Only the wire protocol differs per gateway (`protocol/`); the scenario,
 //! timing and report are shared. See `docs/BENCHMARKS.md`.
 
+pub mod churn;
 mod client;
 mod probe;
 mod protocol;
