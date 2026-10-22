@@ -4,7 +4,11 @@
 // random sequence of faults - sometimes two at once:
 //
 //   node: kill -9 / graceful stop / short freeze / freeze past the slot TTL
-//         (fencing) - each followed by a restart when the node is gone
+//         / freeze while another node leases its slot (fencing) - each
+//         followed by a restart when the node is gone
+//   node <-> Redis link (one node's own proxy): latency, a blackhole that
+//         keeps connections open (a peer that vanished; past the slot TTL
+//         the node is taken for dead), connection resets
 //   Redis: pause (ALL or WRITE), restart empty, restart from an older
 //          snapshot, drop every pub/sub connection, drop every command
 //          connection
@@ -27,10 +31,11 @@
 // violation. Nothing leaves the machine.
 
 import { parseArgs } from "node:util";
+import { writeFileSync } from "node:fs";
 
 import {
   CONTAINER, REDIS, ROOM, check, docker, joinAll, killAll, prefix, recorder,
-  sleep, startNode, stopNode,
+  sleep, startNode, startProxy, stopNode,
 } from "./cluster-harness.mjs";
 
 const { values: opt } = parseArgs({
@@ -65,6 +70,7 @@ const pick = (xs) => xs[Math.floor(rand() * xs.length)];
 
 const started = Date.now();
 const timeline = [];
+const violations = [];
 const note = (what) => {
   const at = ((Date.now() - started) / 1000).toFixed(1);
   timeline.push(`${at}s ${what}`);
@@ -99,7 +105,11 @@ dropSnapshot();
 
 // --- cluster and clients -------------------------------------------------
 const p = prefix(`soak${seed}`);
-const nodes = [await startNode(p), await startNode(p), await startNode(p)];
+// Each node reaches Redis through its own fault proxy.
+const proxies = [await startProxy(REDIS), await startProxy(REDIS), await startProxy(REDIS)];
+const nodes = [];
+for (const px of proxies) nodes.push(await startNode(p, undefined, px.url));
+let fenced = 0;
 const recs = Array.from({ length: Number(opt.clients) }, (_, i) => recorder(nodes, `s${i}`, i % 3));
 await joinAll(recs);
 note(`seed=${seed} nodes=3 clients=${recs.length}`);
@@ -113,7 +123,7 @@ async function ensureUp(i) {
   }
   for (let attempt = 0; ; attempt++) {
     try {
-      nodes[i] = await startNode(n.prefix, n.ports);
+      nodes[i] = await startNode(n.prefix, n.ports, n.redisUrl);
       return;
     } catch (e) {
       // e.g. Redis restarting right now: a node cannot start without it.
@@ -126,7 +136,12 @@ const exited = (n) => new Promise((r) => (n.proc.exitCode !== null || n.proc.sig
 
 // --- the backend ---------------------------------------------------------
 const acked = new Map(); // n -> { node index, at }
-const killedAt = []; // { node, at } of kill -9
+// Where a node's queue may be lost, by design: what node `node` accepted
+// in [from, to] (server API 200 = "queued on that node", docs/CLUSTER.md).
+// kill -9: the last second before it. Fenced (its slot was taken while it
+// was frozen or cut off): what it accepted while it could not reach Redis —
+// Redis refuses everything from a fenced node.
+const queueLost = []; // { node, from, to }
 let stopPublishing = false;
 let nextN = 1;
 async function publishOne(n) {
@@ -158,7 +173,7 @@ const nodeFaults = {
     const i = between(0, 2);
     note(`kill -9 node ${i}`);
     nodes[i].alive = false;
-    killedAt.push({ node: i, at: Date.now() });
+    queueLost.push({ node: i, from: Date.now() - 1000, to: Date.now() });
     nodes[i].proc.kill("SIGKILL");
     await exited(nodes[i]);
     await sleep(between(300, 3000));
@@ -178,13 +193,101 @@ const nodeFaults = {
     const ms = pick([between(300, 2000), between(4000, 7000)]); // slot_ttl_s is 3
     note(`SIGSTOP node ${i} for ${ms} ms`);
     nodes[i].alive = false;
+    const at = Date.now();
     nodes[i].proc.kill("SIGSTOP");
     await sleep(ms);
     nodes[i].proc.kill("SIGCONT");
     await sleep(2000); // a fenced node drains and exits meanwhile
-    if (nodes[i].proc.exitCode !== null) note(`node ${i} stopped itself (fenced)`);
+    if (nodes[i].proc.exitCode !== null) {
+      note(`node ${i} stopped itself (fenced)`);
+      queueLost.push({ node: i, from: at - 1000, to: at });
+    }
     await ensureUp(i);
     nodes[i].alive = true;
+  },
+  async takeover() {
+    // Freeze past the slot TTL while a newcomer leases the freed slot: the
+    // frozen node must stop when it wakes (fencing), not serve on. A
+    // newcomer takes the lowest free slot, so lower free ones (left by
+    // earlier restarts) are held by placeholders first; and the judge
+    // looks at the slot key itself, not at which node was started.
+    const i = between(0, 2);
+    note(`SIGSTOP node ${i}; a newcomer takes its slot`);
+    const before = slotKeys();
+    nodes[i].alive = false;
+    const at = Date.now();
+    nodes[i].proc.kill("SIGSTOP");
+    await sleep(3600); // slot_ttl_s is 3
+    const after = slotKeys();
+    const gone = [...before.keys()].filter((s) => !after.has(s));
+    let newcomer = null;
+    let taken = false;
+    if (gone.length === 1) {
+      const slot = gone[0];
+      for (let s = 0; s < slot; s++) {
+        if (!after.has(s)) redisCli("SET", `${p}:slot:${s}`, "soak-placeholder", "NX", "PX", "8000");
+      }
+      newcomer = await startNode(nodes[i].prefix).catch(() => null);
+      const now = slotKeys().get(slot);
+      taken = now !== undefined && now !== before.get(slot) && now !== "soak-placeholder";
+      note(`slot ${slot}: ${taken ? "taken by the newcomer" : "not taken; nothing to judge"}`);
+    } else {
+      note(`frozen node's slot unclear (${gone.length} expired); nothing to judge`);
+    }
+    nodes[i].proc.kill("SIGCONT");
+    const stopped = await Promise.race([exited(nodes[i]).then(() => true), sleep(8000).then(() => false)]);
+    if (stopped) {
+      fenced += 1;
+      note(`node ${i} stopped itself (fenced)`);
+      queueLost.push({ node: i, from: at - 1000, to: at });
+    } else {
+      if (taken) violations.push(`node ${i} kept running after another node took its slot`);
+      nodes[i].proc.kill("SIGKILL");
+      await exited(nodes[i]);
+    }
+    if (newcomer) await stopNode(newcomer);
+    await ensureUp(i);
+  },
+};
+/** Node slot -> holder, read from Redis. */
+function slotKeys() {
+  const keys = redisCli("--scan", "--pattern", `${p}:slot:*`).split("\n").filter(Boolean);
+  const m = new Map();
+  for (const k of keys) {
+    const v = redisCli("GET", k).trim();
+    if (v) m.set(Number(k.slice(k.lastIndexOf(":") + 1)), v);
+  }
+  return m;
+}
+const linkFaults = {
+  async linkDelay() {
+    const i = between(0, 2);
+    const ms = between(20, 800);
+    const dur = between(1000, 6000);
+    note(`node ${i} <-> Redis: +${ms} ms for ${dur} ms`);
+    proxies[i].delay(ms);
+    await sleep(dur);
+    proxies[i].delay(0);
+  },
+  async partition() {
+    const i = between(0, 2);
+    const dur = pick([between(300, 2000), between(4000, 7000)]); // slot_ttl_s is 3
+    note(`node ${i} <-> Redis: blackhole for ${dur} ms`);
+    const from = Date.now() - 1000;
+    proxies[i].blackhole(true);
+    await sleep(dur);
+    proxies[i].blackhole(false);
+    await sleep(1000);
+    if (nodes[i].proc.exitCode !== null) {
+      note(`node ${i} stopped itself after the partition`);
+      queueLost.push({ node: i, from, to: Date.now() });
+    }
+    await ensureUp(i);
+  },
+  async linkReset() {
+    const i = between(0, 2);
+    note(`node ${i} <-> Redis: connections reset`);
+    proxies[i].reset();
   },
 };
 const redisFaults = {
@@ -216,7 +319,7 @@ const redisFaults = {
     redisCli("CLIENT", "KILL", "TYPE", "normal");
   },
 };
-const all = { ...nodeFaults, ...redisFaults };
+const all = { ...nodeFaults, ...redisFaults, ...linkFaults };
 const names = Object.keys(all);
 
 const until = started + minutes * 60_000;
@@ -252,7 +355,7 @@ const gotFinal = (r) => new Set(r.events.filter((e) => !e.gap && e.n >= firstFin
 while (Date.now() < deadline && !recs.every((r) => gotFinal(r) === finalCount)) await sleep(200);
 
 // --- verdict ---------------------------------------------------------------
-const violations = [];
+let queueLostCount = 0; // missing at the first client, exempted above
 for (const r of recs) {
   try {
     check(r, { ordered: false });
@@ -278,8 +381,9 @@ for (const r of recs) {
     if (n < firstN || seen.has(n)) continue;
     const past = movedPast(n);
     const announced = gaps.some((at) => at >= a.at - 2000 && at <= past + 2000);
-    const killed = killedAt.some((k) => k.node === a.node && k.at >= a.at && k.at - a.at < 1000);
-    if (!announced && !killed) silent.push(n);
+    const lostQueue = queueLost.some((q) => q.node === a.node && a.at >= q.from && a.at <= q.to);
+    if (!announced && !lostQueue) silent.push(n);
+    if (!announced && lostQueue && r === recs[0]) queueLostCount += 1;
   }
   if (silent.length) violations.push(`${r.name}: ${silent.length} accepted messages never arrived and no gap was announced (e.g. ${silent.slice(0, 5)})`);
 }
@@ -292,11 +396,18 @@ const summary = {
   clients: recs.length,
   reconnects: recs.reduce((s, r) => s + r.reconnects, 0),
   gaps_announced: recs.reduce((s, r) => s + r.events.filter((e) => e.gap).length, 0),
+  fenced,
+  lost_with_a_queue: queueLostCount,
   violations,
 };
 console.log(JSON.stringify(summary, null, 2));
 if (violations.length) console.error(timeline.join("\n"));
+// Evidence for a failed run: one client's events and when each n was accepted.
+if (violations.length && process.env.SOAK_DUMP) {
+  writeFileSync(process.env.SOAK_DUMP, JSON.stringify({ started, events: recs[0].events, acked: [...acked] }));
+}
 for (const r of recs) r.client.close();
 killAll();
+for (const px of proxies) px.close();
 dropSnapshot();
 process.exit(violations.length ? 1 : 0);

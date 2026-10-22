@@ -41,8 +41,9 @@ export function killAll() {
 }
 
 /** One gateway node on Redis with prefix `prefix` (on `ports` if given:
- * a restarted node keeps its address). */
-export async function startNode(prefix, ports) {
+ * a restarted node keeps its address; through `redisUrl` if given, e.g. a
+ * fault proxy). */
+export async function startNode(prefix, ports, redisUrl = REDIS) {
   const [ws, api] = ports ?? [await freePort(), await freePort()];
   const digest = createHash("sha256").update(API_KEY).digest("hex");
   const cfg = join(mkdtempSync(join(tmpdir(), "wsprism-chaos-")), "gw.yaml");
@@ -52,7 +53,7 @@ export async function startNode(prefix, ports) {
 gateway:
   listen: "127.0.0.1:${ws}"
   api: { listen: "127.0.0.1:${api}" }
-  broker: { kind: redis, url: "${REDIS}", prefix: "${prefix}", slot_ttl_s: 3 }
+  broker: { kind: redis, url: "${redisUrl}", prefix: "${prefix}", slot_ttl_s: 3 }
 tenants:
   - id: t
     auth: [{ kind: ticket }]
@@ -91,7 +92,76 @@ tenants:
     });
     return { status: r.status, body: await r.json().catch(() => null) };
   };
-  return { url: `ws://127.0.0.1:${ws}/v1/ws`, call, proc, alive: true, prefix, ports: [ws, api] };
+  return { url: `ws://127.0.0.1:${ws}/v1/ws`, call, proc, alive: true, prefix, ports: [ws, api], redisUrl };
+}
+
+/**
+ * A TCP proxy between one gateway node and Redis, with faults on that link
+ * only: `delay(ms)` holds every chunk that long (each direction in order),
+ * `blackhole(on)` keeps the connections open but passes nothing (a peer
+ * that vanished; what was held flows again when it ends, like TCP
+ * retransmission), `reset()` closes them all. Listens on 127.0.0.1.
+ */
+export async function startProxy(targetUrl) {
+  const { createServer, connect } = await import("node:net");
+  const target = new URL(targetUrl);
+  const state = { delay: 0, blackhole: false, held: [], sockets: new Set() };
+  // One direction of one connection: chunks leave in the order they came
+  // (TCP never reorders), each no earlier than `delay` after it arrived —
+  // also when the delay shrinks while older chunks still wait.
+  const pipe = (to) => {
+    const queue = [];
+    let timer = null;
+    const pump = () => {
+      timer = null;
+      while (queue.length && queue[0].due <= Date.now()) {
+        const chunk = queue.shift().chunk;
+        if (state.blackhole) state.held.push(() => to.writable && to.write(chunk));
+        else if (to.writable) to.write(chunk);
+      }
+      if (queue.length) timer = setTimeout(pump, queue[0].due - Date.now());
+    };
+    return (chunk) => {
+      queue.push({ chunk, due: Date.now() + state.delay });
+      if (!timer) pump();
+    };
+  };
+  const server = createServer((client) => {
+    const upstream = connect(Number(target.port || 6379), target.hostname);
+    for (const s of [client, upstream]) {
+      state.sockets.add(s);
+      s.on("close", () => state.sockets.delete(s));
+      s.on("error", () => {});
+    }
+    const up = pipe(upstream);
+    const down = pipe(client);
+    client.on("data", up);
+    upstream.on("data", down);
+    client.on("close", () => upstream.destroy());
+    upstream.on("close", () => client.destroy());
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  const { port } = server.address();
+  return {
+    url: `redis://127.0.0.1:${port}`,
+    delay(ms) {
+      state.delay = ms;
+    },
+    blackhole(on) {
+      state.blackhole = on;
+      if (!on) {
+        const held = state.held.splice(0);
+        for (const f of held) f();
+      }
+    },
+    reset() {
+      for (const s of state.sockets) s.destroy();
+    },
+    close() {
+      server.close();
+      for (const s of state.sockets) s.destroy();
+    },
+  };
 }
 
 /** Stop one node gracefully (SIGTERM: drain) and wait for it to exit.
@@ -107,7 +177,7 @@ export async function stopNode(node) {
 /** Rolling update of one node: stop it, start it again on the same ports. */
 export async function restartNode(nodes, i) {
   await stopNode(nodes[i]);
-  nodes[i] = await startNode(nodes[i].prefix, nodes[i].ports);
+  nodes[i] = await startNode(nodes[i].prefix, nodes[i].ports, nodes[i].redisUrl);
 }
 
 /** Ask any live node's server API; retries until one answers 200. */
@@ -139,7 +209,7 @@ export function recorder(nodes, name, first) {
   });
   const rec = { name, client, events: [], reconnects: 0 };
   client.on("message", (m) => {
-    if (m.svc === "server" && m.room === ROOM) rec.events.push({ offset: m.offset, n: m.data.n, at: Date.now() });
+    if (m.svc === "server" && m.room === ROOM) rec.events.push({ offset: m.offset, epoch: m.epoch, n: m.data.n, at: Date.now() });
   });
   client.on("gap", (g) => rec.events.push({ gap: true, epoch: g.epoch, at: Date.now() }));
   client.on("rejoined", (rooms) => {
