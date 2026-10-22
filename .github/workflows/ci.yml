@@ -78,6 +78,12 @@ jobs:
           eval "$(bench/redis-tls-test.sh)"
           cargo test -p wsprism-redis --locked --test tls
           cargo test -p wsprism-gateway --locked --test cluster_tls
+      # Primary, replica and Sentinel; the test stops the primary.
+      - name: Cluster over Sentinel (failover)
+        run: |
+          eval "$(bench/redis-sentinel-test.sh)"
+          sleep 3
+          cargo test -p wsprism-gateway --locked --test cluster_sentinel
       - uses: actions/setup-node@v4
         with:
           node-version: 22

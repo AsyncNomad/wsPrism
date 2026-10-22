@@ -181,11 +181,25 @@ gateway:
   with a failure; `Gateway::serve` returns an error to embedders).
 - **Per node:** `max_sessions_total` and the room limits
   (`max_rooms_total`, `max_users_per_room`, `max_rooms_per_user`).
-- **Scope:** one Redis at one address. There is no Sentinel or Redis
-  Cluster support yet: after a failover the nodes must reach the new
-  primary at the same address (a proxy or a virtual IP in front). Keys use
-  Redis Cluster hash tags already (`wsp:r:{tenant::room}`), so Cluster
-  support will not change them.
+- **Sentinel:** to follow a primary that Redis Sentinel fails over:
+
+  ```yaml
+  broker:
+    kind: redis
+    url_env: REDIS_URL       # redis://user:password@primary/0: credentials and db only
+    sentinel:
+      addresses: ["redis://sentinel-1:26379", "redis://sentinel-2:26379", "redis://sentinel-3:26379"]
+      master_name: mymaster
+  ```
+
+  The nodes ask Sentinel for the primary every second and move all their
+  connections when it changes (tested: delivery resumes ~4.5 s after the
+  primary's container is stopped). A promoted replica may lack the last
+  writes: history rooms start a new epoch and clients are told, as after
+  any Redis restart. Not with TLS yet.
+- **Scope:** one Redis (or one Sentinel-managed primary). No Redis Cluster
+  yet; keys use Redis Cluster hash tags already (`wsp:r:{tenant::room}`),
+  so Cluster support will not change them.
 
 ---
 

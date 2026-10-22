@@ -11,10 +11,10 @@ first release that drops the label.
 - **Gateway nodes** behind any load balancer (no sticky sessions needed), or
   give clients the list of nodes (JS SDK: `url: [..]`; each reconnect tries
   the next node).
-- **One Redis ≥ 6.2** (`GETDEL`) at one address. Sentinel and Redis
-  Cluster are not supported yet: after a failover the nodes must reach the
-  new primary at the same address (a proxy or virtual IP in front; keys
-  already use hash tags, so Cluster support will not change them).
+- **One Redis ≥ 6.2** (`GETDEL`), at one address or as a Sentinel-managed
+  primary (`gateway.broker.sentinel`; nodes follow failovers). Redis
+  Cluster is not supported yet (keys already use hash tags, so it will not
+  change them).
   - `maxmemory-policy noeviction` (or `volatile-*`): evicting the gateway's
     keys forces resyncs (history restarts in a new epoch).
   - Persistence is optional and does not keep history across a Redis
@@ -38,6 +38,7 @@ first release that drops the label.
 | A node is killed (`kill -9`, crash) | Its clients reconnect to another node and resume history rooms from their last offset: nothing lost, nothing twice (chaos test) | Within `slot_ttl_s` + ~5 s the other nodes remove its members and send `member_left` once (presence events on); its sessions stop counting toward limits |
 | A node stops gracefully (SIGTERM) | `/readyz` 503; server API publishes 503 (publish elsewhere); sessions closed (v2 4103 `draining`, v1 1001) and resume on another node: nothing lost or repeated (chaos tests: rolling update, stop while Redis is slow) | Within `drain_grace_ms` the node hands over its queue (publishes it accepted, members leaving) before exiting |
 | Redis restarts (without data, or from an older snapshot) | History rooms: the nodes refill from the new history and tell clients the history restarted (`sys.gap` with the new epoch); every message published after the restart arrives once. Rooms without history: `sys.gap` (resync). Nobody is disconnected | Nodes reconnect, re-subscribe, reload scripts, and within ~15 s put their sessions and memberships back |
+| Sentinel fails the primary over | Like a Redis restart: history rooms start a new epoch (clients told), rooms without history get `sys.gap`; nobody is disconnected | Nodes notice within ~1 s and move every connection to the new primary; delivery resumed ~4.5 s after the primary stopped (test) |
 | Redis pauses or is slow | Publishes wait; past `outbox_max_wait_ms` (1 s) new ones are refused (`UNAVAILABLE`, server API 503). Nothing is lost or delivered twice (chaos test) | Automatic when Redis answers again |
 | Redis is down | New connections closed with 4102 `unavailable` (v1 1013; try again later); Reliable publishes `UNAVAILABLE`; Hot state still flows between members of the same node; ticket logins 503 | Automatic when Redis is back (as above) |
 | A node is cut off from Redis longer than `slot_ttl_s` | Its rooms look empty to the others for a while (`member_left` sent) | When it reconnects it re-registers and restores its sessions and memberships. If another node took its slot meanwhile, it drains (its clients reconnect to other nodes) and exits with a failure for the orchestrator to restart it (chaos test) |
@@ -102,7 +103,9 @@ from Redis come in batches); the default 1024 is fine.
 ## Known limits
 
 - Tenant-wide limits (`max_sessions_total`, room limits) are per node.
-- One Redis at one address: no Sentinel or Redis Cluster yet.
+- One Redis (or one Sentinel-managed primary): no Redis Cluster yet, so
+  room history is bounded by one Redis core. Sentinel with TLS is not
+  supported yet.
 - Fencing covers room traffic: once another node holds a node's slot,
   Redis refuses that node's publishes (plain and history), and the node
   drains and exits at its first refused write or its next heartbeat
