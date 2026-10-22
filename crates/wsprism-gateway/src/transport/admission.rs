@@ -109,6 +109,7 @@ async fn check_all(
     rate_limit(app, client_ip)?;
     valid_sid(req)?;
     not_draining(app)?;
+    cluster_admitting(app)?;
     let tenant = tenant.ok_or_else(|| {
         Rejection::new(StatusCode::BAD_REQUEST, "unknown_tenant", "Unknown Tenant")
     })?;
@@ -163,6 +164,29 @@ fn not_draining(app: &AppState) -> Result<(), Rejection> {
             "draining",
             "draining",
         ));
+    }
+    Ok(())
+}
+
+/// A number that differs from call to call (no RNG needed for a spread).
+fn spread() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::from(d.subsec_micros()))
+}
+
+/// Overload protection (review #3): the cluster's store is slow or this
+/// node's session claims pile up (`Broker::admitting`). Refused before any
+/// work, with a spread-out `Retry-After` (1-5 s) so a reconnect storm does
+/// not come back all at once.
+fn cluster_admitting(app: &AppState) -> Result<(), Rejection> {
+    if !app.realtime().broker().admitting() {
+        return Err(Rejection::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "cluster_busy",
+            "Cluster Busy",
+        )
+        .retry_after(1 + spread() % 5));
     }
     Ok(())
 }

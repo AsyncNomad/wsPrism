@@ -268,6 +268,41 @@ pub struct RedisConfig {
     /// Writes a failover must not undo wait for this many replicas; `None`
     /// = they do not wait.
     pub replica_ack: Option<ReplicaAck>,
+    /// When to refuse new sessions ([`Admission`]); `None` = never.
+    pub admission: Option<Admission>,
+}
+
+/// Overload protection (review #3): a node stops taking new sessions
+/// (`Broker::admitting` false: 503 + `Retry-After` at the handshake) while
+/// Redis answers its probe (`PING` every 250 ms, on a connection of its
+/// own) slower than `max_latency`, or while more than `max_pending` session
+/// claims of this node wait for Redis. A reconnect storm then backs off
+/// instead of saturating Redis, which would delay every node's slot
+/// heartbeat and, past `slot_ttl_s`, spread to fencing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Admission {
+    /// Probe latency above which new sessions are refused.
+    pub max_latency: Duration,
+    /// Session claims waiting for Redis above which new sessions are refused.
+    pub max_pending: usize,
+}
+
+impl Admission {
+    /// Refuse past `max_latency` probe latency or `max_pending` claims.
+    pub fn new(max_latency: Duration, max_pending: usize) -> Self {
+        Self {
+            max_latency,
+            max_pending: max_pending.max(1),
+        }
+    }
+}
+
+impl Default for Admission {
+    /// 500 ms, 10,000 claims.
+    fn default() -> Self {
+        Self::new(Duration::from_millis(500), 10_000)
+    }
 }
 
 /// Consuming a one-time ticket waits (`WAIT`) until `replicas` replicas
@@ -366,7 +401,14 @@ impl RedisConfig {
             tls: None,
             sentinel: None,
             replica_ack: None,
+            admission: Some(Admission::default()),
         }
+    }
+
+    /// When to refuse new sessions; `None` = never ([`Admission`]).
+    pub fn admission(mut self, admission: Option<Admission>) -> Self {
+        self.admission = admission;
+        self
     }
 
     /// Consuming a ticket waits for replicas ([`ReplicaAck`]).
@@ -531,6 +573,10 @@ pub struct RedisBroker {
     slot: std::sync::atomic::AtomicU16,
     /// False once another node took this node's slot.
     healthy: Arc<std::sync::atomic::AtomicBool>,
+    /// The load probe's last latency (µs; `u64::MAX` = no answer).
+    probe_us: Arc<std::sync::atomic::AtomicU64>,
+    /// Session claims of this node waiting for Redis.
+    pending_claims: std::sync::atomic::AtomicUsize,
     cfg: RedisConfig,
     node_id: String,
     shards: OnceLock<Vec<mpsc::UnboundedSender<ShardCmd>>>,
@@ -638,6 +684,8 @@ impl RedisBroker {
             registered: redis::Script::new(REGISTERED),
             slot: std::sync::atomic::AtomicU16::new(0),
             healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            probe_us: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            pending_claims: std::sync::atomic::AtomicUsize::new(0),
             cfg,
             node_id: random_id(),
             shards: OnceLock::new(),
@@ -713,6 +761,13 @@ impl Broker for RedisBroker {
         let mut tasks = lock(&self.tasks);
         if self.link.follows_sentinel() {
             tasks.push(tokio::spawn(Arc::clone(&self.link).follow()));
+        }
+        if let Some(a) = self.cfg.admission {
+            tasks.push(tokio::spawn(probe(
+                Arc::clone(&self.link),
+                a,
+                Arc::clone(&self.probe_us),
+            )));
         }
         tasks.push(tokio::spawn(heartbeat(
             Arc::clone(&self.link),
@@ -1010,6 +1065,15 @@ impl Broker for RedisBroker {
     fn healthy(&self) -> bool {
         self.healthy.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    fn admitting(&self) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        let Some(a) = self.cfg.admission else {
+            return true;
+        };
+        self.probe_us.load(Relaxed) <= a.max_latency.as_micros() as u64
+            && self.pending_claims.load(Relaxed) <= a.max_pending
+    }
 }
 
 impl RedisBroker {
@@ -1272,6 +1336,7 @@ fn strings(v: &redis::Value) -> Option<Vec<String>> {
 #[async_trait]
 impl SharedSessions for RedisBroker {
     async fn claim(&self, c: &SessionClaim) -> Result<Claimed, BrokerError> {
+        let _pending = Pending::new(&self.pending_claims);
         let reply: redis::Value = self
             .claim
             .key(self.user_key(&c.user_key))
@@ -1493,6 +1558,72 @@ impl SharedKv for RedisBroker {
     }
 }
 
+/// Counts a session claim waiting for Redis while it lives.
+struct Pending<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl<'a> Pending<'a> {
+    fn new(n: &'a std::sync::atomic::AtomicUsize) -> Self {
+        n.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Self(n)
+    }
+}
+
+impl Drop for Pending<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// How often the load probe asks Redis.
+const PROBE_EVERY: Duration = Duration::from_millis(250);
+
+/// The load probe ([`Admission`]): `PING` latency on the node's own
+/// connection, kept in `probe_us`; logs when admission stops and resumes.
+async fn probe(link: Arc<Link>, a: Admission, probe_us: Arc<std::sync::atomic::AtomicU64>) {
+    let limit = a.max_latency.as_micros() as u64;
+    let mut admitting = true;
+    loop {
+        tokio::time::sleep(PROBE_EVERY).await;
+        let started = std::time::Instant::now();
+        let answered = match link.own() {
+            Some(mut conn) => matches!(
+                tokio::time::timeout(
+                    a.max_latency * 2,
+                    redis::cmd("PING").query_async::<String>(&mut conn)
+                )
+                .await,
+                Ok(Ok(_))
+            ),
+            None => false,
+        };
+        let us = if answered {
+            started.elapsed().as_micros() as u64
+        } else {
+            u64::MAX
+        };
+        probe_us.store(us, std::sync::atomic::Ordering::Relaxed);
+        match (admitting, us <= limit) {
+            (true, false) => {
+                admitting = false;
+                let latency = if answered {
+                    format!("{} ms", us / 1000)
+                } else {
+                    "no answer".to_string()
+                };
+                tracing::warn!(
+                    %latency,
+                    "redis broker: Redis is slow; refusing new sessions (503) until it recovers"
+                );
+            }
+            (false, true) => {
+                admitting = true;
+                tracing::info!("redis broker: Redis answers in time again; taking new sessions");
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Keep the node slot: renew it every third of its TTL; if it expired
 /// meanwhile (Redis was unreachable), take it back if still free.
 async fn heartbeat(
@@ -1512,8 +1643,9 @@ async fn heartbeat(
     let ttl_ms = ttl.as_millis() as u64;
     loop {
         tokio::time::sleep(ttl / 3).await;
-        // The current primary's connection (it moves with Sentinel).
-        let Some(mut conn) = link.conn() else {
+        // The current primary's (it moves with Sentinel), on a connection of
+        // its own: never behind a burst of session commands.
+        let Some(mut conn) = link.own() else {
             continue;
         };
         match script

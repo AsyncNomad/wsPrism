@@ -446,6 +446,12 @@ fn configured_broker(cfg: &BrokerConfig) -> Result<ConfiguredBroker> {
                     s.master_name.clone(),
                 ));
             }
+            redis_cfg = redis_cfg.admission((r.admission.max_latency_ms > 0).then(|| {
+                wsprism_redis::Admission::new(
+                    std::time::Duration::from_millis(r.admission.max_latency_ms),
+                    r.admission.max_pending_claims,
+                )
+            }));
             if let Some(a) = r.effective_replica_ack() {
                 redis_cfg = redis_cfg.replica_ack(wsprism_redis::ReplicaAck::new(
                     a.replicas,

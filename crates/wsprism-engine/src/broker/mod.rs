@@ -292,6 +292,14 @@ pub trait Broker: Send + Sync + 'static {
     fn healthy(&self) -> bool {
         true
     }
+
+    /// False while the shared store is too slow or too busy to take new
+    /// sessions: new connections are refused for a while (503 +
+    /// `Retry-After`) instead of piling up behind it (overload protection,
+    /// review #3). Connected sessions are not affected.
+    fn admitting(&self) -> bool {
+        true
+    }
 }
 
 /// A change to the cluster's room membership, recorded in order through

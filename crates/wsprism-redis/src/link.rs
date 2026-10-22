@@ -10,7 +10,9 @@
 //! epochs and makes the nodes register again (ADR 0011 pre-release review).
 //! The one write that nothing repairs, a consumed one-time ticket, waits
 //! for replicas on its own connection (`acked`; `WAIT` blocks the
-//! connection it runs on).
+//! connection it runs on). The slot heartbeat and the load probe have
+//! their own too (`own`): they must not queue behind a burst of session
+//! commands, or a busy node would lose its slot (review #3).
 
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -41,6 +43,8 @@ pub(crate) struct Link {
     publish: RwLock<Option<ConnectionManager>>,
     /// For writes followed by `WAIT` (only when replica acks are asked for).
     acked: RwLock<Option<ConnectionManager>>,
+    /// Heartbeat and load probe.
+    own: RwLock<Option<ConnectionManager>>,
     /// The longest `WAIT` asked for: the `acked` connection's response
     /// timeout leaves room for it. `None` = no `acked` connection.
     acked_wait: Option<Duration>,
@@ -73,6 +77,7 @@ impl Link {
             conn: RwLock::new(None),
             publish: RwLock::new(None),
             acked: RwLock::new(None),
+            own: RwLock::new(None),
             acked_wait,
             primary: RwLock::new(None),
             moved: watch::channel(0).0,
@@ -125,6 +130,14 @@ impl Link {
                 .await?;
             write(&self.acked, acked);
         }
+        let own = client
+            .get_connection_manager_with_config(
+                redis::aio::ConnectionManagerConfig::new()
+                    .set_response_timeout(Some(CONNECT_TIMEOUT))
+                    .set_connection_timeout(Some(CONNECT_TIMEOUT)),
+            )
+            .await?;
+        write(&self.own, own);
         write(&self.conn, conn);
         write(&self.publish, publish);
         write(&self.primary, address(&client));
@@ -137,6 +150,11 @@ impl Link {
 
     pub(crate) fn publish(&self) -> Option<ConnectionManager> {
         read(&self.publish)
+    }
+
+    /// The heartbeat's and load probe's connection (see `own`).
+    pub(crate) fn own(&self) -> Option<ConnectionManager> {
+        read(&self.own)
     }
 
     /// The connection for writes followed by `WAIT` (see `acked`).

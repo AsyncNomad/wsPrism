@@ -498,6 +498,41 @@ pub struct RedisBrokerConfig {
     /// (1 replica, 500 ms), off without; `replicas: 0` turns it off.
     #[serde(default)]
     pub replica_ack: Option<RedisReplicaAckConfig>,
+    /// Refuse new sessions (503 + `Retry-After`) while Redis is slow or
+    /// this node's session claims pile up; on by default.
+    #[serde(default)]
+    pub admission: RedisAdmissionConfig,
+}
+
+/// `gateway.broker.admission`.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RedisAdmissionConfig {
+    /// Redis probe latency (ms) above which new sessions are refused,
+    /// 0 = never refuse, else 10-60000.
+    #[serde(default = "default_admission_latency_ms")]
+    pub max_latency_ms: u64,
+    /// This node's session claims waiting for Redis above which new
+    /// sessions are refused, 1-1000000.
+    #[serde(default = "default_admission_pending")]
+    pub max_pending_claims: usize,
+}
+
+impl Default for RedisAdmissionConfig {
+    fn default() -> Self {
+        Self {
+            max_latency_ms: default_admission_latency_ms(),
+            max_pending_claims: default_admission_pending(),
+        }
+    }
+}
+
+fn default_admission_latency_ms() -> u64 {
+    500
+}
+fn default_admission_pending() -> usize {
+    10_000
 }
 
 /// `gateway.broker.replica_ack`.
@@ -623,6 +658,13 @@ impl RedisBrokerConfig {
             if self.tls.is_some() {
                 return bad("sentinel with tls is not supported yet");
             }
+        }
+        let adm = &self.admission;
+        if adm.max_latency_ms != 0 && !(10..=60_000).contains(&adm.max_latency_ms) {
+            return bad("admission.max_latency_ms must be 0 (off) or 10-60000");
+        }
+        if !(1..=1_000_000).contains(&adm.max_pending_claims) {
+            return bad("admission.max_pending_claims must be 1-1000000");
         }
         if let Some(a) = &self.replica_ack {
             if a.replicas > 16 {

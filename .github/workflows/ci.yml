@@ -69,7 +69,7 @@ jobs:
         run: docker run -d --name wsp-redis -p 6379:6379 redis:7.2 redis-server --save "" --appendonly no
       - name: Cluster tests
         run: |
-          cargo test -p wsprism-gateway --locked --test cluster --test cluster_gap --test history
+          cargo test -p wsprism-gateway --locked --test cluster --test cluster_gap --test history --test cluster_admission
           cargo test -p wsprism-redis --locked
       # A TLS-only Redis with a private CA requiring client certificates
       # (gateway.broker.tls), on its own isolated network.

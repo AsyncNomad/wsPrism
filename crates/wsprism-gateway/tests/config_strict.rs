@@ -266,3 +266,32 @@ fn replica_ack_defaults_and_bounds() {
         assert!(e.contains("replica_ack"), "{e}");
     }
 }
+
+/// `admission`: on by default (500 ms, 10,000), `max_latency_ms: 0` off,
+/// bounds checked.
+#[test]
+fn admission_defaults_and_bounds() {
+    let load = |admission: &str| {
+        let yaml = format!(
+            "version: 1\ngateway:\n  broker: {{ kind: redis, url: \"redis://r\"{admission} }}\ntenants:\n  - id: t\n"
+        );
+        config::load_from_str(&yaml).map_err(|e| e.to_string())
+    };
+    let cfg = load("").unwrap();
+    let config::schema::BrokerConfig::Redis(r) = &cfg.gateway.broker else {
+        panic!("redis broker")
+    };
+    assert_eq!(
+        (r.admission.max_latency_ms, r.admission.max_pending_claims),
+        (500, 10_000)
+    );
+    assert!(load(", admission: { max_latency_ms: 0 }").is_ok());
+    for bad in [
+        "{ max_latency_ms: 5 }",
+        "{ max_latency_ms: 60001 }",
+        "{ max_pending_claims: 0 }",
+    ] {
+        let e = load(&format!(", admission: {bad}")).expect_err(bad);
+        assert!(e.contains("admission"), "{e}");
+    }
+}

@@ -91,6 +91,10 @@ the Rust API may break in 0.x minor releases, always listed here.
   A join whose room subscription the cluster does not confirm within 5 s
   fails (`UNAVAILABLE`) instead of answering `sys.joined` early. Load
   generator `churn` mode and `bench/run-churn.sh`.
+- Cluster overload protection: a node refuses new connections (503
+  `cluster_busy`, `Retry-After` 1-5 s) while Redis answers its probe
+  slower than `gateway.broker.admission.max_latency_ms` (500 ms) or its
+  session claims pile up; the slot heartbeat has its own connection.
 - Server API publish answers 503 + `Retry-After` when a cluster broker's queue
   is full.
 - Operations: `--log-format json` (`WSPRISM_LOG_FORMAT`) writes one JSON

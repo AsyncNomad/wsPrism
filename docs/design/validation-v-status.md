@@ -66,7 +66,9 @@ cargo build --release -p wsprism-loadgen
 
   - 세션당 Redis 비용 ✅ 조사 끝: 싸게 줄일 방법이 없었다. Lua 합치기는 역효과, `SADD` 줄이기는 −2%, 요청 묶기는 Redis −10%와 노드 −5%의 교환이라 둘 다 되돌렸다. 바닥은 CLAIM 스크립트(약 5 µs). BENCHMARKS 「세션 churn」.
 
-  다음 작업: 과부하 보호(Redis 상태에 따른 접속 허용, heartbeat 전용 연결, 재접속 폭주 카오스) → Sentinel + TLS. |
+  - 과부하 보호 ✅: Redis 지연·대기 중인 등록 수에 따른 접속 허용(503 `cluster_busy`), heartbeat 전용 연결. 테스트는 `cluster_admission.rs`.
+
+  다음 작업: Sentinel + TLS 동시 지원 → 0.1.0 게시(사용자). |
 | M6 이후 보류 | 0.1.0 이후 | 핫 리로드(설정 변경은 롤링 재시작으로 무중단 가능), OpenTelemetry(새 의존성 승인 필요; 지금은 `trace_id`가 로그·클라이언트 오류에 있음), 관리 API RBAC, Helm 차트, UDP 로드밸런서 가이드(WebTransport 경로 확정 후) |
 | 0.1.0 릴리스 준비 | ⏳ 다음 | RELEASING.md |
 

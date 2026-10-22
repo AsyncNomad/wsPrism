@@ -218,6 +218,23 @@ gateway:
   promote); `replicas: 0` turns it off. Other writes need no wait: history,
   sessions, memberships and node slots are repaired after a failover (new
   epoch, nodes register again).
+- **Overload protection** (`admission`): each node asks Redis `PING`
+  every 250 ms on a connection of its own. While the answer takes longer
+  than `max_latency_ms`, or more than `max_pending_claims` of its session
+  claims wait for Redis, the node refuses new connections at the handshake:
+  503 `cluster_busy` with `Retry-After` spread over 1-5 s. This happens
+  before authentication, so no one-time ticket is spent. Connected sessions
+  are not affected. A reconnect storm then backs off instead of saturating
+  Redis. A saturated Redis would delay every node's slot heartbeat and,
+  past `slot_ttl_s`, spread to fencing. The slot heartbeat has a connection
+  of its own too.
+
+  ```yaml
+  broker:
+    admission: { max_latency_ms: 500, max_pending_claims: 10000 }   # defaults; max_latency_ms: 0 = off
+  ```
+
+  Refusals are counted in `wsprism_handshake_rejections_total{reason="cluster_busy"}`.
 - **Scope:** one Redis (or one Sentinel-managed primary). No Redis Cluster
   yet; keys use Redis Cluster hash tags already (`wsp:r:{tenant::room}`),
   so Cluster support will not change them.
