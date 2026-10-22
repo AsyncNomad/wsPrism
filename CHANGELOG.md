@@ -71,7 +71,8 @@ the Rust API may break in 0.x minor releases, always listed here.
   silently dropping reused offsets. One Redis at one address (no Sentinel or
   Redis Cluster yet). A node whose slot another node took (it was cut off
   longer than `slot_ttl_s`) drains and stops with an error instead of
-  serving with colliding member ids. Chaos-tested: node `kill -9`, rolling
+  serving with colliding member ids, and Redis refuses its room publishes
+  meanwhile (fencing). Chaos-tested: node `kill -9`, rolling
   update, a node frozen past its slot TTL, Redis restart (empty and from an
   older snapshot), Redis pause, stop while Redis is slow (docs/CLUSTER.md).
   Least-privilege ACL in docs/CONFIG.md. `rediss://` with a private CA and
