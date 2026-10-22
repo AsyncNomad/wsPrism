@@ -899,3 +899,191 @@ async fn a_lost_history_is_announced_before_new_offsets() {
         (Some(1), Some("three"))
     );
 }
+
+/// Join without the settle pause of [`join`]: `sys.joined` alone must mean
+/// this node receives the room.
+async fn join_now(ws: &mut Ws, room: &str) {
+    send_json(ws, json!({"svc":"room","type":"join","room":room,"seq":1})).await;
+    loop {
+        match next_event(ws).await {
+            Event::Json(v) if v["type"] == "joined" => return,
+            Event::Json(v) if v["type"] == "error" => panic!("join {room}: {v}"),
+            Event::Json(_) | Event::Binary(_) => {}
+            other => panic!("join {room}: {other:?}"),
+        }
+    }
+}
+
+/// The next `publish` from the server API within 3 s, skipping the rest.
+async fn publish_within(ws: &mut Ws) -> Option<Value> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match next_event_within(ws, left).await {
+            Event::Json(v) if v["type"] == "publish" => return Some(v),
+            Event::Json(_) | Event::Binary(_) => continue,
+            Event::Timeout => return None,
+            other => panic!("{other:?}"),
+        }
+    }
+}
+
+/// A TCP proxy to Redis that holds every chunk `delay` (both ways, in
+/// order): a node behind it subscribes later than another node publishes.
+async fn delayed(url: &str, delay: Duration) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let target = url
+        .trim_start_matches("redis://")
+        .trim_end_matches('/')
+        .to_string();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((client, _)) = listener.accept().await {
+            let Ok(upstream) = tokio::net::TcpStream::connect(&target).await else {
+                continue;
+            };
+            let (cr, cw) = client.into_split();
+            let (ur, uw) = upstream.into_split();
+            for (mut r, mut w) in [
+                (
+                    Box::new(cr) as Box<dyn tokio::io::AsyncRead + Unpin + Send>,
+                    Box::new(uw) as Box<dyn tokio::io::AsyncWrite + Unpin + Send>,
+                ),
+                (Box::new(ur), Box::new(cw)),
+            ] {
+                let (tx, mut rx) =
+                    tokio::sync::mpsc::unbounded_channel::<(tokio::time::Instant, Vec<u8>)>();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 65536];
+                    while let Ok(n) = r.read(&mut buf).await {
+                        if n == 0
+                            || tx
+                                .send((tokio::time::Instant::now() + delay, buf[..n].to_vec()))
+                                .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+                tokio::spawn(async move {
+                    while let Some((due, chunk)) = rx.recv().await {
+                        tokio::time::sleep_until(due).await;
+                        if w.write_all(&chunk).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        }
+    });
+    format!("redis://{addr}")
+}
+
+/// Review #3: `sys.joined` is sent only once this node's subscription to
+/// the room is in effect, so a message published on another node right
+/// after it arrives — for every new room (each needs a SUBSCRIBE; they are
+/// sent together and pipelined since 0.2). Node A reaches Redis 100 ms
+/// late each way, so a `sys.joined` sent before the subscription is
+/// confirmed loses the message (checked by skipping the wait).
+#[tokio::test]
+async fn a_message_right_after_joined_arrives_from_another_node() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("jn");
+    let slow = delayed(&url, Duration::from_millis(100)).await;
+    let (a_node, b_node) = (node(&slow, &p).await, node(&url, &p).await);
+    let mut alice = user(&a_node, "alice").await;
+    let _ = user(&b_node, "warm").await;
+    for i in 0..10 {
+        let room = format!("fresh{i}");
+        join_now(&mut alice, &room).await;
+        let (status, body) = http(
+            b_node.api,
+            "POST",
+            "/api/v1/publish",
+            Some(KEY),
+            Some(json!({"room": room, "data": {"i": i}})),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let got = publish_within(&mut alice).await;
+        assert_eq!(
+            got.as_ref().map(|v| v["data"]["i"].clone()),
+            Some(json!(i)),
+            "room {room}: {got:?}"
+        );
+    }
+}
+
+/// Review #3: the last member leaving (UNSUBSCRIBE) and a new one joining
+/// (SUBSCRIBE) the same room, over and over from many sessions at once,
+/// must never leave a room with members but without this node's
+/// subscription (same room = same subscriber connection, in order). Node A
+/// reaches Redis 10 ms late, so changes pile up into batches that hold both
+/// for a room; after every join, node B publishes into the room and the
+/// joiner must get it (checked by sending a batch's subscribes before its
+/// unsubscribes).
+#[tokio::test]
+async fn rooms_joined_and_left_in_a_hurry_stay_subscribed_while_occupied() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("flap");
+    let slow = delayed(&url, Duration::from_millis(10)).await;
+    let (a_node, b_node) = (node(&slow, &p).await, node(&url, &p).await);
+    let _ = user(&b_node, "warm").await;
+    let b_api = b_node.api;
+    let mut tasks = Vec::new();
+    for s in 0..12usize {
+        let mut ws = user(&a_node, &format!("f{s}")).await;
+        tasks.push(tokio::spawn(async move {
+            for i in 0..25usize {
+                // 24 rooms for 12 sessions: rooms empty and fill again often.
+                let room = format!("flap{}", (s * 7 + i * 5) % 24);
+                join_now(&mut ws, &room).await;
+                let id = format!("{s}-{i}");
+                let (status, body) = http(
+                    b_api,
+                    "POST",
+                    "/api/v1/publish",
+                    Some(KEY),
+                    Some(json!({"room": room, "data": {"id": id}})),
+                )
+                .await;
+                assert_eq!(status, 200, "{body}");
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+                loop {
+                    let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                    match next_event_within(&mut ws, left).await {
+                        Event::Json(v) if v["type"] == "publish" && v["data"]["id"] == id => break,
+                        Event::Json(_) | Event::Binary(_) => {}
+                        other => panic!("{room}: {id} never arrived ({other:?})"),
+                    }
+                }
+                send_json(&mut ws, json!({"svc":"room","type":"leave","room":room})).await;
+                next_of(&mut ws, "left").await;
+            }
+        }));
+    }
+    for t in tasks {
+        t.await.unwrap();
+    }
+    // All left: node A holds no subscription any more.
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut c = client.get_multiplexed_async_connection().await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let chans: Vec<String> = redis::cmd("PUBSUB")
+            .arg("CHANNELS")
+            .arg(format!("{p}:r:*flap*"))
+            .query_async(&mut c)
+            .await
+            .unwrap();
+        if chans.is_empty() {
+            break;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "still subscribed: {chans:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
