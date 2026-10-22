@@ -36,7 +36,7 @@ wsprism-engine = { path = "crates/wsprism-engine", version = "0.1.0" }
 wsprism-gateway = { path = "crates/wsprism-gateway", version = "0.1.0", default-features = false }
 wsprism-redis = { path = "crates/wsprism-redis", version = "0.1.0" }
 # Redis broker (ADR 0011 R3). TLS via rustls like the HTTP client.
-redis = { version = "1.7", default-features = false, features = ["aio", "tokio-comp", "connection-manager", "script", "tokio-rustls-comp"] }
+redis = { version = "1.7", default-features = false, features = ["aio", "tokio-comp", "connection-manager", "script", "tokio-rustls-comp", "sentinel"] }
 
 axum = { version = "0.7", features = ["ws"] }
 futures-util = "0.3"

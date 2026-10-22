@@ -52,7 +52,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::StreamExt;
 use redis::aio::ConnectionManager;
-use tokio::sync::{mpsc, oneshot, OnceCell};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use wsprism_engine::broker::{
@@ -61,6 +61,9 @@ use wsprism_engine::broker::{
     SharedKv, SharedPresence, SharedSessions, Subscription, MAX_NODE_SLOT,
 };
 use wsprism_engine::spi::Recover;
+
+mod link;
+use link::{Link, Locator};
 
 /// How long a quiet room's position (its `:st` hash) outlives its last
 /// message, join or read: a client
@@ -259,6 +262,30 @@ pub struct RedisConfig {
     pub slot_ttl: Duration,
     /// Certificates for `rediss://` beyond the system trust store.
     pub tls: Option<RedisTls>,
+    /// Find the primary through Redis Sentinel (then `url` only gives the
+    /// credentials and database).
+    pub sentinel: Option<RedisSentinel>,
+}
+
+/// Redis Sentinel: where the sentinels are and which primary to follow.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct RedisSentinel {
+    /// Sentinel addresses, `redis://host:26379` (credentials of the
+    /// sentinels themselves in the URL if they need some).
+    pub addresses: Vec<String>,
+    /// The primary's name in the Sentinel configuration.
+    pub master_name: String,
+}
+
+impl RedisSentinel {
+    /// Follow `master_name` through the sentinels at `addresses`.
+    pub fn new(addresses: Vec<String>, master_name: impl Into<String>) -> Self {
+        Self {
+            addresses,
+            master_name: master_name.into(),
+        }
+    }
 }
 
 /// TLS material for a `rediss://` Redis: a private CA to trust instead of
@@ -306,7 +333,15 @@ impl RedisConfig {
             pubsub_connections: 4,
             slot_ttl: Duration::from_secs(30),
             tls: None,
+            sentinel: None,
         }
+    }
+
+    /// Find the primary through Redis Sentinel; `url` then only gives the
+    /// credentials and database of the primary (its host is not used).
+    pub fn sentinel(mut self, sentinel: RedisSentinel) -> Self {
+        self.sentinel = Some(sentinel);
+        self
     }
 
     /// Certificates for a `rediss://` URL (private CA, mutual TLS).
@@ -440,7 +475,8 @@ struct ShardCmd {
 
 /// See the crate docs.
 pub struct RedisBroker {
-    client: redis::Client,
+    /// Where Redis is and the connections to it.
+    link: Arc<Link>,
     publish_kept: redis::Script,
     publish_fenced: redis::Script,
     read_kept: redis::Script,
@@ -456,10 +492,6 @@ pub struct RedisBroker {
     healthy: Arc<std::sync::atomic::AtomicBool>,
     cfg: RedisConfig,
     node_id: String,
-    conn: OnceCell<ConnectionManager>,
-    /// The outbox's own connection, patient with a stalled Redis (see
-    /// `PUBLISH_TIMEOUT`).
-    publish_conn: OnceCell<ConnectionManager>,
     shards: OnceLock<Vec<mpsc::UnboundedSender<ShardCmd>>>,
     incoming_tx: mpsc::Sender<Incoming>,
     incoming_rx: Mutex<Option<mpsc::Receiver<Incoming>>>,
@@ -524,9 +556,35 @@ impl RedisBroker {
             }
         }
         .map_err(|e| BrokerError::Rejected(format!("redis url: {e}")))?;
+        let locator = match &cfg.sentinel {
+            None => Locator::Fixed(client),
+            Some(sentinel) => {
+                if cfg.tls.is_some() || cfg.url.starts_with("rediss://") {
+                    return Err(BrokerError::Rejected(
+                        "redis sentinel with TLS is not supported yet".into(),
+                    ));
+                }
+                let info = redis::IntoConnectionInfo::into_connection_info(cfg.url.as_str())
+                    .map_err(|e| BrokerError::Rejected(format!("redis url: {e}")))?;
+                let node = redis::sentinel::SentinelNodeConnectionInfo::default()
+                    .set_redis_connection_info(info.redis_settings().clone());
+                let sc = redis::sentinel::SentinelClient::build(
+                    sentinel.addresses.iter().map(String::as_str).collect(),
+                    &sentinel.master_name,
+                    Some(node),
+                    redis::sentinel::SentinelServerType::Master,
+                )
+                .map_err(|e| BrokerError::Rejected(format!("redis sentinel: {e}")))?;
+                Locator::Sentinel(tokio::sync::Mutex::new(sc))
+            }
+        };
         let (incoming_tx, incoming_rx) = mpsc::channel(INCOMING_QUEUE);
         Ok(Self {
-            client,
+            link: Arc::new(Link::new(
+                locator,
+                PUBLISH_TIMEOUT,
+                &[PUBLISH_KEPT, PUBLISH_FENCED],
+            )),
             publish_kept: redis::Script::new(PUBLISH_KEPT),
             publish_fenced: redis::Script::new(PUBLISH_FENCED),
             read_kept: redis::Script::new(READ_KEPT),
@@ -540,8 +598,6 @@ impl RedisBroker {
             healthy: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             cfg,
             node_id: random_id(),
-            conn: OnceCell::new(),
-            publish_conn: OnceCell::new(),
             shards: OnceLock::new(),
             incoming_tx,
             incoming_rx: Mutex::new(Some(incoming_rx)),
@@ -606,36 +662,18 @@ impl Broker for RedisBroker {
     }
 
     async fn start(&self) -> Result<u16, BrokerError> {
-        let mut conn = self
-            .client
-            .get_connection_manager()
-            .await
-            .map_err(unavailable)?;
+        self.link.connect().await.map_err(unavailable)?;
+        let mut conn = self.conn()?;
         let slot = self.lease(&mut conn).await?;
-        let publish_conn = self
-            .client
-            .get_connection_manager_with_config(
-                redis::aio::ConnectionManagerConfig::new()
-                    .set_response_timeout(Some(PUBLISH_TIMEOUT)),
-            )
-            .await
-            .map_err(unavailable)?;
-        let _ = self.publish_conn.set(publish_conn);
-        // Pipelined publishes call the scripts by hash: load them up front.
-        for script in [PUBLISH_KEPT, PUBLISH_FENCED] {
-            let _: String = redis::cmd("SCRIPT")
-                .arg("LOAD")
-                .arg(script)
-                .query_async(&mut conn)
-                .await
-                .map_err(unavailable)?;
-        }
         tracing::info!(slot, node = %self.node_id, "redis broker: node slot claimed");
         // Known to the reapers of other nodes (R4-2).
         self.register_on(&mut conn, slot).await?;
         let mut tasks = lock(&self.tasks);
+        if self.link.follows_sentinel() {
+            tasks.push(tokio::spawn(Arc::clone(&self.link).follow()));
+        }
         tasks.push(tokio::spawn(heartbeat(
-            conn.clone(),
+            Arc::clone(&self.link),
             self.slot_key(slot),
             self.node_id.clone(),
             self.cfg.slot_ttl,
@@ -647,7 +685,7 @@ impl Broker for RedisBroker {
             shards.push(tx);
             tasks.push(tokio::spawn(run_shard(
                 i,
-                self.client.clone(),
+                Arc::clone(&self.link),
                 self.cfg.prefix.clone(),
                 rx,
                 self.incoming_tx.clone(),
@@ -655,22 +693,22 @@ impl Broker for RedisBroker {
         }
         // Commands for this node (R4-1).
         tasks.push(tokio::spawn(run_control(
-            self.client.clone(),
+            Arc::clone(&self.link),
             format!("{}:ctl:{slot}", self.cfg.prefix),
             self.incoming_tx.clone(),
         )));
         self.slot.store(slot, std::sync::atomic::Ordering::Relaxed);
         drop(tasks);
         let _ = self.shards.set(shards);
-        let _ = self.conn.set(conn);
         Ok(slot)
     }
 
     async fn publish(&self, batch: &[BrokerFrame]) -> Result<(), BrokerError> {
+        // The outbox's own connection, patient with a stalled Redis (see
+        // `PUBLISH_TIMEOUT`).
         let mut conn = self
-            .publish_conn
-            .get()
-            .cloned()
+            .link
+            .publish()
             .ok_or_else(|| BrokerError::Unavailable("not started".into()))?;
         // Rooms with kept messages: their part of the batch, in order, for
         // one script call each. Everything else: a PUBLISH each.
@@ -758,7 +796,19 @@ impl Broker for RedisBroker {
                 cmd.ignore();
             }
         }
-        match pipe.query_async::<()>(&mut conn).await {
+        // A primary that moved (Sentinel) may never answer: give up at once
+        // and let the outbox retry on the new one (a plain frame may then be
+        // published twice, as with any connection lost mid-call; kept
+        // frames are applied once by their seq).
+        let mut moved = self.link.moved();
+        moved.borrow_and_update();
+        let sent = tokio::select! {
+            r = pipe.query_async::<()>(&mut conn) => r,
+            _ = moved.changed() => {
+                return Err(BrokerError::Unavailable("the redis primary moved".into()));
+            }
+        };
+        match sent {
             Ok(()) => Ok(()),
             // Redis restarted and forgot the script: load it and let the
             // outbox retry the batch (kept frames are applied once anyway,
@@ -828,11 +878,7 @@ impl Broker for RedisBroker {
         keep: &Keep,
         from: Option<&Recover>,
     ) -> Result<HistoryRead, BrokerError> {
-        let mut conn = self
-            .conn
-            .get()
-            .cloned()
-            .ok_or_else(|| BrokerError::Unavailable("not started".into()))?;
+        let mut conn = self.conn()?;
         let [state, log] = history_keys(&self.cfg.prefix, room_key);
         let reply: redis::Value = self
             .read_kept
@@ -1243,10 +1289,15 @@ impl SharedSessions for RedisBroker {
 
 /// This node's command channel: subscribe, forward, reconnect. A command
 /// sent while the connection is down is lost (ADR 0011 R4-1; R5 reconciles).
-async fn run_control(client: redis::Client, channel: String, incoming: mpsc::Sender<Incoming>) {
+async fn run_control(link: Arc<Link>, channel: String, incoming: mpsc::Sender<Incoming>) {
     let mut wait = RECONNECT_FIRST;
+    let mut moved = link.moved();
     loop {
-        let (mut sink, mut stream) = match client.get_async_pubsub().await {
+        let pubsub = match link.client().await {
+            Ok(client) => client.get_async_pubsub().await,
+            Err(e) => Err(e),
+        };
+        let (mut sink, mut stream) = match pubsub {
             Ok(p) => p.split(),
             Err(e) => {
                 tracing::warn!("redis broker: control connect failed: {e}");
@@ -1260,12 +1311,20 @@ async fn run_control(client: redis::Client, channel: String, incoming: mpsc::Sen
             continue;
         }
         wait = RECONNECT_FIRST;
-        while let Some(msg) = stream.next().await {
-            match wire::decode_control(&Bytes::copy_from_slice(msg.get_payload_bytes())) {
-                Ok(c) => {
-                    let _ = incoming.send(Incoming::Control(c)).await;
+        moved.borrow_and_update();
+        loop {
+            tokio::select! {
+                msg = stream.next() => {
+                    let Some(msg) = msg else { break };
+                    match wire::decode_control(&Bytes::copy_from_slice(msg.get_payload_bytes())) {
+                        Ok(c) => {
+                            let _ = incoming.send(Incoming::Control(c)).await;
+                        }
+                        Err(e) => tracing::warn!("redis broker: dropped a command: {e}"),
+                    }
                 }
-                Err(e) => tracing::warn!("redis broker: dropped a command: {e}"),
+                // The primary moved: this subscription is on a demoted node.
+                _ = moved.changed() => break,
             }
         }
     }
@@ -1273,9 +1332,8 @@ async fn run_control(client: redis::Client, channel: String, incoming: mpsc::Sen
 
 impl RedisBroker {
     fn conn(&self) -> Result<ConnectionManager, BrokerError> {
-        self.conn
-            .get()
-            .cloned()
+        self.link
+            .conn()
             .ok_or_else(|| BrokerError::Unavailable("not started".into()))
     }
 
@@ -1314,7 +1372,7 @@ impl SharedKv for RedisBroker {
 /// Keep the node slot: renew it every third of its TTL; if it expired
 /// meanwhile (Redis was unreachable), take it back if still free.
 async fn heartbeat(
-    mut conn: ConnectionManager,
+    link: Arc<Link>,
     key: String,
     node_id: String,
     ttl: Duration,
@@ -1330,6 +1388,10 @@ async fn heartbeat(
     let ttl_ms = ttl.as_millis() as u64;
     loop {
         tokio::time::sleep(ttl / 3).await;
+        // The current primary's connection (it moves with Sentinel).
+        let Some(mut conn) = link.conn() else {
+            continue;
+        };
         match script
             .key(&key)
             .arg(&node_id)
@@ -1358,7 +1420,7 @@ async fn heartbeat(
 /// a gap for its rooms.
 async fn run_shard(
     index: usize,
-    client: redis::Client,
+    link: Arc<Link>,
     prefix: String,
     mut cmds: mpsc::UnboundedReceiver<ShardCmd>,
     incoming: mpsc::Sender<Incoming>,
@@ -1367,8 +1429,13 @@ async fn run_shard(
     let mut rooms: HashSet<Arc<str>> = HashSet::new();
     let mut connected_before = false;
     let mut wait = RECONNECT_FIRST;
+    let mut moved = link.moved();
     loop {
-        let (mut sink, mut stream) = match client.get_async_pubsub().await {
+        let pubsub = match link.client().await {
+            Ok(client) => client.get_async_pubsub().await,
+            Err(e) => Err(e),
+        };
+        let (mut sink, mut stream) = match pubsub {
             Ok(p) => p.split(),
             Err(e) => {
                 tracing::warn!(
@@ -1403,8 +1470,11 @@ async fn run_shard(
                 .await;
         }
         connected_before = true;
+        moved.borrow_and_update();
         loop {
             tokio::select! {
+                // The primary moved: resubscribe there (and report a gap).
+                _ = moved.changed() => break,
                 cmd = cmds.recv() => {
                     let Some(cmd) = cmd else { return };
                     let result = match &cmd.sub {

@@ -440,6 +440,12 @@ fn configured_broker(cfg: &BrokerConfig) -> Result<ConfiguredBroker> {
                 }
                 redis_cfg = redis_cfg.tls(tls);
             }
+            if let Some(s) = &r.sentinel {
+                redis_cfg = redis_cfg.sentinel(wsprism_redis::RedisSentinel::new(
+                    s.addresses.clone(),
+                    s.master_name.clone(),
+                ));
+            }
             let broker = wsprism_redis::RedisBroker::new(redis_cfg)
                 .map_err(|e| WsPrismError::BadRequest(format!("gateway.broker: {e}")))?;
             Ok(Some((

@@ -450,7 +450,7 @@ pub enum BrokerConfig {
     #[default]
     Memory,
     /// Nodes share rooms through Redis pub/sub (experimental; ADR 0011 R3).
-    Redis(RedisBrokerConfig),
+    Redis(Box<RedisBrokerConfig>),
 }
 
 /// `gateway.broker` with `kind: redis`.
@@ -488,6 +488,22 @@ pub struct RedisBrokerConfig {
     /// (mutual TLS). Without it, `rediss://` trusts the system store.
     #[serde(default)]
     pub tls: Option<RedisTlsConfig>,
+    /// Follow the primary through Redis Sentinel. `url` / `url_env` then
+    /// only carry the primary's credentials and database (the host is not
+    /// used). Not with TLS yet.
+    #[serde(default)]
+    pub sentinel: Option<RedisSentinelConfig>,
+}
+
+/// `gateway.broker.sentinel`.
+#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct RedisSentinelConfig {
+    /// Sentinel addresses, `redis://host:26379`.
+    pub addresses: Vec<String>,
+    /// The primary's name in the Sentinel configuration (`mymaster`).
+    pub master_name: String,
 }
 
 /// `gateway.broker.tls` (PEM files, read at startup).
@@ -551,6 +567,17 @@ impl RedisBrokerConfig {
             }
             if self.tls.is_some() && !u.starts_with("rediss://") {
                 return bad("tls needs a rediss:// url");
+            }
+        }
+        if let Some(s) = &self.sentinel {
+            if s.addresses.is_empty() || s.addresses.iter().any(|a| !a.starts_with("redis://")) {
+                return bad("sentinel.addresses: one or more redis://host:port");
+            }
+            if s.master_name.is_empty() {
+                return bad("sentinel.master_name must not be empty");
+            }
+            if self.tls.is_some() {
+                return bad("sentinel with tls is not supported yet");
             }
         }
         if let Some(t) = &self.tls {
