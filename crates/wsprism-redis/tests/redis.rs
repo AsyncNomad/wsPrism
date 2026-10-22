@@ -130,3 +130,51 @@ async fn a_retried_kept_batch_is_applied_once() {
     }
     assert_eq!(got, [1, 2, 3], "published once, one offset each");
 }
+
+/// Fencing (0.2): once another node holds this node's slot, Redis refuses
+/// its publishes - plain and kept - and the broker reports itself unhealthy
+/// at once (the server then drains), without waiting for the heartbeat.
+#[tokio::test]
+async fn a_node_whose_slot_was_taken_cannot_publish() {
+    use std::time::Duration;
+    use wsprism_engine::broker::{BrokerError, BrokerFrame, Keep};
+    use wsprism_engine::spi::OutFrame;
+    use wsprism_engine::QoS;
+
+    let Some(url) = redis_url() else { return };
+    let p = prefix("fence");
+    let b = broker(&url, &p).await;
+    let frame = |kept: bool| {
+        let mut f = BrokerFrame::new(0, "t::f", QoS::Reliable, OutFrame::text("{}".to_string()));
+        if kept {
+            f.keep = Some(Keep::new(10, Duration::from_secs(60), 1 << 20));
+            f.seq = 1;
+        }
+        f
+    };
+    b.publish(&[frame(false)]).await.unwrap();
+    assert!(b.healthy());
+
+    let client = redis::Client::open(url.as_str()).unwrap();
+    let mut c = client.get_multiplexed_async_connection().await.unwrap();
+    let _: () = redis::cmd("SET")
+        .arg(format!("{p}:slot:0"))
+        .arg("intruder")
+        .query_async(&mut c)
+        .await
+        .unwrap();
+    for kept in [false, true] {
+        match b.publish(&[frame(kept)]).await {
+            Err(BrokerError::Rejected(m)) => assert!(m.contains("fenced"), "{m}"),
+            other => panic!("kept={kept}: {other:?}"),
+        }
+    }
+    assert!(!b.healthy(), "unhealthy at once");
+    let kept: Option<String> = redis::cmd("HGET")
+        .arg(format!("{p}:h:{{t::f}}:st"))
+        .arg("seq")
+        .query_async(&mut c)
+        .await
+        .unwrap();
+    assert_eq!(kept, None, "the kept frame was not stored");
+}

@@ -78,7 +78,7 @@ fn install_crypto_provider() {
 
 /// One room's part of an outbox batch, in order (A15: one script call per
 /// room and batch, not per message — per message only the PUBLISH is left).
-/// KEYS: state, log. ARGV: channel, size, ttl ms, max bytes, epoch
+/// KEYS: state, log, this node's slot key (fencing, see `PUBLISH_FENCED`). ARGV: channel, size, ttl ms, max bytes, epoch
 /// candidate, position ttl ms, node id, then triples (head, text, frame seq)
 /// per message: a kept message gets the next offset; head = '' publishes
 /// text as is. A frame whose seq this node already had applied here is
@@ -102,6 +102,9 @@ fn install_crypto_provider() {
 const PUBLISH_KEPT: &str = r"
 local ch, size, ttl, maxb, pttl = ARGV[1], tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4]), tonumber(ARGV[6])
 local node = 'n:' .. ARGV[7]
+-- Fencing: a node whose slot another node holds writes nothing.
+local owner = redis.call('GET', KEYS[3])
+if owner and owner ~= ARGV[7] then return redis.error_reply('FENCED') end
 local rid = string.match(redis.call('INFO', 'server'), 'run_id:(%x+)')
 local st = redis.call('HMGET', KEYS[1], 'seq', 'ep', 'b', node, 'rid')
 local o, ep, b, done = tonumber(st[1]), st[2], tonumber(st[3] or '0'), tonumber(st[4] or '0')
@@ -156,6 +159,21 @@ end
 redis.call('HSET', KEYS[1], 'seq', o, 'ep', ep, 'b', b, node, last, 'rid', rid)
 redis.call('PEXPIRE', KEYS[1], pttl)
 return o
+";
+
+/// Plain room frames of a batch, published only while this node holds its
+/// slot (fencing, 0.2): a node cut off or frozen past `slot_ttl_s` whose
+/// slot another node leased would otherwise deliver with member ids (Hot
+/// `sender`) the new owner also issues, until its next heartbeat noticed.
+/// An expired, unclaimed slot does not fence (the heartbeat re-claims it).
+/// KEYS: the slot key. ARGV: node id, then (channel, payload) pairs.
+const PUBLISH_FENCED: &str = r"
+local owner = redis.call('GET', KEYS[1])
+if owner and owner ~= ARGV[1] then return redis.error_reply('FENCED') end
+for i = 2, #ARGV, 2 do
+  redis.call('PUBLISH', ARGV[i], ARGV[i + 1])
+end
+return 1
 ";
 
 /// KEYS: state, log. ARGV: since ('' = position only), epoch asked, ttl ms,
@@ -417,6 +435,7 @@ struct ShardCmd {
 pub struct RedisBroker {
     client: redis::Client,
     publish_kept: redis::Script,
+    publish_fenced: redis::Script,
     read_kept: redis::Script,
     claim: redis::Script,
     of_user: redis::Script,
@@ -502,6 +521,7 @@ impl RedisBroker {
         Ok(Self {
             client,
             publish_kept: redis::Script::new(PUBLISH_KEPT),
+            publish_fenced: redis::Script::new(PUBLISH_FENCED),
             read_kept: redis::Script::new(READ_KEPT),
             claim: redis::Script::new(CLAIM),
             of_user: redis::Script::new(OF_USER),
@@ -594,13 +614,15 @@ impl Broker for RedisBroker {
             .await
             .map_err(unavailable)?;
         let _ = self.publish_conn.set(publish_conn);
-        // Pipelined publishes call the script by hash: load it up front.
-        let _: String = redis::cmd("SCRIPT")
-            .arg("LOAD")
-            .arg(PUBLISH_KEPT)
-            .query_async(&mut conn)
-            .await
-            .map_err(unavailable)?;
+        // Pipelined publishes call the scripts by hash: load them up front.
+        for script in [PUBLISH_KEPT, PUBLISH_FENCED] {
+            let _: String = redis::cmd("SCRIPT")
+                .arg("LOAD")
+                .arg(script)
+                .query_async(&mut conn)
+                .await
+                .map_err(unavailable)?;
+        }
         tracing::info!(slot, node = %self.node_id, "redis broker: node slot claimed");
         // Known to the reapers of other nodes (R4-2).
         self.register_on(&mut conn, slot).await?;
@@ -647,7 +669,9 @@ impl Broker for RedisBroker {
         // one script call each. Everything else: a PUBLISH each.
         let mut kept_rooms: Vec<(&BrokerFrame, Vec<&BrokerFrame>)> = Vec::new();
         let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut plain: Vec<(String, bytes::Bytes)> = Vec::new();
         let mut pipe = redis::pipe();
+        let slot_key = self.slot_key(self.slot.load(std::sync::atomic::Ordering::Relaxed));
         for f in batch {
             if let Some(&i) = index.get(&*f.room_key) {
                 kept_rooms[i].1.push(f);
@@ -655,11 +679,20 @@ impl Broker for RedisBroker {
                 index.insert(&f.room_key, kept_rooms.len());
                 kept_rooms.push((f, vec![f]));
             } else if let Some(bytes) = wire::encode(f) {
-                pipe.cmd("PUBLISH")
-                    .arg(self.channel(&f.room_key))
-                    .arg(bytes.as_ref())
-                    .ignore();
+                plain.push((self.channel(&f.room_key), bytes));
             }
+        }
+        for chunk in plain.chunks(SCRIPT_CHUNK) {
+            let cmd = pipe
+                .cmd("EVALSHA")
+                .arg(self.publish_fenced.get_hash())
+                .arg(1)
+                .arg(&slot_key)
+                .arg(&self.node_id);
+            for (channel, bytes) in chunk {
+                cmd.arg(channel).arg(bytes.as_ref());
+            }
+            cmd.ignore();
         }
         for (first, all) in &kept_rooms {
             let Some(keep) = first.keep else { continue };
@@ -668,9 +701,10 @@ impl Broker for RedisBroker {
                 let cmd = pipe
                     .cmd("EVALSHA")
                     .arg(self.publish_kept.get_hash())
-                    .arg(2)
+                    .arg(3)
                     .arg(state)
                     .arg(log)
+                    .arg(&slot_key)
                     .arg(self.channel(&first.room_key))
                     .arg(keep.size)
                     .arg(keep.ttl.as_millis() as u64)
@@ -700,12 +734,27 @@ impl Broker for RedisBroker {
             // match its text too (R5: a missed NOSCRIPT retried forever).
             Err(e) if e.code() == Some("NOSCRIPT") || e.to_string().contains("NOSCRIPT") => {
                 tracing::warn!("redis broker: script missing (Redis restarted?); loading it");
-                let _: Result<String, _> = redis::cmd("SCRIPT")
-                    .arg("LOAD")
-                    .arg(PUBLISH_KEPT)
-                    .query_async(&mut conn)
-                    .await;
+                for script in [PUBLISH_KEPT, PUBLISH_FENCED] {
+                    let _: Result<String, _> = redis::cmd("SCRIPT")
+                        .arg("LOAD")
+                        .arg(script)
+                        .query_async(&mut conn)
+                        .await;
+                }
                 Err(BrokerError::Unavailable("script reloaded".into()))
+            }
+            // Another node holds this node's slot: stop at once (the server
+            // drains on `healthy() == false`) instead of at the next
+            // heartbeat; these frames are not delivered.
+            Err(e) if e.to_string().contains("FENCED") => {
+                self.healthy
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                tracing::error!(
+                    "redis broker: this node's slot belongs to another node; publishing refused"
+                );
+                Err(BrokerError::Rejected(
+                    "fenced: this node lost its cluster slot".into(),
+                ))
             }
             Err(e) => Err(unavailable(e)),
         }
