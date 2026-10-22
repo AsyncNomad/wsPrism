@@ -665,16 +665,28 @@ impl RealtimeCore {
             epoch: epoch.to_string(),
             offset,
         };
-        let read = match self.broker.history(room_key, &keep, Some(&from)).await {
-            // The history restarted (Redis lost it): all of the new epoch.
-            Ok(r) if r.replay.is_none() && *r.epoch != *epoch => {
-                let from = Recover {
-                    epoch: r.epoch.to_string(),
-                    offset: 0,
-                };
-                self.broker.history(room_key, &keep, Some(&from)).await
+        // Bounded: the room's frames wait behind this read (they must come
+        // after what it fills), so a Redis that does not answer (a primary
+        // that just failed over) must not stall the room; give up, tell
+        // the members (they resync) and go on.
+        let read = async {
+            match self.broker.history(room_key, &keep, Some(&from)).await {
+                // The history restarted (Redis lost it): all of the new epoch.
+                Ok(r) if r.replay.is_none() && *r.epoch != *epoch => {
+                    let from = Recover {
+                        epoch: r.epoch.to_string(),
+                        offset: 0,
+                    };
+                    self.broker.history(room_key, &keep, Some(&from)).await
+                }
+                other => other,
             }
-            other => other,
+        };
+        let read = match tokio::time::timeout(GAP_FILL_TIMEOUT, read).await {
+            Ok(r) => r,
+            Err(_) => Err(crate::broker::BrokerError::Unavailable(
+                "history read timed out".into(),
+            )),
         };
         match read {
             Ok(r) => match r.replay {
@@ -1003,6 +1015,9 @@ async fn run_reaper(core: Weak<RealtimeCore>) {
 
 /// Messages taken from the broker per receive.
 const INCOMING_BATCH: usize = 1024;
+/// Longest a node waits for history to fill a room's gap (the room's
+/// frames wait meanwhile); past it the members are told of the gap.
+const GAP_FILL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// Batches queued per incoming worker.
 const INCOMING_WORKER_QUEUE: usize = 64;
 
