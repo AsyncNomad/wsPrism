@@ -84,8 +84,13 @@ the Rust API may break in 0.x minor releases, always listed here.
   and checks for silent loss.
 - Cluster: joining rooms new to a node is 8-10x faster (subscriptions go
   out together and pipelined instead of one at a time; ~30k sessions/s
-  per node on loopback, was ~3,600). `Broker::subscriptions` (default:
-  one by one). Load generator `churn` mode and `bench/run-churn.sh`.
+  per node on loopback, was ~3,600), also with presence events (~22k,
+  was ~2,400: membership changes and frames keep their order per room
+  only). `Broker::subscriptions` (default: one by one). Messages to
+  different rooms may now leave a node in a different order (docs/CLUSTER.md).
+  A join whose room subscription the cluster does not confirm within 5 s
+  fails (`UNAVAILABLE`) instead of answering `sys.joined` early. Load
+  generator `churn` mode and `bench/run-churn.sh`.
 - Server API publish answers 503 + `Retry-After` when a cluster broker's queue
   is full.
 - Operations: `--log-format json` (`WSPRISM_LOG_FORMAT`) writes one JSON

@@ -36,12 +36,18 @@ sed 's|listen: "127.0.0.1:18080"|listen: "10.77.0.1:18080"|' "$ROOT/bench/gatewa
 sed 's|^gateway:|gateway:\n  broker: { kind: redis, url: "redis://10.77.0.1:6390", prefix: bench, pubsub_connections: 4 }|' \
   "$WORK/memory.yaml" > "$WORK/redis.yaml"
 grep -q 'kind: redis' "$WORK/redis.yaml"
+# PRESENCE_EVENTS=1: the tenant announces joins and leaves (member_joined /
+# member_left frames, one per join and leave).
+if [[ ${PRESENCE_EVENTS:-0} == 1 ]]; then
+  for c in memory redis; do sed -i 's|^    policy:|    policy:\n      presence_events: true|' "$WORK/$c.yaml"; done
+  grep -q 'presence_events: true' "$WORK/redis.yaml"
+fi
 
 total=0
 for run in $(seq "$RUNS"); do for c in $CASES; do for t in $TARGETS; do
   total=$((total + 1))
   workers="${c%x*}"; joins="${c#*x}"
-  label="target=$t workers=$workers joins=$joins rooms=$ROOMS run=$run"
+  label="target=$t workers=$workers joins=$joins rooms=$ROOMS presence_events=${PRESENCE_EVENTS:-0} run=$run"
   if [[ -f "$OUT" ]] && grep -qF "\"label\":\"$label\"" "$OUT"; then
     echo "[$total] skip (done): $label" >&2; continue
   fi

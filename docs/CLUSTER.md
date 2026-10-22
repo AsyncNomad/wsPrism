@@ -67,6 +67,10 @@ orchestrator restarts it. Kubernetes: `terminationGracePeriodSeconds` above
 
 - **Per room, one order for everyone:** Ext messages go through Redis, so
   every node delivers a room's messages in the same order.
+- **Across rooms, no publish order:** a room's messages keep their order,
+  but messages to different rooms may leave a node in a different order
+  than they were published (a room that a node just subscribed to waits
+  for the subscription; the others go on).
 - **Across nodes, no publish order:** a backend that sends message A to node
   1 and B to node 2 gets them in Redis arrival order, which can differ from
   the order it sent them when node 1 is slow. Publish a room's messages to
