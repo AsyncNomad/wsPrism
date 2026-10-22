@@ -37,7 +37,8 @@ RS="$REDIS_DIR/redis-server"; RC="$REDIS_DIR/redis-cli"
 
 OUT="$ROOT/bench/results/$NAME.jsonl"
 cargo build --release -q --manifest-path "$ROOT/Cargo.toml" -p wsprism-gateway -p wsprism-loadgen
-GW="$ROOT/target/release/wsprism-gateway"
+# CLUSTER_GW: another gateway binary (A/B against an older build).
+GW="${CLUSTER_GW:-$ROOT/target/release/wsprism-gateway}"
 LG="$ROOT/target/release/wsprism-loadgen"
 
 WORK="$(mktemp -d)"

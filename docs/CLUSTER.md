@@ -91,7 +91,7 @@ instances is planned after 0.1.0.
 | Traffic | Limit seen |
 |---|---|
 | Hot state | Same as a single node (delivered locally first) |
-| Ext without history | ~200k publishes/s per node (one node's outbox; 240k/s is at the edge: 0.88-1.0 delivered) |
+| Ext without history | 240k publishes/s per node delivered in full (3 runs, since fencing batched the publishes; before: ~200k); Redis spends ~2.5 µs per plain publish (one core: ~600k/s across the cluster, fewer with many subscribed nodes) |
 | Two nodes sharing rooms | Every message once, latency as one node, up to 1.08M deliveries/s tested; splitting the same cores costs +10-28% CPU per delivery (less at high load; broadcast rooms cost less) |
 | Redis CPU | Grows with the number of nodes subscribed to a room (each publish goes to each); history scripts do not |
 | Ext with history | ~150k kept messages/s per Redis core (~200 B messages; fewer for larger ones) |
@@ -103,11 +103,12 @@ from Redis come in batches); the default 1024 is fine.
 
 - Tenant-wide limits (`max_sessions_total`, room limits) are per node.
 - One Redis at one address: no Sentinel or Redis Cluster yet.
-- Fencing is a first step: a node whose slot another node took notices at
-  its next heartbeat (every `slot_ttl_s` / 3) and then drains and exits.
-  Until then (up to ~10 s with the default 30 s) it may still deliver with
-  member ids that collide with the new owner's (wrong Hot `sender`,
-  presence); Redis does not refuse its writes yet.
+- Fencing covers room traffic: once another node holds a node's slot,
+  Redis refuses that node's publishes (plain and history), and the node
+  drains and exits at its first refused write or its next heartbeat
+  (every `slot_ttl_s` / 3), whichever comes first. Its session and
+  membership writes are not fenced; the other nodes' cleanup removes them
+  once it is gone.
 - After Redis restarts empty, a user who reconnects with the same `sid` on
   another node before the old node restored its sessions (~15 s) can end up
   with two sessions for that sid until one disconnects.

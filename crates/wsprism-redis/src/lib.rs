@@ -166,12 +166,19 @@ return o
 /// slot another node leased would otherwise deliver with member ids (Hot
 /// `sender`) the new owner also issues, until its next heartbeat noticed.
 /// An expired, unclaimed slot does not fence (the heartbeat re-claims it).
-/// KEYS: the slot key. ARGV: node id, then (channel, payload) pairs.
+/// KEYS: the slot key. ARGV: node id, then per room: channel, count,
+/// that many payloads (the channel once per room: Lua converts every
+/// argument, and a batch carries many frames per room).
 const PUBLISH_FENCED: &str = r"
 local owner = redis.call('GET', KEYS[1])
 if owner and owner ~= ARGV[1] then return redis.error_reply('FENCED') end
-for i = 2, #ARGV, 2 do
-  redis.call('PUBLISH', ARGV[i], ARGV[i + 1])
+local i = 2
+while i <= #ARGV do
+  local ch, n = ARGV[i], tonumber(ARGV[i + 1])
+  for k = i + 2, i + 1 + n do
+    redis.call('PUBLISH', ch, ARGV[k])
+  end
+  i = i + 2 + n
 end
 return 1
 ";
@@ -669,7 +676,10 @@ impl Broker for RedisBroker {
         // one script call each. Everything else: a PUBLISH each.
         let mut kept_rooms: Vec<(&BrokerFrame, Vec<&BrokerFrame>)> = Vec::new();
         let mut index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-        let mut plain: Vec<(String, bytes::Bytes)> = Vec::new();
+        // Plain frames per room, in order (rooms have no order between them).
+        let mut plain: Vec<(String, Vec<bytes::Bytes>)> = Vec::new();
+        let mut plain_index: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
         let mut pipe = redis::pipe();
         let slot_key = self.slot_key(self.slot.load(std::sync::atomic::Ordering::Relaxed));
         for f in batch {
@@ -679,20 +689,42 @@ impl Broker for RedisBroker {
                 index.insert(&f.room_key, kept_rooms.len());
                 kept_rooms.push((f, vec![f]));
             } else if let Some(bytes) = wire::encode(f) {
-                plain.push((self.channel(&f.room_key), bytes));
+                let i = *plain_index.entry(&f.room_key).or_insert_with(|| {
+                    plain.push((self.channel(&f.room_key), Vec::new()));
+                    plain.len() - 1
+                });
+                plain[i].1.push(bytes);
             }
         }
-        for chunk in plain.chunks(SCRIPT_CHUNK) {
-            let cmd = pipe
-                .cmd("EVALSHA")
-                .arg(self.publish_fenced.get_hash())
-                .arg(1)
-                .arg(&slot_key)
-                .arg(&self.node_id);
-            for (channel, bytes) in chunk {
-                cmd.arg(channel).arg(bytes.as_ref());
+        // Script calls of at most SCRIPT_CHUNK frames; a room may continue
+        // in the next call (pipelined in order).
+        let mut in_call = SCRIPT_CHUNK;
+        let mut cmd: Option<redis::Cmd> = None;
+        for (channel, frames) in &plain {
+            for part in frames.chunks(SCRIPT_CHUNK) {
+                if in_call + part.len() > SCRIPT_CHUNK {
+                    if let Some(c) = cmd.take() {
+                        pipe.add_command(c).ignore();
+                    }
+                    let mut c = redis::cmd("EVALSHA");
+                    c.arg(self.publish_fenced.get_hash())
+                        .arg(1)
+                        .arg(&slot_key)
+                        .arg(&self.node_id);
+                    cmd = Some(c);
+                    in_call = 0;
+                }
+                if let Some(c) = cmd.as_mut() {
+                    c.arg(channel).arg(part.len());
+                    for bytes in part {
+                        c.arg(bytes.as_ref());
+                    }
+                }
+                in_call += part.len();
             }
-            cmd.ignore();
+        }
+        if let Some(c) = cmd {
+            pipe.add_command(c).ignore();
         }
         for (first, all) in &kept_rooms {
             let Some(keep) = first.keep else { continue };
