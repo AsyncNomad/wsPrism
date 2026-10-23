@@ -1093,20 +1093,21 @@ impl Broker for RedisBroker {
         keep: &Keep,
         from: Option<&Recover>,
     ) -> Result<HistoryRead, BrokerError> {
-        let mut conn = self.conn()?;
         let [state, log] = history_keys(&self.cfg.prefix, room_key);
-        let reply: redis::Value = self
-            .read_kept
-            .key(state)
-            .key(log)
-            .arg(from.map_or(String::new(), |f| f.offset.to_string()))
-            .arg(from.map_or("", |f| f.epoch.as_str()))
-            .arg(keep.ttl.as_millis() as u64)
-            .arg(random_id())
-            .arg(POSITION_TTL.as_millis() as u64)
-            .invoke_async(&mut conn)
-            .await
-            .map_err(unavailable)?;
+        let reply: redis::Value = read_again(|| async {
+            self.read_kept
+                .key(&state)
+                .key(&log)
+                .arg(from.map_or(String::new(), |f| f.offset.to_string()))
+                .arg(from.map_or("", |f| f.epoch.as_str()))
+                .arg(keep.ttl.as_millis() as u64)
+                .arg(random_id())
+                .arg(POSITION_TTL.as_millis() as u64)
+                .invoke_async(&mut self.conn().map_err(lost)?)
+                .await
+        })
+        .await
+        .map_err(unavailable)?;
         parse_read(&reply)
     }
 
@@ -1224,13 +1225,15 @@ impl SharedPresence for RedisBroker {
     }
 
     async fn members(&self, room_key: &str) -> Result<Vec<RoomMember>, BrokerError> {
-        let reply: redis::Value = self
-            .members
-            .key(self.pr_key(room_key))
-            .arg(self.slot_prefix())
-            .invoke_async(&mut self.conn()?)
-            .await
-            .map_err(unavailable)?;
+        let reply: redis::Value = read_again(|| async {
+            self.members
+                .key(self.pr_key(room_key))
+                .arg(self.slot_prefix())
+                .invoke_async(&mut self.conn().map_err(lost)?)
+                .await
+        })
+        .await
+        .map_err(unavailable)?;
         let bad = || BrokerError::Rejected("unexpected presence reply".into());
         strings(&reply)
             .ok_or_else(bad)?
@@ -1622,6 +1625,30 @@ impl SharedKv for RedisBroker {
     }
 }
 
+/// A read that is safe to repeat, once more if the connection broke: the
+/// first command after Redis restarted often meets the old, dead socket
+/// ("broken pipe"), and the connection manager reconnects meanwhile. Without
+/// it, the history read that fills a dropped subscription's gap failed
+/// right after a Redis restart and the room's members were only told of a
+/// gap (messages lost from their view; review #3 CI, 2 vCPUs). It used to
+/// pass because the slot heartbeat shared that connection and met the dead
+/// socket first.
+async fn read_again<T, F, Fut>(read: F) -> redis::RedisResult<T>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = redis::RedisResult<T>>,
+{
+    match read().await {
+        Err(e) if e.is_connection_dropped() || e.is_io_error() => read().await,
+        other => other,
+    }
+}
+
+/// `BrokerError` (not started) as a `RedisError`, inside [`read_again`].
+fn lost(e: BrokerError) -> redis::RedisError {
+    redis::RedisError::from((redis::ErrorKind::Io, "redis broker", e.to_string()))
+}
+
 /// Counts a session claim waiting for Redis while it lives.
 struct Pending<'a>(&'a std::sync::atomic::AtomicUsize);
 
@@ -1646,6 +1673,7 @@ const PROBE_EVERY: Duration = Duration::from_millis(250);
 async fn probe(link: Arc<Link>, a: Admission, probe_us: Arc<std::sync::atomic::AtomicU64>) {
     let limit = a.max_latency.as_micros() as u64;
     let mut admitting = true;
+    let mut failed = 0u32;
     loop {
         tokio::time::sleep(PROBE_EVERY).await;
         let started = std::time::Instant::now();
@@ -1666,6 +1694,15 @@ async fn probe(link: Arc<Link>, a: Admission, probe_us: Arc<std::sync::atomic::A
             u64::MAX
         };
         probe_us.store(us, std::sync::atomic::Ordering::Relaxed);
+        // No answer for a second: maybe this connection is stuck (timeouts
+        // do not make the manager reconnect), not Redis; start a new one.
+        failed = if answered { 0 } else { failed + 1 };
+        if failed >= 4 {
+            failed = 0;
+            if let Err(e) = link.renew_own().await {
+                tracing::warn!("redis broker: renewing the probe connection failed: {e}");
+            }
+        }
         match (admitting, us <= limit) {
             (true, false) => {
                 admitting = false;

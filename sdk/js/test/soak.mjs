@@ -231,7 +231,11 @@ const exited = (n) => new Promise((r) => (n.proc.exitCode !== null || n.proc.sig
 const acked = new Map(); // n -> { node index, at }
 let stopPublishing = false;
 let nextN = 1;
+// Sent again after a call timed out: the node that timed out (frozen) may
+// still have accepted it, so clients may get it twice (check's mayRepeat).
+const resent = new Set();
 async function publishOne(n) {
+  let timedOut = false;
   for (let attempt = 0; ; attempt++) {
     for (let k = 0; k < nodes.length; k++) {
       const i = (n + k) % nodes.length;
@@ -240,9 +244,12 @@ async function publishOne(n) {
         const r = await nodes[i].call("POST", "/api/v1/publish", { room: ROOM, data: { n } });
         if (r.status === 200) {
           acked.set(n, { node: i, at: now() });
+          if (timedOut) resent.add(n);
           return;
         }
-      } catch {}
+      } catch {
+        timedOut = true;
+      }
     }
     await sleep(Math.min(50 * (attempt + 1), 500));
   }
@@ -255,28 +262,42 @@ const publisher = (async () => {
 })();
 
 // --- faults --------------------------------------------------------------
+// One process fault per node at a time: two at once (kill -9 while frozen,
+// a short freeze inside a takeover) leave the judges looking at a process
+// that is not the one they froze. A fault finding every node busy is skipped.
+const busyNodes = new Set();
+const exclusive = (fault) => async () => {
+  const free = [0, 1, 2].filter((n) => !busyNodes.has(n));
+  if (free.length === 0) return;
+  const i = pick(free);
+  busyNodes.add(i);
+  try {
+    await fault(i);
+  } finally {
+    busyNodes.delete(i);
+  }
+};
 const nodeFaults = {
-  async kill9() {
-    const i = between(0, 2);
+  kill9: exclusive(async (i) => {
     note(`kill -9 node ${i}`);
     nodes[i].alive = false;
-    queueLost.push({ node: i, from: now() - queueSpan(i), to: now() });
+    // `to` a little later: a 200 already on its way when the kill is sent
+    // is recorded just after it.
+    queueLost.push({ node: i, from: now() - queueSpan(i), to: now() + 250 });
     nodes[i].proc.kill("SIGKILL");
     await exited(nodes[i]);
     await sleep(between(300, 3000));
     await ensureUp(i);
     note(`node ${i} back`);
-  },
-  async term() {
-    const i = between(0, 2);
+  }),
+  term: exclusive(async (i) => {
     note(`SIGTERM node ${i}`);
     await stopNode(nodes[i]);
     await sleep(between(0, 2000));
     await ensureUp(i);
     note(`node ${i} back`);
-  },
-  async freeze() {
-    const i = between(0, 2);
+  }),
+  freeze: exclusive(async (i) => {
     const ms = pick([between(300, 2000), between(4000, 7000)]); // slot_ttl_s is 3
     note(`SIGSTOP node ${i} for ${ms} ms`);
     nodes[i].alive = false;
@@ -291,19 +312,19 @@ const nodeFaults = {
     }
     await ensureUp(i);
     nodes[i].alive = true;
-  },
-  async takeover() {
+  }),
+  takeover: exclusive(async (i) => {
     // Freeze past the slot TTL while a newcomer leases the freed slot: the
     // frozen node must stop when it wakes (fencing), not serve on. A
     // newcomer takes the lowest free slot, so lower free ones (left by
     // earlier restarts) are held by placeholders first; and the judge
     // looks at the slot key itself, not at which node was started.
-    const i = between(0, 2);
     note(`SIGSTOP node ${i}; a newcomer takes its slot`);
     const before = slotKeys();
     nodes[i].alive = false;
     const at = now();
-    nodes[i].proc.kill("SIGSTOP");
+    const frozen = nodes[i]; // another fault at the same time may replace it
+    frozen.proc.kill("SIGSTOP");
     await sleep(3600); // slot_ttl_s is 3
     const after = slotKeys();
     const gone = [...before.keys()].filter((s) => !after.has(s));
@@ -321,20 +342,26 @@ const nodeFaults = {
     } else {
       note(`frozen node's slot unclear (${gone.length} expired); nothing to judge`);
     }
-    nodes[i].proc.kill("SIGCONT");
-    const stopped = await Promise.race([exited(nodes[i]).then(() => true), sleep(8000).then(() => false)]);
-    if (stopped) {
+    frozen.proc.kill("SIGCONT");
+    const stopped = await Promise.race([exited(frozen).then(() => true), sleep(8000).then(() => false)]);
+    if (nodes[i] !== frozen) {
+      // Another fault at the same time (kill -9) replaced node i with a new
+      // process and another slot: nothing to judge.
+      note(`node ${i} was replaced meanwhile; nothing to judge`);
+    } else if (stopped) {
       fenced += 1;
       note(`node ${i} stopped itself (fenced)`);
       queueLost.push({ node: i, from: at - 1000, to: at });
-    } else {
-      if (taken) violations.push(`node ${i} kept running after another node took its slot`);
-      nodes[i].proc.kill("SIGKILL");
-      await exited(nodes[i]);
+    } else if (taken) {
+      violations.push(`node ${i} kept running after another node took its slot`);
+    }
+    if (!stopped) {
+      frozen.proc.kill("SIGKILL");
+      await exited(frozen);
     }
     if (newcomer) await stopNode(newcomer);
     await ensureUp(i);
-  },
+  }),
 };
 /** Node slot -> holder, read from Redis. */
 function slotKeys() {
@@ -454,7 +481,7 @@ for (const m of probes.missing) {
 let queueLostCount = 0; // missing at the first client, exempted above
 for (const r of recs) {
   try {
-    check(r, { ordered: false });
+    check(r, { ordered: false, mayRepeat: resent });
   } catch (e) {
     violations.push(`${r.name}: ${e.message.split("\n")[0]}`);
   }

@@ -157,6 +157,24 @@ impl Link {
         read(&self.own)
     }
 
+    /// A fresh `own` connection to the current primary. The connection
+    /// manager reconnects after a broken connection, not after a response
+    /// timeout; a connection that only times out would keep the node
+    /// refusing new sessions (the probe fails) for good.
+    pub(crate) async fn renew_own(&self) -> redis::RedisResult<()> {
+        let own = self
+            .client()
+            .await?
+            .get_connection_manager_with_config(
+                redis::aio::ConnectionManagerConfig::new()
+                    .set_response_timeout(Some(CONNECT_TIMEOUT))
+                    .set_connection_timeout(Some(CONNECT_TIMEOUT)),
+            )
+            .await?;
+        write(&self.own, own);
+        Ok(())
+    }
+
     /// The connection for writes followed by `WAIT` (see `acked`).
     pub(crate) fn acked(&self) -> Option<ConnectionManager> {
         read(&self.acked)

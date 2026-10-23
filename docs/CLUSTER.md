@@ -88,6 +88,10 @@ orchestrator restarts it. Kubernetes: `terminationGracePeriodSeconds` above
   per-node sequence the Redis script checks). Plain room messages can be
   duplicated only if a connection to Redis breaks after Redis ran a publish
   but before it answered.
+- **A backend's own retry can duplicate.** If a publish call times out and
+  the backend sends the same message to another node, the first node may
+  still have accepted it (a node that froze or stalled answers late), and
+  members get both. Put an id in the message if that matters (soak test).
 
 ## Capacity (one Redis core, loopback; [BENCHMARKS.md](BENCHMARKS.md))
 

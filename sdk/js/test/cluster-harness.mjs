@@ -216,7 +216,12 @@ export function recorder(nodes, name, first) {
     getTicket: async () => (await anyNode(nodes, "POST", "/api/v1/tickets", { user: name })).ticket,
     reconnect: { minDelayMs: 50, maxDelayMs: 300 },
   });
-  const rec = { name, client, events: [], reconnects: 0 };
+  // `attempts`, `closes` and `errors`: for the timeout report (a client
+  // stuck in "connecting" says why).
+  const rec = { name, client, events: [], reconnects: 0, attempts: 0, closes: [], errors: [] };
+  client.on("reconnecting", () => (rec.attempts += 1));
+  client.on("close", (c) => rec.closes.push(c.code));
+  client.on("error", (e) => rec.errors.push(e?.code ?? String(e)));
   client.on("message", (m) => {
     if (m.svc === "server" && m.room === ROOM) rec.events.push({ offset: m.offset, epoch: m.epoch, n: m.data.n, at: now() });
   });
@@ -233,14 +238,18 @@ export function recorder(nodes, name, first) {
  * rise by exactly one (no duplicate, no reordering, no silent loss).
  * Returns the stretches' offset lists.
  */
-export function check(rec, { ordered = true } = {}) {
+export function check(rec, { ordered = true, mayRepeat = new Set() } = {}) {
   // Content: the backend published n = 1, 2, 3, ... once each. A client must
   // never see one twice (a retried write that had already run would show
   // up here, not in the offsets). In order, too — unless the backend moved
   // to another node while one was stalled: then the stalled node's
   // accepted messages land after the other's (no order across nodes).
   const ns = rec.events.filter((e) => !e.gap).map((e) => e.n);
-  assert.equal(new Set(ns).size, ns.length, `${rec.name}: a message arrived twice`);
+  // `mayRepeat`: messages the backend sent again to another node after a
+  // timeout; the first node may have accepted them too (a real backend's
+  // retry; the gateway cannot tell the two apart).
+  const twice = ns.filter((n, i) => ns.indexOf(n) !== i && !mayRepeat.has(n));
+  assert.equal(twice.length, 0, `${rec.name}: a message arrived twice (${twice.slice(0, 5)})`);
   for (let i = 1; ordered && i < ns.length; i++) {
     const msgs = rec.events.filter((e) => !e.gap);
     assert.ok(
@@ -278,7 +287,7 @@ export async function until(cond, ms, what, recs = []) {
       const state = recs.map((r) => {
         const msgs = r.events.filter((e) => !e.gap);
         const gaps = r.events.filter((e) => e.gap).map((e) => (e.unrecovered ? "unrecovered" : e.epoch ? `epoch@${msgs.length}` : `gap@${msgs.length}`));
-        return `${r.name}: ${msgs.length} msgs, last n=${msgs.at(-1)?.n} off=${msgs.at(-1)?.offset}, gaps=[${gaps}], reconnects=${r.reconnects}, state=${r.client.state}`;
+        return `${r.name}: ${msgs.length} msgs, last n=${msgs.at(-1)?.n} off=${msgs.at(-1)?.offset}, gaps=[${gaps}], reconnects=${r.reconnects}, state=${r.client.state}, attempts=${r.attempts}, closes=[${(r.closes ?? []).slice(-5)}], errors=[${(r.errors ?? []).slice(-3)}]`;
       });
       throw new Error(`timed out: ${what}\n${state.join("\n")}`);
     }
