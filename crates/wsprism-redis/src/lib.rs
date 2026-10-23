@@ -1519,6 +1519,7 @@ impl SharedSessions for RedisBroker {
 /// sent while the connection is down is lost (ADR 0011 R4-1; R5 reconciles).
 async fn run_control(link: Arc<Link>, channel: String, incoming: mpsc::Sender<Incoming>) {
     let mut wait = RECONNECT_FIRST;
+    let mut connected_before = false;
     let mut moved = link.moved();
     loop {
         let pubsub = match link.client().await {
@@ -1536,9 +1537,14 @@ async fn run_control(link: Arc<Link>, channel: String, incoming: mpsc::Sender<In
         };
         if sink.subscribe(&channel).await.is_err() {
             tokio::time::sleep(wait).await;
+            wait = (wait * 2).min(RECONNECT_MAX);
             continue;
         }
         wait = RECONNECT_FIRST;
+        if connected_before {
+            link.reached_again();
+        }
+        connected_before = true;
         moved.borrow_and_update();
         loop {
             tokio::select! {
@@ -1718,6 +1724,7 @@ async fn probe(link: Arc<Link>, a: Admission, probe_us: Arc<std::sync::atomic::A
             }
             (false, true) => {
                 admitting = true;
+                link.reached_again();
                 tracing::info!("redis broker: Redis answers in time again; taking new sessions");
             }
             _ => {}
@@ -1743,7 +1750,14 @@ async fn heartbeat(
     );
     let ttl_ms = ttl.as_millis() as u64;
     loop {
-        tokio::time::sleep(ttl / 3).await;
+        // Every third of the TTL, and at once when Redis is reached again
+        // after a drop: if it restarted without its data, the slot key is
+        // gone, and a node starting meanwhile would lease it and fence this
+        // one (it was up to 10 s with the default TTL).
+        tokio::select! {
+            () = tokio::time::sleep(ttl / 3) => {}
+            () = link.was_reached_again() => {}
+        }
         // The current primary's (it moves with Sentinel), on a connection of
         // its own: never behind a burst of session commands.
         let Some(mut conn) = link.own() else {
@@ -1816,6 +1830,9 @@ async fn run_shard(
             continue;
         }
         wait = RECONNECT_FIRST;
+        if connected_before {
+            link.reached_again();
+        }
         if connected_before && !rooms.is_empty() {
             tracing::warn!(
                 shard = index,

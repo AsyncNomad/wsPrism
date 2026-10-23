@@ -51,6 +51,9 @@ pub(crate) struct Link {
     /// The primary the connections point at (Sentinel mode).
     primary: RwLock<Option<String>>,
     moved: watch::Sender<u64>,
+    /// Redis was reached again after a drop (maybe a restart that lost the
+    /// slot keys): the slot heartbeat runs at once instead of waiting.
+    reached_again: tokio::sync::Notify,
 }
 
 fn read<T: Clone>(l: &RwLock<Option<T>>) -> Option<T> {
@@ -81,6 +84,7 @@ impl Link {
             acked_wait,
             primary: RwLock::new(None),
             moved: watch::channel(0).0,
+            reached_again: tokio::sync::Notify::new(),
         }
     }
 
@@ -178,6 +182,17 @@ impl Link {
     /// The connection for writes followed by `WAIT` (see `acked`).
     pub(crate) fn acked(&self) -> Option<ConnectionManager> {
         read(&self.acked)
+    }
+
+    /// Report that Redis answers again after a drop.
+    pub(crate) fn reached_again(&self) {
+        self.reached_again.notify_one();
+    }
+
+    /// Resolves after [`Link::reached_again`] (at once if it was called
+    /// meanwhile).
+    pub(crate) async fn was_reached_again(&self) {
+        self.reached_again.notified().await;
     }
 
     /// Changes when the primary moved (pub/sub tasks reconnect).
