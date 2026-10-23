@@ -19,7 +19,7 @@ pub fn load_from_file(path: &str) -> Result<GatewayConfig> {
 }
 
 /// Parse and validate. `${VAR}` placeholders in values come from the
-/// process environment (see [`env`]).
+/// process environment (see [`env`](mod@env)).
 pub fn load_from_str(s: &str) -> Result<GatewayConfig> {
     load_with_env(s, &|name| std::env::var(name).ok())
 }

@@ -1,8 +1,11 @@
 //! wsPrism cluster broker on Redis (ADR 0011 R3): gateway nodes share rooms
 //! through Redis pub/sub.
 //!
-//! **Experimental** — like `wsprism_engine::broker`, this changes until the
-//! cluster work (ADR 0011 R3-R5) is complete.
+//! **Experimental.** The cluster is chaos- and soak-tested (node kills,
+//! partitions, Redis restarts, failovers), but the label stays until it has
+//! run in production, and this crate's API may still change in 0.x. Most
+//! users never touch it: `gateway.broker.kind: redis` builds it from the
+//! configuration file.
 //!
 //! - **Fan-out:** each room is a channel `<prefix>:r:{<tenant>::<room>}` (the
 //!   braces are a Redis Cluster hash tag, chosen now so keys need not change
@@ -36,6 +39,33 @@
 //!   offset, member = `<unix s>:<frame>`). If Redis loses the state
 //!   (restart, eviction), a new epoch starts: clients resync instead of
 //!   resuming from offsets that mean something else now.
+//! - **Fencing:** every room publish checks, inside Redis, that this node
+//!   still owns its slot (`PUBLISH_FENCED`, and the history script). A node
+//!   that was cut off or frozen past `slot_ttl` while another node took its
+//!   slot gets `FENCED`, reports itself unhealthy, refuses new publishes at
+//!   once, and the gateway drains it and exits with an error.
+//! - **Where Redis is** (`link`): one fixed address, or the primary Redis
+//!   Sentinel names (asked every second; every connection moves on a
+//!   failover). `rediss://` with a private CA and client certificates, for
+//!   the nodes and for the sentinels.
+//! - **Writes a failover could undo:** a promoted replica may lack the last
+//!   writes. Everything the nodes wrote is repaired (a new `run_id` starts
+//!   new history epochs, and nodes register and restore their sessions and
+//!   memberships), except a consumed one-time ticket, so that one waits
+//!   for replicas ([`ReplicaAck`], `WAIT` on a connection of its own).
+//! - **Overload:** a probe pings Redis every 250 ms on its own connection
+//!   (shared with the slot heartbeat, so neither queues behind session
+//!   traffic); while Redis answers slowly, or too many session claims wait,
+//!   [`Broker::admitting`] is
+//!   false and the gateway refuses new connections ([`Admission`]).
+//! - **Subscriptions** go out together: a batch is spread over the
+//!   subscriber connections and each pipelines its commands in order, one
+//!   channel per command (a multi-channel `SUBSCRIBE` answers once per
+//!   channel, which the client library would pair with later requests).
+//! - **After Redis restarts:** scripts are reloaded on `NOSCRIPT`, the slot
+//!   heartbeat runs as soon as Redis answers again (so a starting node cannot
+//!   lease a live node's vanished slot), and reads that are safe to repeat
+//!   are tried once more when they meet the old, dead socket.
 
 #![deny(clippy::unwrap_used)]
 #![deny(clippy::expect_used)]

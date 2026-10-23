@@ -1,16 +1,22 @@
-//! wsPrism gateway library entry.
+//! The wsPrism gateway: everything between a socket and the realtime engine.
 //!
-//! This crate assembles the production gateway stack:
-//! - Transport: Axum-based WebSocket upgrade with handshake defense, tenant caps,
-//!   slow-consumer protection, and trace-id propagation.
-//! - Policy: Allowlist, rate limiting, session/room governance, and hot-lane behavior.
-//! - Dispatch: Routes ext/hot messages to registered services.
-//! - Realtime core: Session/room registries, lossy/reliable egress.
-//! - Observability: Labeled counters/gauges/histograms, sys.* envelopes with trace_id,
-//!   and /metrics exposure via ops endpoints.
-//! - Ops: /healthz, /readyz, /metrics, graceful drain.
-//! - Built-ins: room/sys/chat services provided out-of-the-box; additional
-//!   services can be registered via dispatcher modules.
+//! - **Transport:** WebSocket upgrade behind an admission pipeline: handshake
+//!   rate limits (per IP, per IPv6 prefix, global), trusted proxies,
+//!   browser `Origin` checks, protocol negotiation (v2 and v1), tenant
+//!   capacity and, in a cluster, overload protection.
+//! - **Authentication:** a chain per tenant: one-time tickets, JWT (pinned
+//!   algorithm, JWKS, key rotation), a connect proxy to your backend, and
+//!   plugins; in-band token refresh; per-user room permissions.
+//! - **Sessions:** one task per connection that never waits on its own
+//!   outbound queue; sid takeover and per-user limits decided atomically;
+//!   slow consumers closed (reliable) or skipped (lossy).
+//! - **Policy:** allowlists, rate limits, frame sizes, room limits, Hot lane
+//!   behaviour, presence events, room history.
+//! - **Backends:** the server API on an internal listener (publish,
+//!   disconnect, tickets, presence) and the RPC proxy.
+//! - **Cluster:** the Redis broker (`wsprism-redis`, feature `redis`).
+//! - **Operations:** `/healthz`, `/readyz`, Prometheus `/metrics`, JSON logs
+//!   with identity hashing, graceful draining.
 //!
 //! The gateway is designed for panic-free operation: upstream errors surface as
 //! structured `WsPrismError` responses instead of crashing the process.

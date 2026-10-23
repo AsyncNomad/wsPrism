@@ -17,6 +17,6 @@
 | [0010](0010-presence-events.md) | 멤버 입장·퇴장 이벤트 (presence events) | 채택 |
 | [0011](0011-broker-history-and-cluster.md) | Broker 경계, 메시지 이력·복구, 멀티 노드 (M3+M4) | 채택 (개정 2), 구현 완료 |
 | [0012](0012-jwks-and-token-refresh.md) | JWKS와 대역 내 토큰 갱신 | 채택 |
-| [0013](0013-room-traffic-across-several-redis.md) | 룸 트래픽을 여러 Redis에 나누기 (이력 처리량 확장) | 제안 |
+| [0013](0013-room-traffic-across-several-redis.md) | 룸 트래픽을 여러 Redis에 나누기 (이력 처리량 확장) | 설계 채택, 구현 보류 (착수 조건은 ADR 「평가」) |
 
 새 ADR은 다음 번호로 만들고, 결정이 바뀌면 기존 ADR을 고치지 말고 새 ADR에서 "대체함"을 밝힌다.
