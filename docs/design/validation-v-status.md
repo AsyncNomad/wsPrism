@@ -70,7 +70,9 @@ cargo build --release -p wsprism-loadgen
 
   - Sentinel + TLS ✅: 상호 TLS 환경에서 장애 조치 2.3~3.2초.
 
-  다음 작업: 0.1.0 게시(사용자). |
+  - 출시 전 전수 결함 탐색 ✅(2026-10-23): 결함 5건 수정(F1~F5: 동시 접속 sid·한도, 클러스터 축출 경쟁, 서버 Hot 발행, 만료 오버플로, SDK rejoin), 슬롯 재확보 즉시화. HARDENING 「출시 전 전수 결함 탐색」.
+
+  다음 작업: 0.1.0 출시 준비(릴리스 노트 정리) → 게시(사용자). |
 | M6 이후 보류 | 0.1.0 이후 | 핫 리로드(설정 변경은 롤링 재시작으로 무중단 가능), OpenTelemetry(새 의존성 승인 필요; 지금은 `trace_id`가 로그·클라이언트 오류에 있음), 관리 API RBAC, Helm 차트, UDP 로드밸런서 가이드(WebTransport 경로 확정 후) |
 | 0.1.0 릴리스 준비 | ⏳ 다음 | RELEASING.md |
 
