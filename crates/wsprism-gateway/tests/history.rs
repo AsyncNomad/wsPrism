@@ -170,12 +170,24 @@ async fn a_returning_client_gets_what_it_missed_in_order() {
     let j = join(&mut a, "chat:1", Some(json!({"epoch": epoch, "offset": 1}))).await;
     assert_eq!(j["recovered"], true, "{j}");
     assert_eq!(j["offset"], 5);
+    // Both kinds in arrival order (skipping one kind while waiting for the
+    // other would hide a reordering as a timeout).
     let mut got = Vec::new();
-    for _ in 0..4 {
-        let v = next_of(&mut a, if got.len() == 3 { "publish" } else { "msg" }).await;
-        got.push(v["offset"].as_u64().unwrap());
+    while got.len() < 4 {
+        match next_event(&mut a).await {
+            Event::Json(v) if v["type"] == "msg" || v["type"] == "publish" => got.push((
+                v["offset"].as_u64().unwrap_or(0),
+                v["type"].as_str().unwrap_or("").to_string(),
+            )),
+            Event::Json(_) => {}
+            other => panic!("after {got:?}: {other:?}"),
+        }
     }
-    assert_eq!(got, [2, 3, 4, 5]);
+    let want: Vec<(u64, String)> = [(2, "msg"), (3, "msg"), (4, "msg"), (5, "publish")]
+        .into_iter()
+        .map(|(o, t)| (o, t.to_string()))
+        .collect();
+    assert_eq!(got, want);
     // Then live.
     say(&mut b, "chat:1", "live").await;
     assert_eq!(chats(&mut a, 1).await, [(6, "live".into())]);

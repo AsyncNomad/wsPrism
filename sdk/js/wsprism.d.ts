@@ -98,6 +98,8 @@ export interface ClientOptions {
   sid?: string;
   requestTimeoutMs?: number;
   reconnect?: { enabled?: boolean; minDelayMs?: number; maxDelayMs?: number };
+  /** Give up an attempt not admitted (`sys.authed`) within this, and retry (default 10000). */
+  connectTimeoutMs?: number;
   /** WebSocket implementation (default: `globalThis.WebSocket`). */
   WebSocket?: typeof WebSocket;
   /** Renew expiring credentials in-band with `sys.refresh` (default true). */

@@ -411,3 +411,31 @@ test("history rooms resume after a reconnect, in order, without duplicates", asy
   await sleep(100);
   assert.deepEqual(seen, [1, 2, 3, 4, 5, 6]);
 });
+
+test("a handshake that never completes is given up and retried (connectTimeoutMs)", async () => {
+  // A peer that accepts the TCP connection and then says nothing (a stuck
+  // proxy, a server that stalls, a half-open connection): without a
+  // deadline the client would wait in "connecting" for good (CI, review #3).
+  const sockets = new Set();
+  const silent = createNetServer((sock) => sockets.add(sock));
+  await new Promise((r) => silent.listen(0, "127.0.0.1", r));
+  const url = `ws://127.0.0.1:${silent.address().port}/v1/ws`;
+  const c = new WsPrismClient({
+    url,
+    tenant: "t",
+    getTicket: () => "tk_silent",
+    connectTimeoutMs: 300,
+    reconnect: { minDelayMs: 50, maxDelayMs: 100 },
+  });
+  const errors = [];
+  c.on("error", (e) => errors.push(e?.code));
+  let attempts = 0;
+  c.on("reconnecting", () => (attempts += 1));
+  await assert.rejects(c.connect(), (e) => e.code === "CONNECT_FAILED");
+  await sleep(1200);
+  c.close();
+  for (const sock of sockets) sock.destroy();
+  silent.close();
+  assert.ok(attempts >= 2, `retried (${attempts} attempts)`);
+  assert.ok(errors.includes("CONNECT_TIMEOUT"), `${errors}`);
+});

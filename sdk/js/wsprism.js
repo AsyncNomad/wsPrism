@@ -130,6 +130,9 @@ export class WsPrismClient {
    * @param {() => string | Promise<string>} opts.getTicket  called per connection attempt
    * @param {string} [opts.sid]
    * @param {number} [opts.requestTimeoutMs=10000]
+   * @param {number} [opts.connectTimeoutMs=10000]  give up an attempt not
+   *   admitted (`sys.authed`) by then: close it and retry like any failed one
+   *   (a stalled server or proxy, a half-open connection)
    * @param {{minDelayMs?: number, maxDelayMs?: number, enabled?: boolean}} [opts.reconnect]
    * @param {typeof WebSocket} [opts.WebSocket]  implementation (default: global)
    * @param {boolean} [opts.refresh=true]  renew expiring credentials in-band (sys.refresh)
@@ -143,6 +146,7 @@ export class WsPrismClient {
     this.urls = urls;
     this.urlIndex = 0;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? 10000;
+    this.connectTimeoutMs = opts.connectTimeoutMs ?? 10000;
     this.reconnect = { enabled: true, minDelayMs: 1000, maxDelayMs: 30000, ...opts.reconnect };
     this.WS = opts.WebSocket ?? globalThis.WebSocket;
     if (!this.WS) throw new TypeError("no WebSocket implementation (Node 22+ or pass opts.WebSocket)");
@@ -205,6 +209,27 @@ export class WsPrismClient {
       const ws = new this.WS(url, [PROTOCOL, AUTH_PREFIX + ticket]);
       ws.binaryType = "arraybuffer";
       this.ws = ws;
+      // End an attempt that is not admitted in time, or that reported an
+      // error without a close event: as if the socket had closed (1006), so
+      // the reconnect policy runs. Every later event of this socket is ignored.
+      const abandon = (code, why) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(deadline);
+        clearTimeout(noClose);
+        ws.onmessage = ws.onclose = ws.onerror = null;
+        try {
+          ws.close();
+        } catch {}
+        this.emit("error", new WsPrismError(code, why));
+        reject(new WsPrismError("CONNECT_FAILED", why));
+        this.onClose(1006, why, false);
+      };
+      const deadline = setTimeout(
+        () => abandon("CONNECT_TIMEOUT", `not admitted within ${this.connectTimeoutMs} ms`),
+        this.connectTimeoutMs,
+      );
+      let noClose = null;
       ws.onmessage = (ev) => {
         if (typeof ev.data === "string") {
           let msg;
@@ -215,6 +240,8 @@ export class WsPrismClient {
           }
           if (!settled && msg.svc === "sys" && msg.type === "authed") {
             settled = true;
+            clearTimeout(deadline);
+            clearTimeout(noClose);
             this.state = "open";
             this.attempt = 0;
             this.user = msg.data?.user ?? null;
@@ -230,6 +257,8 @@ export class WsPrismClient {
         }
       };
       ws.onclose = (ev) => {
+        clearTimeout(deadline);
+        clearTimeout(noClose);
         const wasOpen = settled;
         if (!settled) {
           settled = true;
@@ -237,7 +266,13 @@ export class WsPrismClient {
         }
         this.onClose(ev.code, ev.reason, wasOpen);
       };
-      ws.onerror = () => {}; // followed by close
+      // Normally followed by close; some implementations skip it for a
+      // refused handshake (e.g. 503): give it a second.
+      ws.onerror = () => {
+        if (!settled && !noClose) {
+          noClose = setTimeout(() => abandon("CONNECT_ERROR", "connection error without a close"), 1000);
+        }
+      };
       ws.onopen = () => {
         // The gateway echoes the version it chose; this client speaks v2 only.
         if (ws.protocol !== PROTOCOL) ws.close(1002, "protocol");
