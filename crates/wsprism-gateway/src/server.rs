@@ -95,8 +95,11 @@ async fn slot_lost(state: AppState) {
 }
 
 /// How often the sweeper visits every session (idle check granularity and
-/// keep-alive jitter).
-const SWEEP_INTERVAL: Duration = Duration::from_secs(1);
+/// keep-alive jitter). Every pass sends the pings that fell due since the
+/// last one: at 1 s, 50k sessions sent ~2,500 at once every second and
+/// light traffic's p999 rose to 2.5-3.7 ms; at 250 ms it matches no pings
+/// at all (1.7-2.2 ms) for ~2% of a core more (BENCHMARKS "많은 유휴 연결").
+const SWEEP_INTERVAL: Duration = Duration::from_millis(250);
 
 /// One task for all sessions' keep-alive pings and idle timeouts, instead of
 /// two timers per session (performance-architecture §5).

@@ -268,6 +268,9 @@ impl Session {
         }
 
         let signals = SessionSignals::new();
+        // Sessions that connect together must not all be pinged together.
+        let ping_every = Duration::from_millis(app.cfg().gateway.ping_interval_ms);
+        signals.stagger_first_ping(tick_phase_ms(&session_key, Some(ping_every)));
         if let Some(exp) = id.expires_at {
             signals.set_expiry(crate::auth::expiry_deadline_ms(exp, now_ms()));
         }
@@ -444,8 +447,9 @@ impl Session {
     }
 }
 
-/// A stable offset within the tick period for this session, so paced
-/// sessions spread their flushes over the period instead of all at once.
+/// A stable offset within `tick` for this session (0 without one), so
+/// per-session periodic work (Hot tick flushes, keep-alive pings) spreads
+/// over the period instead of happening for every session at once.
 fn tick_phase_ms(session_key: &str, tick: Option<Duration>) -> u64 {
     use std::hash::{Hash, Hasher};
     let Some(period) = tick else { return 0 };

@@ -38,6 +38,9 @@ pub struct SessionSignals {
     notify: Notify,
     last_activity_ms: AtomicU64,
     last_ping_ms: AtomicU64,
+    /// How much earlier the first ping is due (`stagger_first_ping`); 0
+    /// after it.
+    first_ping_phase_ms: AtomicU32,
     /// When the credential expires (`now_ms` scale; `u64::MAX` = never).
     expires_at_ms: AtomicU64,
     /// Requests being answered by another task (`DeferredReply`).
@@ -55,6 +58,7 @@ impl SessionSignals {
             notify: Notify::new(),
             last_activity_ms: AtomicU64::new(now),
             last_ping_ms: AtomicU64::new(now),
+            first_ping_phase_ms: AtomicU32::new(0),
             expires_at_ms: AtomicU64::new(u64::MAX),
             deferred: AtomicU32::new(0),
             hot: HotSlot::new(DEFAULT_SLOT_CAP),
@@ -137,14 +141,33 @@ impl SessionSignals {
         self.deferred.fetch_sub(1, Ordering::AcqRel);
     }
 
+    /// Bring this session's first keep-alive ping `phase_ms` earlier (less
+    /// than the ping interval). Sessions that connect together would
+    /// otherwise all be pinged in the same sweep, every interval: 50k
+    /// sessions woken and written at once raised p999 from ~2 to ~6 ms and
+    /// the max to ~40 ms (BENCHMARKS "많은 유휴 연결"). A per-session phase
+    /// spreads the pings over the interval for good.
+    /// (Kept apart from the ping clock: `now_ms` starts near 0 with the
+    /// process, so moving the clock back would clamp to 0 for exactly the
+    /// sessions that need spreading, a reconnect storm after a restart.)
+    pub fn stagger_first_ping(&self, phase_ms: u64) {
+        self.first_ping_phase_ms
+            .store(phase_ms.min(u32::MAX as u64) as u32, Ordering::Relaxed);
+    }
+
     /// True (and the ping clock restarted) if a keep-alive ping is due.
     pub fn take_ping_due(&self, now: u64, interval_ms: u64) -> bool {
         let last = self.last_ping_ms.load(Ordering::Relaxed);
-        now.saturating_sub(last) >= interval_ms
+        let phase = u64::from(self.first_ping_phase_ms.load(Ordering::Relaxed));
+        let due = now.saturating_sub(last) + phase >= interval_ms
             && self
                 .last_ping_ms
                 .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
+                .is_ok();
+        if due && phase > 0 {
+            self.first_ping_phase_ms.store(0, Ordering::Relaxed);
+        }
+        due
     }
 }
 
@@ -153,6 +176,20 @@ impl SessionSignals {
 mod tests {
     use super::*;
     use crate::realtime::types::close_code;
+
+    #[test]
+    fn a_staggered_first_ping_comes_earlier_then_keeps_its_interval() {
+        let s = SessionSignals::new();
+        s.stagger_first_ping(3_000);
+        let t0 = now_ms();
+        assert!(
+            !s.take_ping_due(t0 + 1_000, 10_000),
+            "not before interval - phase"
+        );
+        assert!(s.take_ping_due(t0 + 7_100, 10_000), "at interval - phase");
+        assert!(!s.take_ping_due(t0 + 7_200, 10_000), "the clock restarted");
+        assert!(s.take_ping_due(t0 + 17_100, 10_000), "then every interval");
+    }
 
     #[tokio::test]
     async fn first_close_request_wins_and_is_not_lost_without_a_waiter() {
