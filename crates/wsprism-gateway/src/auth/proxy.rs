@@ -5,7 +5,7 @@
 //! timeout, unreachable, malformed reply) is "unavailable" (503 +
 //! Retry-After), so a backend outage is not reported as bad credentials.
 
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -98,7 +98,7 @@ impl Authenticator for ProxyAuthenticator {
             permissions,
             expires_at: reply
                 .expires_at
-                .map(|s| UNIX_EPOCH + Duration::from_secs(s)),
+                .and_then(|s| super::jwt::unix_time(s, Duration::ZERO)),
         })
     }
 }

@@ -352,3 +352,18 @@ tenants:
         .expect("jwt");
     assert_eq!(authed["data"]["user"], "gina");
 }
+
+/// A token that expires in the very far future (a valid signature from
+/// the issuer) is admitted: the expiry used to be computed with an
+/// overflowing `SystemTime` addition, which panicked the handshake.
+#[tokio::test]
+async fn a_far_future_expiry_is_admitted_without_overflow() {
+    let gw = spawn(&hs_yaml()).await;
+    for exp in [u64::MAX, u64::MAX / 2, i64::MAX as u64] {
+        let token = hs(claims_a("alice", exp));
+        let (_ws, authed) = connect_token(gw.addr, "a", &token, None)
+            .await
+            .unwrap_or_else(|e| panic!("exp {exp}: {e}"));
+        assert_eq!(authed["data"]["user"], "alice");
+    }
+}

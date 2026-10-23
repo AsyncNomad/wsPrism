@@ -251,9 +251,19 @@ impl Authenticator for JwtAuthenticator {
             user_id: claims.sub,
             permissions: Permissions::from_lists(ws.subscribe, ws.publish),
             // The session may outlive `exp` by the tolerated skew, no more.
-            expires_at: Some(UNIX_EPOCH + Duration::from_secs(claims.exp) + self.leeway),
+            expires_at: unix_time(claims.exp, self.leeway),
         })
     }
+}
+
+/// `secs` after the Unix epoch, plus `extra`; `None` (no expiry) when that
+/// is past what `SystemTime` can hold. An issuer may sign a token that
+/// expires in the year 584 billion: the unchecked sum panicked the
+/// handshake.
+pub fn unix_time(secs: u64, extra: Duration) -> Option<SystemTime> {
+    UNIX_EPOCH
+        .checked_add(Duration::from_secs(secs))?
+        .checked_add(extra)
 }
 
 /// Monotonic deadline (`now_ms` scale) for a wall-clock expiry.
