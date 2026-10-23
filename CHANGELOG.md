@@ -92,6 +92,9 @@ the Rust API may break in 0.x minor releases, always listed here.
   A join whose room subscription the cluster does not confirm within 5 s
   fails (`UNAVAILABLE`) instead of answering `sys.joined` early. Load
   generator `churn` mode and `bench/run-churn.sh`.
+- JS SDK: a room whose rejoin after a reconnect fails for a passing
+  reason is retried, and one whose rejoin was cut by another drop is
+  rejoined on the next connection (both were dropped for good).
 - JS SDK: `connectTimeoutMs` (default 10 s): an attempt not admitted in
   time is closed and retried; an error without a close event ends the
   attempt too. Before, a stalled handshake left the client in

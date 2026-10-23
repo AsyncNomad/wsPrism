@@ -121,6 +121,11 @@ export function decodeHot(data) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** Join errors worth another try on the same connection. */
+const PASSING = new Set(["UNAVAILABLE", "RATE_LIMITED", "TIMEOUT", "INTERNAL"]);
+/** The connection went away: the next one rejoins every room. */
+const CONNECTION_GONE = new Set(["DISCONNECTED", "NOT_CONNECTED"]);
+
 export class WsPrismClient {
   /**
    * @param {object} opts
@@ -392,6 +397,7 @@ export class WsPrismClient {
   async rejoin() {
     const rooms = [...this.rooms.keys()];
     if (rooms.length === 0) return;
+    const ws = this.ws;
     for (const room of rooms) {
       // Resume history rooms from the last message seen (ADR 0011 §3).
       const prev = this.rooms.get(room);
@@ -400,12 +406,39 @@ export class WsPrismClient {
       try {
         await this.join(room, { recover });
       } catch (e) {
-        this.rooms.delete(room);
+        // A passing failure keeps the room: the connection is gone (the
+        // next one rejoins every room), or the gateway could not take the
+        // join just now (retried here). Only a refusal drops it (it was
+        // dropped whatever the error, so a drop during a rejoin lost the
+        // room for good).
+        if (CONNECTION_GONE.has(e?.code)) return;
         this.emit("error", e);
+        if (PASSING.has(e?.code)) this.retryRejoin(room, recover, ws, 1);
+        else this.rooms.delete(room);
       }
     }
-    this.emit("rejoined", [...this.rooms.values()]);
+    this.emit("rejoined", [...this.rooms.values()].filter((r) => !r.rejoining));
   }
+
+  /** Join `room` again on connection `ws` after a passing failure, with backoff. */
+  retryRejoin(room, recover, ws, attempt) {
+    const info = this.rooms.get(room);
+    if (!info) return;
+    info.rejoining = true;
+    const cap = Math.min(30000, 500 * 2 ** Math.min(attempt - 1, 16));
+    setTimeout(async () => {
+      if (this.stopped || this.ws !== ws || this.state !== "open" || this.rooms.get(room) !== info) return;
+      try {
+        this.emit("rejoined", [await this.join(room, { recover })]);
+      } catch (e) {
+        if (CONNECTION_GONE.has(e?.code)) return;
+        this.emit("error", e);
+        if (PASSING.has(e?.code)) this.retryRejoin(room, recover, ws, attempt + 1);
+        else if (this.rooms.get(room) === info) this.rooms.delete(room);
+      }
+    }, cap / 2 + Math.random() * (cap / 2));
+  }
+
 
   sendJson(msg) {
     if (!this.ws || this.state !== "open") throw new WsPrismError("NOT_CONNECTED", "not connected");
