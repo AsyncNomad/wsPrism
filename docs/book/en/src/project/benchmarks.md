@@ -32,7 +32,7 @@ Performance claims in this book come from measurements kept in the repository: t
 
 What this shows:
 
-- **Memory** is the largest difference: a quarter to a third of Centrifugo's per connection in room workloads, about 60% in broadcast, and a tenth or less of Sockudo's.
+- **Memory** is the largest difference: a quarter to a third of Centrifugo's per connection in these busy room workloads (with many idle connections the gap is smaller; see below), about 60% in broadcast, and a tenth or less of Sockudo's.
 - **CPU:** at low and medium load, Centrifugo spends 1.3 to 1.45 times as much per delivery and Sockudo 1.3 to 1.9 times. At 2.16 million deliveries per second Centrifugo uses about 7% less CPU, but its p99 is about eighteen times higher. It appears to batch more aggressively at the cost of tail latency.
 - **Tail latency** stays in single-digit milliseconds up to the highest load tested.
 
@@ -52,6 +52,25 @@ Both servers keeping 200 messages per room for ten minutes:
 These runs used a build that carried a since-fixed regression of about 4 KB per idle connection, so the wsPrism memory column here is overstated by roughly that much.
 
 History costs wsPrism 1–3% more CPU and 4–10 KB more per connection. At the highest load, Centrifugo with history saturates (p50 of up to a second), while wsPrism's latency is the same as without history.
+
+## Many idle connections
+
+Memory per connection matters most at hundreds of thousands of connections per node, where the kernel's share and per-connection bookkeeping also count. On this machine both ends of every connection, and the load generator, share 16 GB, so the test stops at 50,000 connections. Larger runs belong on dedicated hardware.
+
+50,000 connections in 1,000 rooms, either idle or with 100 publishers at 10 messages a second (about 49,000 deliveries a second), three runs each:
+
+| | wsPrism | Centrifugo |
+|---|---|---|
+| Process memory per connection, idle | 16.9 KB | 31.0–32.6 KB |
+| Process memory per connection, light traffic | 17.0 KB | 35.2–35.3 KB |
+| Kernel per connection (estimated server share) | about 4.5 KB | about 4.5 KB |
+| p99 / p999, light traffic | 0.8–1.1 / 1.5–2.7 ms | 0.8–1.8 / 1.7–19.6 ms |
+| CPU per delivery, light traffic | 8.6–9.0 µs | 12.1–15.0 µs |
+
+- wsPrism's memory per connection does not grow with the number of connections: 17.2 KB at 10,000, 16.9 KB at 50,000.
+- The ratio is smaller than in busy rooms: about 1.9 times less process memory, about 1.7 times less for the whole server once the kernel's equal share is added.
+- Centrifugo's tail latency varied a great deal between sessions; both are included in the ranges.
+- This test found a defect, now fixed: keep-alive pings of sessions that connected together were all sent in the same instant, which raised wsPrism's p999 to 6–17 ms at 50,000 connections. Pings are now spread over the interval.
 
 ## Cluster against Centrifugo's Redis engine
 

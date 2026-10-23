@@ -31,7 +31,7 @@ flowchart LR
 - **Authentication that fits your stack.** One-time tickets issued by your backend, JWTs (including JWKS and key rotation), a connect proxy that asks your backend, or a plugin of your own. Credentials can be renewed in-band without reconnecting.
 - **Rooms with history.** Clients that drop and come back receive what they missed, in order, or are told plainly that the gap cannot be filled.
 - **A cluster that tells the truth.** Several nodes share rooms, sessions, presence and history through Redis. Failures are handled explicitly: lost messages are announced, a node that lost its place stops instead of corrupting state, and the behaviour is tested against killed nodes, network partitions and Redis restarts.
-- **Measured performance.** Against Centrifugo on the same machine, wsPrism holds a connection in a quarter to a third of the memory in room workloads, spends less CPU per delivery at low and medium load, and keeps p99 latency under 10 ms at two million deliveries a second. The [benchmarks](project/benchmarks.md) explain how this was measured and where the comparison stops being fair.
+- **Measured performance.** Against Centrifugo on the same machine, wsPrism holds a connection in a quarter to a third of the memory in busy small rooms and about half with 50,000 mostly idle connections, spends less CPU per delivery at low and medium load, and keeps p99 latency under 10 ms at two million deliveries a second. The [benchmarks](project/benchmarks.md) explain how this was measured and where the comparison stops being fair.
 
 ## When it is a good fit
 
