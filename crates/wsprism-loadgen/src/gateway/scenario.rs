@@ -47,6 +47,11 @@ pub struct Args {
     /// memory only this way.
     #[arg(long)]
     pub distinct_users: bool,
+    /// Source IP addresses to spread connections over, comma-separated
+    /// (plain ws:// to an IP only). One source address reaches one server
+    /// address with at most ~64k connections.
+    #[arg(long, value_delimiter = ',')]
+    pub local_addrs: Vec<std::net::IpAddr>,
     /// Total connections (all of them join a room and receive).
     #[arg(long, default_value_t = 1000)]
     pub conns: usize,

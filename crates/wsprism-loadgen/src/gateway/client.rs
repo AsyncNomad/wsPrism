@@ -19,8 +19,10 @@ pub struct ConnStats {
     pub received: u64,
     /// This connection's own probes delivered back to it (protocol-dependent).
     pub self_echo: u64,
-    /// End-to-end latency of probes from others, in microseconds.
-    pub latency_us: Histogram<u64>,
+    /// End-to-end latency of probes from others, in microseconds. Made at
+    /// the first probe: one histogram is ~150 KB, and idle connections
+    /// (tens of thousands in the idle-scale test) never need one.
+    pub latency_us: Option<Histogram<u64>>,
     pub closed_early: bool,
 }
 
@@ -84,8 +86,7 @@ pub async fn run<P: Protocol>(
     };
 
     let receiver = async move {
-        let mut hist =
-            Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).expect("histogram bounds");
+        let mut hist: Option<Histogram<u64>> = None;
         let (mut received, mut self_echo, mut closed_early) = (0u64, 0u64, false);
         let mut incoming = Vec::new();
         let stop = end + grace;
@@ -103,7 +104,11 @@ pub async fn run<P: Protocol>(
                         match i {
                             Incoming::Probe(p) if p.sender == me => self_echo += 1,
                             Incoming::Probe(p) => {
-                                let _ = hist.record((now.saturating_sub(p.ts_ns) / 1_000).max(1));
+                                let h = hist.get_or_insert_with(|| {
+                                    Histogram::new_with_bounds(1, 60_000_000, 3)
+                                        .expect("histogram bounds")
+                                });
+                                let _ = h.record((now.saturating_sub(p.ts_ns) / 1_000).max(1));
                                 received += 1;
                             }
                             Incoming::Reply(m) => {

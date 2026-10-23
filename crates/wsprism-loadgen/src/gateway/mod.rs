@@ -32,6 +32,7 @@ const GRACE: Duration = Duration::from_secs(2);
 
 /// Run the gateway fan-out benchmark against `args.target`.
 pub async fn run(args: Args) {
+    protocol::set_local_addrs(args.local_addrs.clone());
     let url = args.url.clone();
     match args.target {
         Target::Wsprism => {

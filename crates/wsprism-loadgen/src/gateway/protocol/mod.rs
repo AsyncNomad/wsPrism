@@ -10,10 +10,13 @@ mod pusher;
 mod wsprism;
 
 use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use futures_util::StreamExt;
-use tokio::net::TcpStream;
+use tokio::net::{TcpSocket, TcpStream};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::Message;
@@ -62,15 +65,60 @@ pub trait Protocol: Send + Sync + 'static {
     fn decode(&self, msg: &Message, out: &mut Vec<Incoming>);
 }
 
+/// Source addresses connections are spread over (`--local-addrs`): one
+/// source address reaches one server address and port with at most ~64k
+/// connections, so tests with more need several.
+static LOCAL_ADDRS: OnceLock<Vec<IpAddr>> = OnceLock::new();
+static NEXT_LOCAL: AtomicUsize = AtomicUsize::new(0);
+
+/// Set the source addresses (once, before connecting).
+pub fn set_local_addrs(addrs: Vec<IpAddr>) {
+    let _ = LOCAL_ADDRS.set(addrs);
+}
+
 /// Open a WebSocket with TCP_NODELAY, like browsers, so client-side Nagle
 /// delays don't pollute the measured latency.
 pub(in crate::gateway) async fn open(req: Request) -> Result<Ws, String> {
-    let connect = tokio_tungstenite::connect_async_with_config(req, None, true);
-    let (ws, _) = tokio::time::timeout(SETUP_TIMEOUT, connect)
+    let connect = async {
+        let Some(addrs) = LOCAL_ADDRS.get().filter(|a| !a.is_empty()) else {
+            let (ws, _) = tokio_tungstenite::connect_async_with_config(req, None, true)
+                .await
+                .map_err(|e| format!("connect: {e}"))?;
+            return Ok(ws);
+        };
+        // Plain ws:// to an IP address only: `--local-addrs` is for the
+        // large idle-connection tests on netlab.
+        let local = addrs[NEXT_LOCAL.fetch_add(1, Ordering::Relaxed) % addrs.len()];
+        let uri = req.uri();
+        let peer: SocketAddr = format!(
+            "{}:{}",
+            uri.host().unwrap_or_default(),
+            uri.port_u16().unwrap_or(80)
+        )
+        .parse()
+        .map_err(|e| format!("--local-addrs needs ws://<ip>:<port>: {e}"))?;
+        let sock = if local.is_ipv4() {
+            TcpSocket::new_v4()
+        } else {
+            TcpSocket::new_v6()
+        }
+        .map_err(|e| format!("socket: {e}"))?;
+        sock.bind(SocketAddr::new(local, 0))
+            .map_err(|e| format!("bind {local}: {e}"))?;
+        let tcp = sock
+            .connect(peer)
+            .await
+            .map_err(|e| format!("connect: {e}"))?;
+        tcp.set_nodelay(true).map_err(|e| format!("nodelay: {e}"))?;
+        let (ws, _) =
+            tokio_tungstenite::client_async_with_config(req, MaybeTlsStream::Plain(tcp), None)
+                .await
+                .map_err(|e| format!("handshake: {e}"))?;
+        Ok(ws)
+    };
+    tokio::time::timeout(SETUP_TIMEOUT, connect)
         .await
         .map_err(|_| "connect timeout".to_string())?
-        .map_err(|e| format!("connect: {e}"))?;
-    Ok(ws)
 }
 
 /// Read text messages until `pick` returns `Some(Ok)` / `Some(Err)`, within

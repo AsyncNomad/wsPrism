@@ -7,6 +7,9 @@
 #                   [--outage MEAN_PERIOD_MS:LEN_MS] --server "CMD" --client "CMD"
 #
 # Server: 10.77.0.1 (veth-srv), client: 10.77.0.2 (veth-cli).
+# NETLAB_CLIENT_ADDRS=N gives the client N more addresses (10.77.0.3 ...)
+# and the full port range, for tests with more than ~64k connections
+# (wsprism-loadgen --local-addrs).
 # The client command can use $SERVER_PID (same PID namespace).
 #
 # PROFILE (egress of that side's veth):
@@ -84,6 +87,8 @@ ethtool -K veth-srv tso "$OFFLOAD" gso "$OFFLOAD" gro "$OFFLOAD" >/dev/null 2>&1
 nsenter -t "$CHILD" -n bash -c "
   ip link set lo up
   ip addr add 10.77.0.2/24 dev veth-cli
+  for i in \$(seq 1 ${NETLAB_CLIENT_ADDRS:-0}); do ip addr add 10.77.0.\$((2 + i))/24 dev veth-cli; done
+  [[ ${NETLAB_CLIENT_ADDRS:-0} -gt 0 ]] && sysctl -qw net.ipv4.ip_local_port_range='1024 65535'
   ip link set veth-cli up
   ethtool -K veth-cli tso $OFFLOAD gso $OFFLOAD gro $OFFLOAD >/dev/null 2>&1 || true"
 

@@ -49,7 +49,9 @@ impl Report {
             received += s.received;
             self_echo += s.self_echo;
             closed_early += usize::from(s.closed_early);
-            let _ = latency_us.add(&s.latency_us);
+            if let Some(h) = &s.latency_us {
+                let _ = latency_us.add(h);
+            }
         }
         let deliveries = received + self_echo;
         let cpu_us_per_delivery = match (cost.start, cost.end) {
