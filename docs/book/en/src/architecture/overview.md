@@ -111,7 +111,7 @@ The engine's ordering rules are written against the trait, not against Redis, an
 
 ## Memory per connection
 
-An idle connection costs about 16 KB of process memory, and 18 to 28 KB under load in room workloads. Most of it is WebSocket read buffering and the session's task and queue. The first baseline was about 28 KB idle. The main savings came from replacing nested concurrent sets with plain per-session structures and from letting rooms hold delivery handles directly. Swapping the global allocator for mimalloc was measured and rejected: it saved no CPU and up to doubled memory under load.
+An idle connection costs about 17 KB of process memory, and 18 to 28 KB under load in room workloads. Most of it is WebSocket read buffering and the session's task and queue. The first baseline was about 28 KB idle. The main savings came from replacing nested concurrent sets with plain per-session structures and from letting rooms hold delivery handles directly. Swapping the global allocator for mimalloc was measured and rejected: it saved no CPU and up to doubled memory under load. A CI job now fails if idle memory per connection exceeds 18.5 KB, after a per-session channel once added 4 KB unnoticed.
 
 ## Errors and panics
 

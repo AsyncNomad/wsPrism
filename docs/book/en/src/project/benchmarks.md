@@ -49,6 +49,8 @@ Both servers keeping 200 messages per room for ten minutes:
 | rooms, 2.16M/s | wsPrism | 1.000 | 6.4–9.4 | 3.21–3.36 | 37.7 |
 | | Centrifugo | 0.937–1.000 | 1,846–3,934 | 3.32–3.80 | 97.4 |
 
+These runs used a build that carried a since-fixed regression of about 4 KB per idle connection, so the wsPrism memory column here is overstated by roughly that much.
+
 History costs wsPrism 1–3% more CPU and 4–10 KB more per connection. At the highest load, Centrifugo with history saturates (p50 of up to a second), while wsPrism's latency is the same as without history.
 
 ## Cluster against Centrifugo's Redis engine

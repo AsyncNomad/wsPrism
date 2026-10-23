@@ -129,6 +129,20 @@ jobs:
       - name: Check on the MSRV
         run: cargo check --workspace --all-targets --locked
 
+  # Idle memory per connection stays under its limit (bench/mem-gate.sh).
+  # It is a headline number and once grew 25% unnoticed.
+  memory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build (release)
+        run: cargo build --release --locked -p wsprism-gateway -p wsprism-loadgen
+      - name: Idle memory per connection
+        run: bench/mem-gate.sh
+
   # JS SDK against a real gateway process (sdk/js/run-tests.sh).
   # Node: every non-EOL LTS line the SDK supports (engines: >=22).
   sdk-js:
