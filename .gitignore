@@ -2,5 +2,5 @@ target/
 .DS_Store
 .env
 # mdBook output and the files `mdbook-mermaid install` adds
-docs/book/
-docs/mermaid*.js
+docs/book/*/book/
+docs/book/*/mermaid*.js

@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/src/assets/logo.png" alt="wsPrism Logo" width="600px">
+<img src="docs/book/en/src/assets/logo.png" alt="wsPrism Logo" width="600px">
 
 # wsPrism
 
@@ -11,7 +11,7 @@
 </div>
 
 <p align="center">
-  <a href="https://asyncnomad.github.io/wsPrism/">
+  <a href="https://asyncnomad.github.io/wsPrism/ko/">
     <img src="https://img.shields.io/badge/📖_Project-Documentation-blue?style=for-the-badge" alt="Project Documentation">
   </a>
   &nbsp;

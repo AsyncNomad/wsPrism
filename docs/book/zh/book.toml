@@ -1,0 +1,13 @@
+[book]
+authors = ["AsyncNomad"]
+language = "zh"
+src = "src"
+title = "wsPrism 文档"
+
+[output.html]
+git-repository-url = "https://github.com/AsyncNomad/wsPrism"
+edit-url-template = "https://github.com/AsyncNomad/wsPrism/edit/main/docs/book/zh/src/{path}"
+additional-js = ["mermaid.min.js", "mermaid-init.js", "lang-switch.js"]
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"

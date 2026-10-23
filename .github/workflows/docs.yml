@@ -10,6 +10,10 @@ permissions:
   pages: write
   id-token: write
 
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -21,22 +25,25 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install mdBook + mermaid
+        run: cargo install mdbook mdbook-mermaid --locked
+
+      # One book per language from docs/book/<lang>: English at /, Korean
+      # at /ko/, Chinese at /zh/. lang-switch.js links between them.
+      - name: Build the books
         run: |
-          cargo install mdbook
-          cargo install mdbook-mermaid
-          mdbook-mermaid install docs
+          for lang in en ko zh; do
+            mdbook-mermaid install docs/book/$lang
+            mdbook build docs/book/$lang
+          done
+          mkdir -p public
+          cp -r docs/book/en/book/* public/
+          cp -r docs/book/ko/book public/ko
+          cp -r docs/book/zh/book public/zh
 
-      - name: Build mdBook
-        run: mdbook build docs
-
-      - name: Build Rust docs
-        run: cargo doc --workspace --no-deps --all-features
-
-      - name: Prepare publish folder
+      - name: Build Rust docs (at /api/)
         run: |
-          mkdir -p public/api
-          cp -r docs/book/* public/
-          cp -r target/doc/* public/api/
+          RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --all-features --locked
+          cp -r target/doc public/api
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
