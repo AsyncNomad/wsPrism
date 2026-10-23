@@ -12,6 +12,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { freePort } from "./ports.mjs";
 
 import {
   WsPrismClient,
@@ -27,17 +28,6 @@ const BIN = process.env.WSPRISM_GATEWAY_BIN ?? join(ROOT, "target/debug/wsprism-
 const API_KEY = "sdk-test-key";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const s = createNetServer();
-    s.listen(0, "127.0.0.1", () => {
-      const { port } = s.address();
-      s.close(() => resolve(port));
-    });
-    s.on("error", reject);
-  });
-}
 
 /** A local HTTP backend answering RPC calls. */
 function rpcBackend() {

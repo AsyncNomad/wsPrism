@@ -7,12 +7,12 @@ import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
-import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { WsPrismClient } from "../wsprism.js";
+import { bindFailed, freePort } from "./ports.mjs";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "../../..");
 export const BIN = process.env.WSPRISM_GATEWAY_BIN ?? join(ROOT, "target/debug/wsprism-gateway");
@@ -26,16 +26,7 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const now = () => performance.now();
 export const skip = REDIS ? false : "WSPRISM_TEST_REDIS not set";
 
-export function freePort() {
-  return new Promise((resolve, reject) => {
-    const s = createNetServer();
-    s.listen(0, "127.0.0.1", () => {
-      const { port } = s.address();
-      s.close(() => resolve(port));
-    });
-    s.on("error", reject);
-  });
-}
+export { freePort };
 
 const procs = [];
 /** Kill every gateway process started here (test teardown). */
@@ -47,7 +38,19 @@ export function killAll() {
  * a restarted node keeps its address; through `redisUrl` if given, e.g. a
  * fault proxy). */
 export async function startNode(prefix, ports, redisUrl = REDIS) {
-  const [ws, api] = ports ?? [await freePort(), await freePort()];
+  // A fresh node whose ports were taken after we picked them (another test
+  // file running in parallel) starts again on others; a restarted node must
+  // keep its address.
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await startNodeOn(prefix, ports ?? [await freePort(), await freePort()], redisUrl);
+    } catch (e) {
+      if (ports || attempt === 3 || !bindFailed(String(e.message))) throw e;
+    }
+  }
+}
+
+async function startNodeOn(prefix, [ws, api], redisUrl) {
   const digest = createHash("sha256").update(API_KEY).digest("hex");
   const cfg = join(mkdtempSync(join(tmpdir(), "wsprism-chaos-")), "gw.yaml");
   writeFileSync(
