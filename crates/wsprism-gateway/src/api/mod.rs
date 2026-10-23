@@ -153,9 +153,14 @@ async fn publish(
                 return bad_request("hot.data_b64 is not valid base64");
             };
             let payload = bytes::Bytes::from(payload);
-            // No room yet = nobody to deliver to.
-            let Some(chan) = core.presence.room_id(&room_key) else {
-                return Json(json!({"recipients": 0})).into_response();
+            // Room ids are per node: this node's, or — in a cluster, where
+            // the room may live only on other nodes — a placeholder each
+            // receiving node replaces with its own (deliver_remote_hot).
+            // One node without the room = nobody to deliver to.
+            let chan = match core.presence.room_id(&room_key) {
+                Some(chan) => chan,
+                None if core.broker().mode() == wsprism_engine::broker::BrokerMode::Queued => 0,
+                None => return Json(json!({"recipients": 0})).into_response(),
             };
             let v2 = encode_hot_frame_v2(&HotOutV2 {
                 chan,

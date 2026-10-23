@@ -461,7 +461,7 @@ stay on both.
 
 | Endpoint | Body | Result |
 |---|---|---|
-| `POST /api/v1/publish` | `{"room": "r", "data": {...}}` (Ext, reliable by default) or `{"room": "r", "hot": {"svc": 1, "op": 2, "key": 0, "data_b64": "..."}}` (Hot, lossy by default); optional `"qos": "reliable"\|"lossy"` | `{"recipients": n}`; 503 + `Retry-After` while the node drains (publish to another node) or if a cluster broker's queue is full (ADR 0011) |
+| `POST /api/v1/publish` | `{"room": "r", "data": {...}}` (Ext, reliable by default) or `{"room": "r", "hot": {"svc": 1, "op": 2, "key": 0, "data_b64": "..."}}` (Hot, lossy by default); optional `"qos": "reliable"\|"lossy"` | `{"recipients": n}` (n = members on the node that took the request; in a cluster the other nodes' members receive it too and are not counted); 503 + `Retry-After` while the node drains (publish to another node) or if a cluster broker's queue is full (ADR 0011) |
 | `POST /api/v1/disconnect` | `{"user": "u", "sid": "optional", "reason": "optional"}` (`reason` at most 123 bytes: it travels in the close frame) | `{"closed": n}`; 503 if the cluster's session table is unavailable |
 | `GET /api/v1/rooms/{room}/presence` | — | `{"room": "r", "users": [...]}` (each user once); 503 if the cluster's presence is unavailable |
 | `POST /api/v1/tickets` | `{"user": "u", "ttl_s": 30, "permissions": {"subscribe": ["match:*"], "publish": ["match:42"]}}` (`ttl_s`, `permissions` and each list optional; an omitted list = unrestricted, `[]` = nothing) | `{"ticket": "wpt_...", "expires_in_s": 30}`; 400 if the tenant's `auth` has no `ticket`; 503 if too many tickets are outstanding, or (+ `Retry-After`) the cluster's ticket store is unavailable |

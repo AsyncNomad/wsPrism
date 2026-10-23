@@ -1087,3 +1087,39 @@ async fn rooms_joined_and_left_in_a_hurry_stay_subscribed_while_occupied() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+/// A server API Hot publish on a node with no member of the room still
+/// reaches the room's members on other nodes (it returned "0 recipients"
+/// and published nothing: the room id is per node and it had none).
+#[tokio::test]
+async fn a_server_hot_publish_reaches_members_on_other_nodes() {
+    let Some(url) = redis_url() else { return };
+    let p = prefix("hotapi");
+    let (a_node, b_node) = (node(&url, &p).await, node(&url, &p).await);
+    let mut alice = user(&a_node, "alice").await;
+    let _ = user(&b_node, "warm").await;
+    let ja = join(&mut alice, "r").await;
+    let chan_a = ja["chan"].as_u64().unwrap() as u32;
+    let (status, body) = http(
+        b_node.api,
+        "POST",
+        "/api/v1/publish",
+        Some(KEY),
+        Some(json!({"room":"r","hot":{"svc":1,"op":2,"data_b64":"cw=="}})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        match next_event_within(&mut alice, left).await {
+            Event::Binary(b) => {
+                assert_eq!(&b[2..6], &chan_a.to_le_bytes(), "alice's room id");
+                assert_eq!(b.last(), Some(&b's'));
+                break;
+            }
+            Event::Json(_) => continue,
+            other => panic!("the server's Hot frame never reached node A: {other:?}"),
+        }
+    }
+}
