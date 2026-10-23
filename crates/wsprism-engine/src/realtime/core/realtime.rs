@@ -311,7 +311,9 @@ impl RealtimeCore {
     pub fn close_sessions(&self, keys: &[Arc<str>], reason: &str, message: &str) -> usize {
         let mut n = 0;
         for key in keys {
-            if let Some(conn) = self.sessions.get_session(key) {
+            // Not registered yet (its handshake is between its claim and its
+            // registration): its registration will be refused.
+            if let Some(conn) = self.sessions.find_or_doom(key) {
                 conn.signals
                     .request_close(CloseRequest::Spec(CloseSpec::new(
                         close_code::POLICY,

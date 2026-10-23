@@ -15,6 +15,7 @@ use wsprism_engine::broker::{Control, OnFull, SessionClaim};
 use wsprism_engine::spi::sys;
 use wsprism_engine::spi::{close_code, CloseSpec, OutFrame, RealtimeCore};
 use wsprism_engine::spi::{now_ms, CloseRequest, Connection, CtxIdentity, SessionSignals};
+use wsprism_engine::spi::{NewSession, Refusal, UserLimit};
 use wsprism_engine::RealtimeCtx;
 
 /// Per-connection counter making internal session keys unique (S4).
@@ -118,18 +119,26 @@ async fn claim_shared(
     })?;
     for ev in &claimed.evicted {
         if ev.node == core.node_slot() {
-            evict_session(
-                core,
-                metrics,
-                Eviction {
-                    tenant,
-                    user_key: &claim.user_key,
-                    victim_key: &ev.session_key,
-                    reason: ev.reason,
-                    trace_id,
-                    presence_events,
-                },
-            );
+            // Not registered yet = its handshake is still between its claim
+            // and its registration: that registration is refused.
+            if let Some(conn) = core
+                .sessions
+                .remove_or_doom(&claim.user_key, &ev.session_key)
+            {
+                after_eviction(
+                    core,
+                    metrics,
+                    &Eviction {
+                        tenant,
+                        user_key: &claim.user_key,
+                        victim_key: &ev.session_key,
+                        reason: ev.reason,
+                        trace_id,
+                        presence_events,
+                    },
+                    &conn,
+                );
+            }
         } else {
             let close = Control::Close {
                 keys: vec![ev.session_key.clone()],
@@ -160,6 +169,7 @@ fn too_many_sessions(trace_id: &str) -> CloseSpec {
 }
 
 /// Who evicts whom, and why.
+#[derive(Clone, Copy)]
 struct Eviction<'a> {
     tenant: &'a str,
     user_key: &'a str,
@@ -169,9 +179,14 @@ struct Eviction<'a> {
     presence_events: bool,
 }
 
-/// Evict a live session: unregister it (owning the gauge decrement, see C2),
-/// clear its presence, then tell it why and close it.
-fn evict_session(core: &RealtimeCore, metrics: &GatewayMetrics, e: Eviction<'_>) {
+/// An unregistered session: clear its presence, take it off the gauge (C2:
+/// whoever unregistered it decrements, here), then tell it why and close it.
+fn after_eviction(
+    core: &RealtimeCore,
+    metrics: &GatewayMetrics,
+    e: &Eviction<'_>,
+    conn: &Connection,
+) {
     let Eviction {
         tenant,
         user_key,
@@ -179,10 +194,7 @@ fn evict_session(core: &RealtimeCore, metrics: &GatewayMetrics, e: Eviction<'_>)
         reason,
         trace_id,
         presence_events,
-    } = e;
-    let Some(conn) = core.sessions.remove_session(user_key, victim_key) else {
-        return; // already gone (raced with its own cleanup or another evictor)
-    };
+    } = *e;
     core.remove_session_presence(tenant, user_key, victim_key, presence_events);
     metrics.ws_active_sessions.dec(&[("tenant", tenant)]);
     // C8: ask the victim's loop to stop and close itself (notice + 1008).
@@ -253,53 +265,6 @@ impl Session {
                 }
                 return Ok(Admission::Rejected(spec));
             }
-        } else {
-            // S4: a reconnect with an in-use sid takes over: the old connection is
-            // evicted before the session limit is evaluated.
-            if let Some(prev) = core.sessions.find_session_by_sid(&user_key, &id.sid) {
-                evict_session(
-                    &core,
-                    &metrics,
-                    Eviction {
-                        tenant: &id.tenant,
-                        user_key: &user_key,
-                        victim_key: &prev,
-                        reason: "replaced",
-                        trace_id: &id.trace_id,
-                        presence_events: policy.presence_events(),
-                    },
-                );
-            }
-
-            if core.sessions.count_user_sessions(&user_key) >= sp.max_sessions_per_user as usize {
-                metrics.policy_decisions.inc(&[
-                    ("tenant", &id.tenant),
-                    ("lane", "session"),
-                    ("decision", "reject"),
-                    ("reason", "max_user_sessions"),
-                ]);
-                match sp.on_exceed {
-                    OnExceed::Deny => {
-                        return Ok(Admission::Rejected(too_many_sessions(&id.trace_id)));
-                    }
-                    OnExceed::KickOldest => {
-                        if let Some(victim) = core.sessions.oldest_session(&user_key) {
-                            evict_session(
-                                &core,
-                                &metrics,
-                                Eviction {
-                                    tenant: &id.tenant,
-                                    user_key: &user_key,
-                                    victim_key: &victim,
-                                    reason: "max_sessions_exceeded",
-                                    trace_id: &id.trace_id,
-                                    presence_events: policy.presence_events(),
-                                },
-                            );
-                        }
-                    }
-                }
-            }
         }
 
         let signals = SessionSignals::new();
@@ -310,22 +275,99 @@ impl Session {
             tx: out_tx.clone(),
             signals: signals.clone(),
         };
-        if let Err(e) = core.sessions.try_insert(
-            id.tenant.clone(),
-            user_key.clone(),
-            session_key.clone(),
-            id.sid.clone(),
-            conn.clone(),
-            t_cfg.limits.max_sessions_total,
-        ) {
-            if shared {
-                release_shared(&core, &user_key, &session_key);
-            }
-            return Ok(Admission::Rejected(CloseSpec::new(
+        let capacity = |e: &WsPrismError| {
+            CloseSpec::new(
                 close_code::TRY_AGAIN_LATER,
                 "capacity",
-                Some(sys::error_from(&e, &id.trace_id).to_string()),
-            )));
+                Some(sys::error_from(e, &id.trace_id).to_string()),
+            )
+        };
+        if shared {
+            // The cluster's table decided sid takeover and the user limit;
+            // it may have replaced this session already (a racing claim).
+            let claimed = core.sessions.insert_claimed(NewSession {
+                tenant_id: id.tenant.clone(),
+                user_key: user_key.clone(),
+                session_key: session_key.clone(),
+                sid: id.sid.clone(),
+                conn: conn.clone(),
+                max_total: t_cfg.limits.max_sessions_total,
+            });
+            match claimed {
+                Ok(()) => {}
+                Err(Refusal::Replaced) => {
+                    return Ok(Admission::Rejected(CloseSpec::new(
+                        close_code::POLICY,
+                        "replaced",
+                        Some(sys::kicked("replaced", &id.trace_id).to_string()),
+                    )));
+                }
+                Err(_) => {
+                    release_shared(&core, &user_key, &session_key);
+                    return Ok(Admission::Rejected(capacity(
+                        &WsPrismError::ResourceExhausted("tenant session limit reached".into()),
+                    )));
+                }
+            }
+        } else {
+            // S4 and the user limit, in one step with the registration: a
+            // reconnect with an in-use sid takes over (evicted before the
+            // limit is evaluated), then the limit, then the tenant cap.
+            let admitted = core.sessions.admit(
+                NewSession {
+                    tenant_id: id.tenant.clone(),
+                    user_key: user_key.clone(),
+                    session_key: session_key.clone(),
+                    sid: id.sid.clone(),
+                    conn: conn.clone(),
+                    max_total: t_cfg.limits.max_sessions_total,
+                },
+                UserLimit {
+                    max: sp.max_sessions_per_user as usize,
+                    kick_oldest: matches!(sp.on_exceed, OnExceed::KickOldest),
+                },
+            );
+            for ev in &admitted.evicted {
+                if ev.reason != "replaced" {
+                    metrics.policy_decisions.inc(&[
+                        ("tenant", &id.tenant),
+                        ("lane", "session"),
+                        ("decision", "reject"),
+                        ("reason", "max_user_sessions"),
+                    ]);
+                }
+                after_eviction(
+                    &core,
+                    &metrics,
+                    &Eviction {
+                        tenant: &id.tenant,
+                        user_key: &user_key,
+                        victim_key: &ev.session_key,
+                        reason: ev.reason,
+                        trace_id: &id.trace_id,
+                        presence_events: policy.presence_events(),
+                    },
+                    &ev.conn,
+                );
+            }
+            match admitted.refused {
+                None => {}
+                Some(Refusal::TooManySessions) => {
+                    metrics.policy_decisions.inc(&[
+                        ("tenant", &id.tenant),
+                        ("lane", "session"),
+                        ("decision", "reject"),
+                        ("reason", "max_user_sessions"),
+                    ]);
+                    return Ok(Admission::Rejected(too_many_sessions(&id.trace_id)));
+                }
+                // (`Replaced` comes only from the cluster path.)
+                Some(Refusal::TenantFull | Refusal::Replaced) => {
+                    return Ok(Admission::Rejected(capacity(
+                        &WsPrismError::ResourceExhausted("tenant session limit reached".into()),
+                    )));
+                }
+            }
         }
         metrics.ws_active_sessions.inc(&[("tenant", &id.tenant)]);
         let cleanup = SessionCleanup {

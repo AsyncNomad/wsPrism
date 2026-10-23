@@ -17,5 +17,7 @@ pub use realtime::{
     BrokerTasks, CtxIdentity, DeferredReply, EgressCounters, JoinOutcome, MemberInfo,
     MemberSnapshot, Publisher, RealtimeCore, RealtimeCtx, MAX_SNAPSHOT_MEMBERS,
 };
-pub use session_registry::{Connection, SessionRegistry};
+pub use session_registry::{
+    Admitted, Connection, Evicted, NewSession, Refusal, SessionRegistry, UserLimit,
+};
 pub use signals::{now_ms, CloseRequest, SessionSignals};

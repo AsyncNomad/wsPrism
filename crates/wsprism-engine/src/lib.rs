@@ -45,6 +45,7 @@ pub mod spi {
         HistoryConfig, HistoryPos, HistoryRule, HotSlot, JoinOutcome, Member, Presence, Put,
         RealtimeCore, Recover, SessionRegistry, SessionSignals, SlotKey, DEFAULT_SLOT_CAP,
     };
+    pub use crate::realtime::core::{Admitted, Evicted, NewSession, Refusal, UserLimit};
     pub use crate::realtime::types::{close_code, CloseSpec, HotOut, OutFrame, Utf8Text};
 
     /// Builders for the gateway's `sys.*` messages.
