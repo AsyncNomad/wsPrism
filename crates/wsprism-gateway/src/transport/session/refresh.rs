@@ -7,6 +7,8 @@
 
 use std::time::SystemTime;
 
+use tokio::sync::oneshot;
+
 use wsprism_engine::spi::now_ms;
 use wsprism_engine::spi::sys;
 use wsprism_protocol::error::ClientCode;
@@ -24,6 +26,12 @@ const REFRESH_MIN_INTERVAL: std::time::Duration = std::time::Duration::from_secs
 pub(crate) struct RefreshOutcome {
     seq: Option<u64>,
     result: Result<Identity, AuthError>,
+}
+
+/// A refresh in flight: the request it answers and its task's report.
+pub(crate) struct Pending {
+    seq: Option<u64>,
+    rx: oneshot::Receiver<RefreshOutcome>,
 }
 
 /// Seconds until `t`, if the credential expires at all.
@@ -47,7 +55,7 @@ impl Session {
         let Some(token) = token else {
             return self.reply_code(ClientCode::BadRequest, "sys.refresh needs data.token");
         };
-        if self.refresh_pending {
+        if self.refresh.is_some() {
             return self.reply_code(ClientCode::RateLimited, "a refresh is already in progress");
         }
         let now = std::time::Instant::now();
@@ -58,10 +66,8 @@ impl Session {
             return self.reply_code(ClientCode::RateLimited, "refresh at most once per second");
         }
         self.last_refresh = Some(now);
-        let Some(tx) = self.refresh_tx.clone() else {
-            return Flow::Continue(());
-        };
-        self.refresh_pending = true;
+        let (tx, rx) = oneshot::channel();
+        self.refresh = Some(Pending { seq: env.seq, rx });
         let (auth, tenant, client_ip, seq) = (
             std::sync::Arc::clone(&self.auth),
             self.tenant().to_string(),
@@ -75,14 +81,31 @@ impl Session {
                 client_ip,
             };
             let result = auth.authenticate(&req).await;
-            let _ = tx.send(RefreshOutcome { seq, result }).await;
+            let _ = tx.send(RefreshOutcome { seq, result });
         });
         Flow::Continue(())
     }
 
+    /// The outcome of the refresh in flight; never resolves without one.
+    /// A task that ended without reporting (an authenticator panicked)
+    /// counts as unavailable, so the client's request is answered and later
+    /// refreshes are not blocked.
+    pub(super) async fn refresh_done(&mut self) -> RefreshOutcome {
+        let Some(pending) = self.refresh.as_mut() else {
+            return std::future::pending().await;
+        };
+        let seq = pending.seq;
+        (&mut pending.rx).await.unwrap_or(RefreshOutcome {
+            seq,
+            result: Err(AuthError::Unavailable(
+                "refresh task ended without an outcome",
+            )),
+        })
+    }
+
     /// Apply a finished refresh (session task only).
     pub(super) fn apply_refresh(&mut self, outcome: RefreshOutcome) -> Flow {
-        self.refresh_pending = false;
+        self.refresh = None;
         self.ctx.begin_request(outcome.seq);
         let flow = match outcome.result {
             Ok(identity) if identity.user_id != self.ctx.user() => {

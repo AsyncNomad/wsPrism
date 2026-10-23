@@ -251,3 +251,59 @@ async fn refresh_attempts_are_rate_limited() {
     send_json(&mut ws, refresh(&jwt("alice", 60, None), 3)).await;
     assert_eq!(reply_for(&mut ws, 3).await["type"], "refreshed");
 }
+
+/// An authenticator plugin that panics on `boom` and admits `p:<user>`.
+struct Panicky;
+
+#[async_trait::async_trait]
+impl wsprism_gateway::auth::Authenticator for Panicky {
+    fn kind(&self) -> &'static str {
+        "panicky"
+    }
+    async fn authenticate(
+        &self,
+        req: &wsprism_gateway::auth::AuthRequest<'_>,
+    ) -> Result<wsprism_gateway::auth::Identity, wsprism_gateway::auth::AuthError> {
+        match req.token.strip_prefix("p:") {
+            Some(user) => Ok(wsprism_gateway::auth::Identity::user(user)),
+            None if req.token == "boom" => panic!("authenticator bug"),
+            None => Err(wsprism_gateway::auth::AuthError::NotMine),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_refresh_whose_authenticator_panics_is_answered_and_does_not_block_the_next() {
+    let gw = wsprism_gateway::Gateway::builder()
+        .config(
+            wsprism_gateway::config::load_from_str(
+                "version: 1\ntenants:\n  - id: t\n    auth: [{ kind: plugin, name: panicky }]\n    policy: { ext_allowlist: [\"room:*\"] }\n",
+            )
+            .unwrap(),
+        )
+        .auth_plugin("panicky", |_| Ok(std::sync::Arc::new(Panicky)))
+        .build()
+        .expect("build");
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = l.local_addr().unwrap();
+    tokio::spawn(gw.serve_on(l, None, std::future::pending()));
+
+    let (mut ws, _) = try_connect_with(
+        &ws_url(addr, "t", None),
+        &[
+            ("authorization", "Bearer p:alice"),
+            ("sec-websocket-protocol", "wsprism.v2.json"),
+        ],
+    )
+    .await
+    .expect("connect");
+    assert!(matches!(next_event(&mut ws).await, Event::Json(v) if v["type"] == "authed"));
+
+    send_json(&mut ws, refresh("boom", 1)).await;
+    let r = reply_for(&mut ws, 1).await;
+    assert_eq!(r["data"]["code"], "UNAVAILABLE", "{r}");
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    send_json(&mut ws, refresh("p:alice", 2)).await;
+    let r = reply_for(&mut ws, 2).await;
+    assert_eq!(r["type"], "refreshed", "a later refresh still runs: {r}");
+}

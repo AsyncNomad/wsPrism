@@ -147,10 +147,11 @@ struct Session {
     /// The tenant's authentication chain (in-band refresh, ADR 0012).
     auth: Arc<crate::auth::AuthChain>,
     client_ip: std::net::IpAddr,
-    /// Where refresh tasks report back (set by the event loop).
-    refresh_tx: Option<mpsc::Sender<refresh::RefreshOutcome>>,
-    /// A refresh is being authenticated (one at a time).
-    refresh_pending: bool,
+    /// The refresh being authenticated, if any (one at a time): its request
+    /// seq and where its task reports back. A oneshot made per refresh, not
+    /// a channel per session: tokio's mpsc allocates a 32-slot block up
+    /// front, ~4 KB per idle session for outcomes that rarely come.
+    refresh: Option<refresh::Pending>,
     /// When the last refresh attempt started (rate limit).
     last_refresh: Option<std::time::Instant>,
     /// Unregisters the session when dropped.
@@ -172,15 +173,11 @@ impl Session {
             .hot_tick
             .map(|_| Box::pin(tokio::time::sleep(Duration::ZERO)));
         let mut hot_due = false;
-        // Refresh tasks report here (ADR 0012); local so the select below
-        // borrows it, not `self`.
-        let (refresh_tx, mut refresh_rx) = mpsc::channel(1);
-        self.refresh_tx = Some(refresh_tx);
         loop {
             let flow = tokio::select! {
                 // Polled only while a refresh is in flight: an idle receiver
                 // still costs a poll on every turn of this loop (M5).
-                Some(outcome) = refresh_rx.recv(), if self.refresh_pending => self.apply_refresh(outcome),
+                outcome = self.refresh_done(), if self.refresh.is_some() => self.apply_refresh(outcome),
                 // C8: kick / replace / drain requests from other tasks.
                 // C8: kick / replace / drain / slow consumer / idle requests.
                 req = signals.closed() => Flow::Break(Exit::Close(self.close_spec(req))),

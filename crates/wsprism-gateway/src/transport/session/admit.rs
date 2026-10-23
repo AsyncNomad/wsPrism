@@ -437,8 +437,7 @@ impl Session {
                 .auth(&t_cfg.id)
                 .ok_or_else(|| WsPrismError::BadRequest("unknown tenant".into()))?,
             client_ip,
-            refresh_tx: None,
-            refresh_pending: false,
+            refresh: None,
             last_refresh: None,
             _cleanup: cleanup,
         })))
