@@ -10,4 +10,5 @@ pub mod credentials;
 pub mod handshake;
 pub(crate) mod session;
 pub mod subprotocol;
+pub(crate) mod tls;
 pub mod ws;

@@ -23,6 +23,12 @@ gateway:
   # WebSocket server bind address (Host:Port).
   listen: "0.0.0.0:8080"
 
+  # Terminate TLS here (wss://) instead of in a proxy on the same host
+  # (docs/CONFIG.md "TLS on the listener"). SIGHUP reloads the files.
+  # tls:
+  #   cert_file: /etc/wsprism/tls/fullchain.pem
+  #   key_file: /etc/wsprism/tls/privkey.pem
+
   # Internal listener — never expose it publicly. Serves the server API for
   # your backend (/api/v1/*, authenticated by tenants[].api_keys) and the
   # operational endpoints (/metrics, /healthz, /readyz). Bind it to loopback

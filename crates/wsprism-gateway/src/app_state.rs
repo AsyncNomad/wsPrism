@@ -56,6 +56,17 @@ struct AppStateInner {
     tenant_policy: HashMap<String, Arc<policy::TenantPolicyRuntime>>,
     /// tenant id -> index into `cfg.tenants` (O(1) lookup per upgrade).
     tenant_index: HashMap<String, usize>,
+    /// TLS on the public listener (`gateway.tls`): the rustls config and
+    /// the certificate it serves, which `reload_tls` replaces.
+    tls: Option<ListenerTls>,
+}
+
+/// `gateway.tls`, loaded.
+#[derive(Clone)]
+pub(crate) struct ListenerTls {
+    pub(crate) config: Arc<rustls::ServerConfig>,
+    pub(crate) certs: Arc<crate::transport::tls::CertStore>,
+    pub(crate) handshake_timeout: std::time::Duration,
 }
 
 impl AppState {
@@ -255,6 +266,20 @@ impl AppState {
             }
         }
 
+        // Certificates load here, so a bad file fails the build and
+        // `--check-config`, not the first handshake.
+        let tls = match &cfg.gateway.tls {
+            None => None,
+            Some(t) => {
+                let certs = crate::transport::tls::CertStore::load(t)?;
+                Some(ListenerTls {
+                    config: crate::transport::tls::server_config(Arc::clone(&certs))?,
+                    certs,
+                    handshake_timeout: std::time::Duration::from_millis(t.handshake_timeout_ms),
+                })
+            }
+        };
+
         let log_identities = Arc::new(crate::obs::identity::LogIdentities::new(
             cfg.gateway.log_identities,
             cfg.gateway.log_identity_key_env.as_deref(),
@@ -274,6 +299,7 @@ impl AppState {
                     .collect(),
                 cfg,
                 tenant_policy,
+                tls,
             }),
             realtime,
             dispatcher: Arc::new(dispatcher),
@@ -282,6 +308,11 @@ impl AppState {
             trusted_proxies,
             log_identities,
         })
+    }
+
+    /// TLS on the public listener, if `gateway.tls` is set.
+    pub(crate) fn tls(&self) -> Option<&ListenerTls> {
+        self.inner.tls.as_ref()
     }
 
     /// How session logs show identities (`gateway.log_identities`).

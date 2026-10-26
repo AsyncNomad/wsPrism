@@ -40,6 +40,13 @@ ring = "0.17"
 base64 = "0.22"
 jsonwebtoken = { version = "9.3", default-features = false, features = ["use_pem"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "http2"] }
+# TLS on the public listener (`gateway.tls`): served with hyper directly,
+# since axum 0.7's `serve` takes a plain TcpListener only.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower-service = "0.3"
 
 [dev-dependencies]
 # Tests and benchmarks see the `internals` module (ADR 0009 §4-3).

@@ -66,6 +66,38 @@ is planned after 0.1.0.
 
 ---
 
+## TLS on the listener (`gateway.tls`, ADR 0014)
+
+The gateway can terminate TLS itself (`wss://`), so no proxy is needed in
+front of it on the same host:
+
+```yaml
+gateway:
+  listen: "0.0.0.0:443"
+  tls:
+    cert_file: /etc/wsprism/tls/fullchain.pem   # PEM chain, leaf first
+    key_file: /etc/wsprism/tls/privkey.pem      # PKCS#8, PKCS#1 or SEC1
+    handshake_timeout_ms: 10000                 # default 10000 (100-60000)
+```
+
+- rustls with its defaults: TLS 1.2 and 1.3, its safe cipher suites,
+  ALPN `http/1.1`. No client certificates.
+- The files are read at startup, so a missing file, a malformed one or a
+  key that does not match the certificate fails startup and
+  `--check-config`.
+- **Rotation without a restart:** send `SIGHUP` (or call
+  `Gateway::reload_tls()` when embedding). New handshakes use the new
+  files; open connections keep theirs. If the new files do not load, the
+  error is logged and the previous certificate stays in use.
+- A connection that has not finished the TLS handshake within
+  `handshake_timeout_ms` is closed, and at most 1,024 handshakes run at
+  once (a handshake costs CPU before any admission check can run).
+- The internal listener (`gateway.api.listen`) stays plain: keep it on
+  loopback or a private network.
+- Terminating TLS on a separate load balancer remains a fine choice. What
+  costs the most is a proxy on the same host: nginx in front of the gateway
+  doubled CPU per delivery (BENCHMARKS 「TLS」).
+
 ## Rooms
 
 Room names are 1-128 bytes of UTF-8 without control characters (WebSocket

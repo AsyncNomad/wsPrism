@@ -61,6 +61,14 @@ exits. Give your orchestrator a longer stop timeout than that.
 Several nodes: restart them one at a time ([CLUSTER.md](CLUSTER.md)
 "Rolling update"); the chaos tests check that nothing is lost or repeated.
 
+## TLS certificates
+
+With `gateway.tls` the gateway serves `wss://` itself. To rotate the
+certificate, replace the files and send `SIGHUP`; new handshakes use the new
+certificate and open connections are not touched. A failed reload (a
+missing file, a key that does not match) is logged and the previous
+certificate stays in use. See [CONFIG.md](CONFIG.md) "TLS on the listener".
+
 ## Container image
 
 `Dockerfile` at the repository root builds a distroless image (non-root,

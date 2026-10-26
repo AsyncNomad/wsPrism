@@ -143,7 +143,8 @@ impl Gateway {
             })?),
         };
         let api_listen = gw.api.as_ref().map_or("off", |a| a.listen.as_str());
-        tracing::info!(%listen, api = %api_listen, "wsprism-gateway serving");
+        let scheme = if gw.tls.is_some() { "wss" } else { "ws" };
+        tracing::info!(%listen, %scheme, api = %api_listen, "wsprism-gateway serving");
         self.serve_on(listener, api, shutdown_signal())
             .await
             .map_err(|e| WsPrismError::BadRequest(format!("server failed: {e}")))
@@ -158,6 +159,18 @@ impl Gateway {
         shutdown: impl Future<Output = ()> + Send + 'static,
     ) -> std::io::Result<()> {
         crate::server::serve_with_api(listener, api, self.state, shutdown).await
+    }
+
+    /// Read `gateway.tls`'s certificate and key files again (what SIGHUP
+    /// does). New handshakes use them; open connections keep theirs. On
+    /// error the current certificate stays in use.
+    pub fn reload_tls(&self) -> Result<()> {
+        match self.state.tls() {
+            Some(tls) => tls.certs.reload(),
+            None => Err(WsPrismError::BadRequest(
+                "gateway.tls is not configured".into(),
+            )),
+        }
     }
 
     /// The Prometheus exposition served at `/metrics`.

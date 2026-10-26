@@ -76,6 +76,11 @@ pub struct GatewaySection {
     #[serde(default = "default_listen")]
     pub listen: String,
 
+    /// Terminate TLS on `listen` itself (wss://). Absent = plain; put a
+    /// TLS-terminating load balancer or proxy in front instead.
+    #[serde(default)]
+    pub tls: Option<ListenerTlsConfig>,
+
     /// Server API for backends (ADR 0008 §3). Absent = disabled. Bind it to
     /// loopback or an internal network, never the public interface.
     #[serde(default)]
@@ -146,6 +151,25 @@ pub struct GatewaySection {
     // Sprint 5: Handshake Defender Configuration
     #[serde(default)]
     pub handshake_limit: HandshakeConfig,
+}
+
+/// `gateway.tls`: TLS on the public listener.
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+#[non_exhaustive]
+pub struct ListenerTlsConfig {
+    /// PEM certificate chain, leaf first. Read at startup and on SIGHUP.
+    pub cert_file: String,
+    /// PEM private key (PKCS#8, PKCS#1 or SEC1) of the leaf certificate.
+    pub key_file: String,
+    /// Connections that have not finished the TLS handshake by then are
+    /// closed, 100-60000 ms.
+    #[serde(default = "default_tls_handshake_timeout_ms")]
+    pub handshake_timeout_ms: u64,
+}
+
+fn default_tls_handshake_timeout_ms() -> u64 {
+    10_000
 }
 
 /// Socket options applied to every accepted TCP connection.
@@ -263,6 +287,7 @@ impl Default for GatewaySection {
             session_queue_capacity: default_session_queue_capacity(),
             socket: SocketConfig::default(),
             api: None,
+            tls: None,
             trusted_proxies: Vec::new(),
             handshake_limit: HandshakeConfig::default(),
         }
@@ -303,6 +328,13 @@ impl GatewaySection {
             return Err(WsPrismError::BadRequest(
                 "gateway.session_queue_capacity must be between 1 and 1048576".into(),
             ));
+        }
+        if let Some(tls) = &self.tls {
+            if !(100..=60_000).contains(&tls.handshake_timeout_ms) {
+                return Err(WsPrismError::BadRequest(
+                    "gateway.tls.handshake_timeout_ms must be between 100 and 60000".into(),
+                ));
+            }
         }
         if self.drain_grace_ms > 600000 {
             return Err(WsPrismError::BadRequest(

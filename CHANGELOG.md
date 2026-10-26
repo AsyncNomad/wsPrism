@@ -12,6 +12,10 @@ the Rust API may break in 0.x minor releases, always listed here.
   limits, session limits, room limits), browser `Origin` checks, trusted
   proxies, handshake rate limiting, graceful draining, `/healthz`, `/readyz`,
   `/metrics`.
+- TLS on the public listener (`gateway.tls`, rustls): `wss://` without a
+  proxy in front; certificates checked at startup and `--check-config`,
+  reloaded on SIGHUP (`Gateway::reload_tls`), bounded and time-limited TLS
+  handshakes (ADR 0014).
 - Two lanes: **Ext** (JSON envelopes, request correlation with `seq` /
   `reply_to`) and **Hot** (binary frames; v2 frames name their room, carry the
   sender, and keyed frames are conflated per recipient — latest value wins —

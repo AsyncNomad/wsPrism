@@ -57,14 +57,28 @@ pub async fn serve_with_api(
             }
         }
     };
-    axum::serve(
-        listener,
-        // ConnectInfo feeds the handshake defender's per-IP limiter.
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .tcp_nodelay(socket.tcp_nodelay)
-    .with_graceful_shutdown(drain(state.clone(), stop))
-    .await?;
+    match state.tls().cloned() {
+        Some(tls) => {
+            serve_tls(
+                listener,
+                app,
+                tls,
+                socket.tcp_nodelay,
+                drain(state.clone(), stop),
+            )
+            .await
+        }
+        None => {
+            axum::serve(
+                listener,
+                // ConnectInfo feeds the handshake defender's per-IP limiter.
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .tcp_nodelay(socket.tcp_nodelay)
+            .with_graceful_shutdown(drain(state.clone(), stop))
+            .await
+        }
+    }?;
     if fenced.load(Ordering::Relaxed) {
         return Err(std::io::Error::other(
             "another node took this node's cluster slot (cut off from Redis longer than \
@@ -72,6 +86,117 @@ pub async fn serve_with_api(
         ));
     }
     Ok(())
+}
+
+/// TLS handshakes in progress at once. A handshake costs CPU before any
+/// admission check (rate limits, tenant, origin) can run, so their number
+/// is bounded; connections beyond it are closed at once.
+const MAX_TLS_HANDSHAKES: usize = 1024;
+
+/// Serve `app` over TLS on `listener` until `until` completes (the same
+/// drain future the plain path gives axum), then stop accepting and close
+/// the HTTP connections gracefully. axum 0.7's `serve` takes a plain
+/// `TcpListener`, so this accept loop does what it does — TCP_NODELAY,
+/// `ConnectInfo` for the per-IP limiter, upgrades for WebSocket — with a
+/// TLS handshake (bounded in time and number) in between.
+async fn serve_tls(
+    listener: TcpListener,
+    app: axum::Router,
+    tls: crate::app_state::ListenerTls,
+    nodelay: bool,
+    until: impl Future<Output = ()>,
+) -> std::io::Result<()> {
+    use axum::extract::connect_info::ConnectInfo;
+    use hyper_util::rt::TokioIo;
+    use tower_service::Service;
+
+    let acceptor = tokio_rustls::TlsAcceptor::from(tls.config);
+    let handshakes = Arc::new(tokio::sync::Semaphore::new(MAX_TLS_HANDSHAKES));
+    let (closing_tx, closing_rx) = tokio::sync::watch::channel(false);
+    let mut conns = tokio::task::JoinSet::new();
+    let reload = reload_tls_on_sighup(Arc::clone(&tls.certs));
+    tokio::pin!(until, reload);
+    loop {
+        tokio::select! {
+            () = &mut until => break,
+            () = &mut reload => {}
+            Some(_) = conns.join_next(), if !conns.is_empty() => {}
+            accepted = listener.accept() => {
+                let (tcp, peer) = match accepted {
+                    Ok(a) => a,
+                    Err(e) => {
+                        // Out of file descriptors and the like: back off
+                        // instead of spinning (axum does the same).
+                        tracing::warn!("accept failed: {e}");
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
+                };
+                let Ok(permit) = Arc::clone(&handshakes).try_acquire_owned() else {
+                    continue; // dropping `tcp` closes it
+                };
+                let _ = tcp.set_nodelay(nodelay);
+                let (acceptor, app, mut closing) = (acceptor.clone(), app.clone(), closing_rx.clone());
+                let timeout = tls.handshake_timeout;
+                conns.spawn(async move {
+                    let stream = match tokio::time::timeout(timeout, acceptor.accept(tcp)).await {
+                        Ok(Ok(s)) => s,
+                        Ok(Err(e)) => {
+                            tracing::debug!(%peer, "TLS handshake failed: {e}");
+                            return;
+                        }
+                        Err(_) => return,
+                    };
+                    drop(permit);
+                    let service = hyper::service::service_fn(move |mut req: hyper::Request<hyper::body::Incoming>| {
+                        req.extensions_mut().insert(ConnectInfo(peer));
+                        let mut app = app.clone();
+                        async move { app.call(req).await }
+                    });
+                    let conn = hyper::server::conn::http1::Builder::new()
+                        .serve_connection(TokioIo::new(stream), service)
+                        .with_upgrades();
+                    tokio::pin!(conn);
+                    tokio::select! {
+                        _ = conn.as_mut() => {}
+                        _ = closing.changed() => {
+                            conn.as_mut().graceful_shutdown();
+                            let _ = conn.await;
+                        }
+                    }
+                });
+            }
+        }
+    }
+    let _ = closing_tx.send(true);
+    while conns.join_next().await.is_some() {}
+    Ok(())
+}
+
+/// Reload the listener certificate on every SIGHUP (unix); never returns.
+async fn reload_tls_on_sighup(certs: Arc<crate::transport::tls::CertStore>) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::hangup()) {
+            Ok(mut hup) => {
+                while hup.recv().await.is_some() {
+                    match certs.reload() {
+                        Ok(()) => tracing::info!("gateway.tls: certificate reloaded"),
+                        Err(e) => tracing::error!(
+                            "gateway.tls: reload failed, still serving the previous certificate: {}",
+                            e.client_message()
+                        ),
+                    }
+                }
+            }
+            Err(e) => tracing::warn!(
+                "cannot install a SIGHUP handler ({e}); certificates reload only on restart"
+            ),
+        }
+    }
+    let _ = &certs;
+    std::future::pending::<()>().await;
 }
 
 /// How often the node checks that it still owns its cluster slot (the
