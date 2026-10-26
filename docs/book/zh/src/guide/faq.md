@@ -15,7 +15,7 @@
 看一下 `Retry-After` 头和 `wsprism_handshake_rejections_total`。常见原因有：节点正在排空（换一个节点连接）；租户达到了 `max_sessions_total`；认证后端或 JWKS 端点不可达；或者在集群中 Redis 太慢，节点正在拒绝新连接（`cluster_busy`）。
 
 **wsPrism 会终止 TLS 吗？**
-不会。请把它放在负责终止 TLS 的负载均衡器或反向代理后面，并把该代理写进 `gateway.trusted_proxies`，让限流看到真实的客户端地址。在独立的负载均衡器上终止 TLS，网关的开销就和测量结果一致；若在同一台主机上放置代理，代理本身比网关还贵：前置 nginx 的 wsPrism，CPU 开销是 Centrifugo 自带 TLS 的 1.6 到 1.9 倍（见 [TLS](../project/benchmarks.md#tls)）。
+会。在 `gateway.tls` 中指定证书和私钥即可，发送 SIGHUP 可以在不重启的情况下重新加载（见[配置](../reference/configuration.md#gatewaytls)）。这也是由服务器直接提供 `wss://` 时最省的方式：在同一台主机上放置 nginx 这类 TLS 代理，每次投递的 CPU 会翻倍（见 [TLS](../project/benchmarks.md#tls)）。也可以在独立的负载均衡器上终止 TLS，这时请把它写进 `gateway.trusted_proxies`，让限流看到真实的客户端地址。
 
 ## 消息
 

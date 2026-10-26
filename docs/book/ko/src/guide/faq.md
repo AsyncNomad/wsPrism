@@ -15,7 +15,7 @@
 `Retry-After` 헤더와 `wsprism_handshake_rejections_total`을 보세요. 흔한 원인은 이렇습니다. 노드가 드레인 중이거나(다른 노드로 접속하세요), 테넌트가 `max_sessions_total`에 닿았거나, 인증 백엔드나 JWKS 엔드포인트에 닿지 않거나, 클러스터에서 Redis가 느려 노드가 새 연결을 덜어 내고 있는 경우(`cluster_busy`)입니다.
 
 **wsPrism이 TLS를 종단하나요?**
-아닙니다. TLS를 종단하는 로드밸런서나 리버스 프록시 뒤에 두고, 그 프록시를 `gateway.trusted_proxies`에 적어 속도 제한이 진짜 클라이언트 주소를 보게 하세요. TLS를 별도의 로드밸런서에서 끝내면 게이트웨이 비용은 측정한 그대로입니다. 같은 서버에 프록시를 두면 게이트웨이보다 프록시가 더 비쌉니다. nginx를 앞에 둔 wsPrism은 자체 TLS를 쓰는 Centrifugo보다 CPU를 1.6~1.9배 더 썼습니다([TLS](../project/benchmarks.md#tls) 참고).
+네. `gateway.tls`에 인증서와 키를 지정하면 됩니다. SIGHUP을 보내면 재시작 없이 다시 읽습니다([설정](../reference/configuration.md#gatewaytls)). 서버에서 직접 `wss://`를 제공할 때 가장 싼 방법이기도 합니다. 같은 서버에 nginx 같은 TLS 프록시를 두면 전달당 CPU가 두 배가 됐습니다([TLS](../project/benchmarks.md#tls)). 별도의 로드밸런서에서 TLS를 끝내도 되며, 그때는 로드밸런서를 `gateway.trusted_proxies`에 적어 속도 제한이 진짜 클라이언트 주소를 보게 하세요.
 
 ## 메시지
 

@@ -32,6 +32,7 @@ Any value can contain `${NAME}` (startup fails if `NAME` is unset or empty), `${
 | `listen` | `0.0.0.0:8080` | | Public WebSocket listener |
 | `api.listen` | off | | Internal listener: server API, `/metrics`, probes. Bind to loopback or a private network |
 | `public_metrics` | `false` | | Also serve `/metrics` on the public listener |
+| `tls` | off | | Terminate TLS on `listen`; see [`gateway.tls`](#gatewaytls) |
 | `ping_interval_ms` | 20000 | 5000–120000 | WebSocket ping interval |
 | `idle_timeout_ms` | 60000 | 10000–600000, > ping interval | Close a connection with no inbound activity for this long |
 | `writer_send_timeout_ms` | 1500 | 50–60000 | Close a session whose socket write stalls this long |
@@ -42,6 +43,18 @@ Any value can contain `${NAME}` (startup fails if `NAME` is unset or empty), `${
 | `log_identities` | `plain` | `plain`, `hashed`, `off` | How user ids, session ids and IPs appear in logs |
 | `log_identity_key_env` | random per process | | Variable holding the HMAC key for `hashed` (≥ 16 bytes) |
 | `broker` | `kind: memory` | | See [Cluster broker](#cluster-broker) |
+
+### `gateway.tls`
+
+TLS on the public listener (rustls: TLS 1.2 and 1.3, its safe cipher suites, ALPN `http/1.1`, no client certificates).
+
+| Setting | Default | Range | Meaning |
+|---|---|---|---|
+| `cert_file` | required | | PEM certificate chain, leaf first |
+| `key_file` | required | | PEM private key (PKCS#8, PKCS#1 or SEC1) |
+| `handshake_timeout_ms` | 10000 | 100–60000 | Close connections that have not finished the TLS handshake by then |
+
+The files are read at startup: a missing file, a malformed one or a key that does not match the certificate fails startup and `--check-config`. SIGHUP (or `Gateway::reload_tls()`) reads them again; new handshakes use the new certificate, and if the files do not load the previous one stays. At most 1,024 handshakes run at once. The internal listener stays plain.
 
 ### `gateway.handshake_limit`
 

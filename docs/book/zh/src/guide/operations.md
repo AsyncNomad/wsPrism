@@ -66,6 +66,10 @@ gateway:
 
 编排系统的停止等待时间要比 `drain_grace_ms` 长。多节点时请参考[滚动升级](cluster.md#滚动升级)。
 
+## TLS 证书
+
+配置 `gateway.tls` 后，网关自己提供 `wss://`。轮换证书时，替换文件后发送 `SIGHUP` 即可：新的握手使用新证书，已打开的连接不受影响；重新加载失败会记录日志，并继续使用原来的证书。Let's Encrypt 这类需要频繁续期的证书，也可以用这种方式更新而不断开任何人。
+
 ## 容器
 
 仓库根目录的 `Dockerfile` 构建一个 distroless 镜像：以非 root 用户运行、不含 shell，并设置了 `WSPRISM_LOG_FORMAT=json`。把配置文件挂载到 `/etc/wsprism/wsprism.yaml`，并让 `gateway.listen` 和 `gateway.api.listen` 绑定 `0.0.0.0`，回环地址在容器外是访问不到的。
@@ -124,7 +128,7 @@ docker run -v $PWD/my.yaml:/etc/wsprism/wsprism.yaml:ro -p 8080:8080 wsprism-gat
 
 ## 安全加固清单
 
-- 在网关前面终止 TLS；网关本身只提供明文 HTTP 和 WebSocket。
+- 通过 `wss://` 提供服务：配置 `gateway.tls`，或在独立的负载均衡器上终止 TLS。避免在同一台主机上放置 TLS 代理，它会让每次投递的 CPU 翻倍。
 - 替换掉 `dev` 认证器；没有配置 `auth` 的租户会在启动时打印警告。
 - 服务端 API 只放在回环地址或内网上，每个后端使用独立的密钥。
 - 在 `allowed_origins` 中写明确切的 Origin。

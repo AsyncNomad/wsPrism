@@ -111,16 +111,20 @@
 
 ## TLS
 
-wsPrism 自身不终止 TLS。如果 TLS 在服务器前面的负载均衡器上终止，上面的明文 WebSocket 对比就代表服务器开销。如果必须在同一台主机上终止，wsPrism 就要运行在代理后面，情况会随之改变。下面对比 nginx 终止 TLS 的 wsPrism 与使用自带 TLS 的 Centrifugo，消息 64 字节：
+生产流量几乎都是 `wss://`。下面在同一轮测试中，以 64 字节消息、各 3 次，测量了在服务器上终止 TLS 的三种方式：
 
 | 场景 | 服务器 | 每次投递 CPU µs | 每连接 KB |
 |---|---|---|---|
-| 房间 | wsPrism + nginx | 14.5~15.7 | 93.2~93.5 |
-| | Centrifugo（TLS） | 7.2~8.7 | 94~99 |
-| 广播 | wsPrism + nginx | 17.6~18.9 | 65.1 |
-| | Centrifugo（TLS） | 10.8~12.0 | 44~48 |
+| 房间 | **wsPrism，`gateway.tls`** | **6.1~6.5** | **28.0~28.2** |
+| | Centrifugo，自带 TLS | 8.0~9.7 | 94~95 |
+| | wsPrism + nginx | 15.4~15.8 | 93~94 |
+| 广播 | **wsPrism，`gateway.tls`** | **8.7~9.0** | **26.1** |
+| | Centrifugo，自带 TLS | 11.0~12.1 | 47~48 |
+| | wsPrism + nginx | 17.9~18.4 | 65 |
 
-在同一台主机上终止 TLS 时，Centrifugo 的 CPU 开销少 1.6 到 1.9 倍，内存相同或更少。大部分开销来自多经过一次代理，而不是加密本身：Centrifugo 自带 TLS 相比明文只多出每连接约 15 KB、每次投递约 1 µs。在网关内部终止 TLS 可以省掉这一跳，该功能正在评估中，尚未测量。
+- 由网关自己终止 TLS 时，wsPrism 的 CPU 比 Centrifugo 少 1.25 到 1.5 倍，内存少 1.8 到 3.4 倍。与明文 WebSocket 相比，TLS 的开销约为每次投递 1.2~1.7 µs、每连接 7~8 KB。
+- 在同一台主机上放置 TLS 代理是最贵的做法：在 wsPrism 前面放 nginx，每次投递的 CPU 翻倍，主要原因是多了一跳转发，而不是加密本身。在有 `gateway.tls` 之前，这使得在服务器上终止 TLS 时 Centrifugo 反而更省。
+- 如果 TLS 在独立的负载均衡器上终止，上面的明文 WebSocket 对比就代表服务器开销。
 
 ## 连接风暴
 

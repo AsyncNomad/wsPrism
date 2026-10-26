@@ -111,16 +111,20 @@ At 8 KB, CPU per delivery is the same for both; wsPrism still holds a connection
 
 ## TLS
 
-wsPrism does not terminate TLS itself. Where TLS ends at a load balancer in front of the servers, the plain WebSocket comparisons above describe the server cost. Where it has to end on the same host, wsPrism runs behind a proxy, and that changes the picture. nginx terminating TLS in front of wsPrism, against Centrifugo's built-in TLS, 64-byte messages:
+Production traffic is almost always `wss://`. Three ways of terminating TLS on the server, measured in the same session, 64-byte messages, three runs each:
 
 | Scenario | Server | CPU µs per delivery | KB per connection |
 |---|---|---|---|
-| rooms | wsPrism + nginx | 14.5–15.7 | 93.2–93.5 |
-| | Centrifugo (TLS) | 7.2–8.7 | 94–99 |
-| broadcast | wsPrism + nginx | 17.6–18.9 | 65.1 |
-| | Centrifugo (TLS) | 10.8–12.0 | 44–48 |
+| rooms | **wsPrism, `gateway.tls`** | **6.1–6.5** | **28.0–28.2** |
+| | Centrifugo, built-in TLS | 8.0–9.7 | 94–95 |
+| | wsPrism behind nginx | 15.4–15.8 | 93–94 |
+| broadcast | **wsPrism, `gateway.tls`** | **8.7–9.0** | **26.1** |
+| | Centrifugo, built-in TLS | 11.0–12.1 | 47–48 |
+| | wsPrism behind nginx | 17.9–18.4 | 65 |
 
-With TLS on the same host, Centrifugo uses 1.6 to 1.9 times less CPU and the same or less memory. Most of the cost is the extra hop through the proxy rather than encryption: Centrifugo's own TLS adds only about 15 KB and 1 µs per delivery over plain WebSocket. Terminating TLS inside the gateway would remove that hop; it is under consideration and has not been measured.
+- With the gateway terminating TLS itself, wsPrism uses 1.25 to 1.5 times less CPU and 1.8 to 3.4 times less memory than Centrifugo. TLS costs it about 1.2–1.7 µs per delivery and 7–8 KB per connection over plain WebSocket.
+- A TLS proxy on the same host is the expensive option: nginx in front of wsPrism doubled CPU per delivery, mostly because of the extra hop rather than the encryption. Before `gateway.tls` existed, that made Centrifugo the cheaper choice for TLS on the server.
+- Where TLS ends at a separate load balancer, the plain WebSocket comparisons above describe the server cost.
 
 ## Connection storms
 

@@ -66,6 +66,10 @@ SIGTERM (or Ctrl-C) starts a drain:
 
 Give your orchestrator a longer stop timeout than `drain_grace_ms`. For several nodes, see [rolling updates](cluster.md#rolling-updates).
 
+## TLS certificates
+
+With `gateway.tls`, the gateway serves `wss://` itself. To rotate the certificate, replace the files and send `SIGHUP`: new handshakes use the new certificate, open connections are not touched, and a failed reload is logged while the previous certificate stays in use. Certificates from Let's Encrypt and similar CAs can be renewed this way without dropping anyone.
+
 ## Containers
 
 The `Dockerfile` at the repository root builds a distroless image that runs as non-root, has no shell, and sets `WSPRISM_LOG_FORMAT=json`. Mount the configuration at `/etc/wsprism/wsprism.yaml`, and bind `gateway.listen` and `gateway.api.listen` to `0.0.0.0`; a loopback address cannot be reached from outside the container.
@@ -124,7 +128,7 @@ Measure your own traffic before committing to numbers. Message size, room size a
 
 ## Hardening checklist
 
-- Terminate TLS in front of the gateway; it serves plain HTTP and WebSocket itself.
+- Serve `wss://`: set `gateway.tls`, or terminate TLS on a separate load balancer. Avoid a TLS proxy on the same host, which doubled CPU per delivery.
 - Replace the `dev` authenticator; a tenant without `auth` logs a warning at startup.
 - Keep the server API on loopback or a private network, and give each backend its own key.
 - List exact browser origins in `allowed_origins`.

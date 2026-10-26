@@ -32,6 +32,7 @@ tenants: [ … ]      # 테넌트마다 하나씩
 | `listen` | `0.0.0.0:8080` | | 공개 WebSocket 리스너 |
 | `api.listen` | 꺼짐 | | 내부 리스너: 서버 API, `/metrics`, 상태 확인. 루프백이나 사설망에 바인딩 |
 | `public_metrics` | `false` | | 공개 리스너에서도 `/metrics` 제공 |
+| `tls` | 꺼짐 | | `listen`에서 TLS를 직접 종단. [`gateway.tls`](#gatewaytls) 참고 |
 | `ping_interval_ms` | 20000 | 5000~120000 | WebSocket 핑 주기 |
 | `idle_timeout_ms` | 60000 | 10000~600000, 핑 주기보다 커야 함 | 이 시간 동안 들어오는 것이 없으면 연결을 닫음 |
 | `writer_send_timeout_ms` | 1500 | 50~60000 | 소켓 쓰기가 이 시간 이상 막히면 세션을 닫음 |
@@ -42,6 +43,18 @@ tenants: [ … ]      # 테넌트마다 하나씩
 | `log_identities` | `plain` | `plain`, `hashed`, `off` | 로그에 사용자 ID, 세션 ID, IP를 남기는 방식 |
 | `log_identity_key_env` | 프로세스마다 임의 | | `hashed`용 HMAC 키를 담은 변수(16바이트 이상) |
 | `broker` | `kind: memory` | | [클러스터 브로커](#클러스터-브로커) 참고 |
+
+### `gateway.tls`
+
+공개 리스너의 TLS입니다(rustls: TLS 1.2·1.3, 안전한 암호군, ALPN `http/1.1`, 클라이언트 인증서 없음).
+
+| 항목 | 기본값 | 범위 | 의미 |
+|---|---|---|---|
+| `cert_file` | 필수 | | PEM 인증서 체인. 리프 인증서가 맨 앞 |
+| `key_file` | 필수 | | PEM 개인 키(PKCS#8, PKCS#1, SEC1) |
+| `handshake_timeout_ms` | 10000 | 100~60000 | 이 시간 안에 TLS 핸드셰이크를 끝내지 않은 연결을 닫음 |
+
+파일은 시작할 때 읽습니다. 파일이 없거나, 형식이 틀렸거나, 키가 인증서와 맞지 않으면 시작과 `--check-config`가 실패합니다. SIGHUP(또는 `Gateway::reload_tls()`)을 받으면 다시 읽습니다. 새 핸드셰이크부터 새 인증서를 쓰고, 읽기에 실패하면 기존 인증서를 그대로 씁니다. 동시에 진행되는 핸드셰이크는 최대 1,024개입니다. 내부 리스너는 평문 그대로입니다.
 
 ### `gateway.handshake_limit`
 

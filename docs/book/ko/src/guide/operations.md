@@ -66,6 +66,10 @@ SIGTERM(또는 Ctrl-C)을 받으면 드레인을 시작합니다.
 
 오케스트레이터의 종료 대기 시간은 `drain_grace_ms`보다 길게 잡으세요. 노드가 여럿이면 [롤링 업데이트](cluster.md#롤링-업데이트)를 참고하세요.
 
+## TLS 인증서
+
+`gateway.tls`를 쓰면 게이트웨이가 직접 `wss://`를 제공합니다. 인증서를 바꿀 때는 파일을 교체하고 `SIGHUP`을 보내세요. 새 핸드셰이크부터 새 인증서를 쓰고, 열린 연결은 그대로입니다. 다시 읽기에 실패하면 로그를 남기고 기존 인증서를 계속 씁니다. Let's Encrypt처럼 자주 갱신하는 인증서도 이렇게 하면 아무도 끊기지 않습니다.
+
 ## 컨테이너
 
 저장소 루트의 `Dockerfile`은 distroless 이미지를 만듭니다. 루트가 아닌 사용자로 돌고, 셸이 없고, `WSPRISM_LOG_FORMAT=json`이 설정돼 있습니다. 설정 파일은 `/etc/wsprism/wsprism.yaml`에 마운트하고, `gateway.listen`과 `gateway.api.listen`은 `0.0.0.0`에 바인딩하세요. 루프백 주소는 컨테이너 밖에서 닿지 않습니다.
@@ -124,7 +128,7 @@ docker run -v $PWD/my.yaml:/etc/wsprism/wsprism.yaml:ro -p 8080:8080 wsprism-gat
 
 ## 보안 점검 목록
 
-- TLS는 게이트웨이 앞에서 종단하세요. 게이트웨이 자체는 평문 HTTP와 WebSocket을 씁니다.
+- `wss://`로 제공하세요. `gateway.tls`를 설정하거나, 별도의 로드밸런서에서 TLS를 종단합니다. 같은 서버에 TLS 프록시를 두는 것은 피하세요. 전달당 CPU가 두 배가 됐습니다.
 - `dev` 인증기를 바꾸세요. `auth`가 없는 테넌트는 시작할 때 경고를 남깁니다.
 - 서버 API는 루프백이나 사설망에 두고, 백엔드마다 키를 따로 주세요.
 - `allowed_origins`에는 정확한 Origin을 적으세요.

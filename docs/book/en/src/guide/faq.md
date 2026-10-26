@@ -15,7 +15,7 @@ The tenant id is unknown, the `sid` is not 1 to 64 characters of `[A-Za-z0-9_-]`
 Look at the `Retry-After` header and at `wsprism_handshake_rejections_total`. Common causes: the node is draining (connect to another), the tenant reached `max_sessions_total`, the authentication backend or JWKS endpoint is unreachable, or, in a cluster, Redis is slow enough that the node is shedding new connections (`cluster_busy`).
 
 **Does wsPrism terminate TLS?**
-No. Put it behind a load balancer or reverse proxy that terminates TLS, and list that proxy in `gateway.trusted_proxies` so that rate limits see real client addresses. Terminating TLS on a separate load balancer keeps the gateway's cost as measured. A proxy on the same host costs more than the gateway itself: nginx in front of wsPrism used 1.6 to 1.9 times the CPU of Centrifugo's built-in TLS (see [TLS](../project/benchmarks.md#tls)).
+Yes, if you set `gateway.tls` with a certificate and key; SIGHUP reloads them without a restart ([Configuration](../reference/configuration.md#gatewaytls)). It is also the cheapest way to serve `wss://` from the server itself: a TLS proxy such as nginx on the same host doubled CPU per delivery ([TLS](../project/benchmarks.md#tls)). Terminating TLS on a separate load balancer works too; then list it in `gateway.trusted_proxies` so that rate limits see real client addresses.
 
 ## Messages
 

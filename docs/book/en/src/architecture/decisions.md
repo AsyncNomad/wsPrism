@@ -19,6 +19,7 @@ Every significant decision in wsPrism is recorded as an Architecture Decision Re
 | 0011 | Broker boundary, history and recovery, multiple nodes | Adopted, implemented |
 | 0012 | JWKS and in-band token refresh | Adopted |
 | 0013 | Spread room traffic over several Redis instances | Design adopted, implementation deferred |
+| 0014 | Terminate TLS on the public listener (`gateway.tls`) | Adopted, implemented |
 
 ## Decisions worth knowing as a user
 

@@ -5,10 +5,10 @@
 #
 #   bench/run-compete-tls.sh <name> [RUNS] [SCENARIOS] [TARGETS]
 #     SCENARIOS  as bench/run-compete.sh (default "rooms:20 broadcast:10")
-#     TARGETS    wsprism-nginx centrifugo
+#     TARGETS    wsprism-tls wsprism-nginx centrifugo
 #
-# wsPrism does not terminate TLS itself, so it runs the way it is deployed:
-# behind a TLS-terminating proxy, here nginx (Ubuntu's 1.24 package,
+# wsprism-tls: the gateway terminates TLS itself (`gateway.tls`).
+# wsprism-nginx: behind a TLS-terminating proxy, here nginx (Ubuntu's 1.24 package,
 # unpacked under the bench tools directory; nothing installed) on the same
 # server cores, proxying to the gateway on loopback. The server cost is
 # nginx + gateway (CPU and RSS summed). Centrifugo terminates TLS itself.
@@ -20,7 +20,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 NAME="${1:?name}"
 RUNS="${2:-3}"
 SCENARIOS="${3:-rooms:20 broadcast:10}"
-TARGETS="${4:-wsprism-nginx centrifugo}"
+TARGETS="${4:-wsprism-tls wsprism-nginx centrifugo}"
 SERVER_CPUS="${SERVER_CPUS:-0-7}"
 LOADGEN_CPUS="${LOADGEN_CPUS:-8-23}"
 NGINX_WORKERS="${NGINX_WORKERS:-8}"
@@ -58,6 +58,11 @@ trap 'rm -rf "$WORK"' EXIT
 
 # The gateway listens on loopback; nginx terminates TLS in front of it.
 cp "$ROOT/bench/gateway.yaml" "$WORK/wsprism.yaml"   # listens on 127.0.0.1:18080
+# The same config terminating TLS itself on the public address.
+sed -e 's|listen: "127.0.0.1:18080"|listen: "10.77.0.1:18443"|' \
+    -e "s|^gateway:|gateway:\n  tls: { cert_file: \"$WORK/server.pem\", key_file: \"$WORK/server.key\" }|" \
+    "$ROOT/bench/gateway.yaml" > "$WORK/wsprism-tls.yaml"
+grep -q 'tls: { cert_file' "$WORK/wsprism-tls.yaml"
 mkdir -p "$WORK/nginx/tmp"
 cat > "$WORK/nginx.conf" <<EOF
 daemon off;
@@ -117,6 +122,7 @@ scenario() {
 # target NAME -> "SERVER_CMD|LOADGEN_TARGET_ARGS|EXTRA_PIDS_CMD"
 target() {
   case "$1" in
+    wsprism-tls) echo "exec env RUST_LOG=warn $GW --config $WORK/wsprism-tls.yaml|--target wsprism --lane ext --distinct-users --url wss://10.77.0.1:18443|" ;;
     wsprism-nginx) echo "$NGINX -p $WORK/nginx -e $WORK/nginx/error.log -c $WORK/nginx.conf & exec env RUST_LOG=warn $GW --config $WORK/wsprism.yaml|--target wsprism --lane ext --distinct-users --url wss://10.77.0.1:18443|pgrep -d, -f '^nginx: (master|worker)'" ;;
     centrifugo) echo "$CENTRIFUGO --config $WORK/centrifugo.json|--target centrifugo --url wss://10.77.0.1:9101|" ;;
     *) echo "unknown target: $1" >&2; exit 2 ;;

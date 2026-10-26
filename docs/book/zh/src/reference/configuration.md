@@ -32,6 +32,7 @@ tenants: [ … ]      # 每个租户一项
 | `listen` | `0.0.0.0:8080` | | 公网 WebSocket 监听地址 |
 | `api.listen` | 关闭 | | 内部监听：服务端 API、`/metrics`、健康检查。请绑定回环地址或内网 |
 | `public_metrics` | `false` | | 在公网监听上也提供 `/metrics` |
+| `tls` | 关闭 | | 在 `listen` 上直接终止 TLS，见 [`gateway.tls`](#gatewaytls) |
 | `ping_interval_ms` | 20000 | 5000~120000 | WebSocket 心跳间隔 |
 | `idle_timeout_ms` | 60000 | 10000~600000，且大于心跳间隔 | 超过该时长没有任何入站活动即关闭连接 |
 | `writer_send_timeout_ms` | 1500 | 50~60000 | 套接字写入阻塞超过该时长即关闭会话 |
@@ -42,6 +43,18 @@ tenants: [ … ]      # 每个租户一项
 | `log_identities` | `plain` | `plain`、`hashed`、`off` | 日志中用户 ID、会话 ID 和 IP 的呈现方式 |
 | `log_identity_key_env` | 每个进程随机 | | 存放 `hashed` 所用 HMAC 密钥的变量（≥ 16 字节） |
 | `broker` | `kind: memory` | | 见[集群 Broker](#集群-broker) |
+
+### `gateway.tls`
+
+公网监听上的 TLS（rustls：TLS 1.2 和 1.3、安全的密码套件、ALPN `http/1.1`、不要求客户端证书）。
+
+| 配置项 | 默认值 | 范围 | 含义 |
+|---|---|---|---|
+| `cert_file` | 必填 | | PEM 证书链，叶子证书在前 |
+| `key_file` | 必填 | | PEM 私钥（PKCS#8、PKCS#1 或 SEC1） |
+| `handshake_timeout_ms` | 10000 | 100~60000 | 在此时间内未完成 TLS 握手的连接将被关闭 |
+
+文件在启动时读取：文件缺失、格式错误或私钥与证书不匹配，都会导致启动和 `--check-config` 失败。收到 SIGHUP（或调用 `Gateway::reload_tls()`）时重新读取；新的握手使用新证书，读取失败则继续使用原来的证书。同时进行的握手最多 1,024 个。内部监听保持明文。
 
 ### `gateway.handshake_limit`
 
