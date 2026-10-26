@@ -47,6 +47,10 @@ pub struct Args {
     /// memory only this way.
     #[arg(long)]
     pub distinct_users: bool,
+    /// CA certificate(s) (PEM) to trust for wss:// URLs, e.g. a private
+    /// test CA in front of a TLS-terminating proxy.
+    #[arg(long)]
+    pub ca_file: Option<std::path::PathBuf>,
     /// Source IP addresses to spread connections over, comma-separated
     /// (plain ws:// to an IP only). One source address reaches one server
     /// address with at most ~64k connections.

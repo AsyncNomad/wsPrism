@@ -12,7 +12,7 @@ mod wsprism;
 use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use futures_util::StreamExt;
@@ -20,7 +20,7 @@ use tokio::net::{TcpSocket, TcpStream};
 use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::handshake::client::Request;
 use tokio_tungstenite::tungstenite::Message;
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+use tokio_tungstenite::{Connector, MaybeTlsStream, WebSocketStream};
 
 pub use centrifugo::Centrifugo;
 pub use pusher::Pusher;
@@ -71,6 +71,35 @@ pub trait Protocol: Send + Sync + 'static {
 static LOCAL_ADDRS: OnceLock<Vec<IpAddr>> = OnceLock::new();
 static NEXT_LOCAL: AtomicUsize = AtomicUsize::new(0);
 
+/// TLS for wss:// URLs, trusting only `--ca-file` (a private test CA).
+static TLS: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
+
+/// Trust the CA certificates in `path` for wss:// (once, before connecting).
+pub fn set_ca_file(path: &std::path::Path) -> Result<(), String> {
+    use rustls::pki_types::{pem::PemObject, CertificateDer};
+    let mut roots = rustls::RootCertStore::empty();
+    for cert in
+        CertificateDer::pem_file_iter(path).map_err(|e| format!("{}: {e}", path.display()))?
+    {
+        roots
+            .add(cert.map_err(|e| format!("{}: {e}", path.display()))?)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .map_err(|e| e.to_string())?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let _ = TLS.set(Arc::new(config));
+    Ok(())
+}
+
+fn connector() -> Option<Connector> {
+    TLS.get().map(|c| Connector::Rustls(Arc::clone(c)))
+}
+
 /// Set the source addresses (once, before connecting).
 pub fn set_local_addrs(addrs: Vec<IpAddr>) {
     let _ = LOCAL_ADDRS.set(addrs);
@@ -81,19 +110,25 @@ pub fn set_local_addrs(addrs: Vec<IpAddr>) {
 pub(in crate::gateway) async fn open(req: Request) -> Result<Ws, String> {
     let connect = async {
         let Some(addrs) = LOCAL_ADDRS.get().filter(|a| !a.is_empty()) else {
-            let (ws, _) = tokio_tungstenite::connect_async_with_config(req, None, true)
-                .await
-                .map_err(|e| format!("connect: {e}"))?;
+            let (ws, _) =
+                tokio_tungstenite::connect_async_tls_with_config(req, None, true, connector())
+                    .await
+                    .map_err(|e| format!("connect: {e}"))?;
             return Ok(ws);
         };
-        // Plain ws:// to an IP address only: `--local-addrs` is for the
-        // large idle-connection tests on netlab.
+        // ws:// or wss:// to an IP address only: `--local-addrs` is for
+        // the large idle-connection tests on netlab.
         let local = addrs[NEXT_LOCAL.fetch_add(1, Ordering::Relaxed) % addrs.len()];
         let uri = req.uri();
         let peer: SocketAddr = format!(
             "{}:{}",
             uri.host().unwrap_or_default(),
-            uri.port_u16().unwrap_or(80)
+            uri.port_u16()
+                .unwrap_or(if uri.scheme_str() == Some("wss") {
+                    443
+                } else {
+                    80
+                })
         )
         .parse()
         .map_err(|e| format!("--local-addrs needs ws://<ip>:<port>: {e}"))?;
@@ -110,10 +145,9 @@ pub(in crate::gateway) async fn open(req: Request) -> Result<Ws, String> {
             .await
             .map_err(|e| format!("connect: {e}"))?;
         tcp.set_nodelay(true).map_err(|e| format!("nodelay: {e}"))?;
-        let (ws, _) =
-            tokio_tungstenite::client_async_with_config(req, MaybeTlsStream::Plain(tcp), None)
-                .await
-                .map_err(|e| format!("handshake: {e}"))?;
+        let (ws, _) = tokio_tungstenite::client_async_tls_with_config(req, tcp, None, connector())
+            .await
+            .map_err(|e| format!("handshake: {e}"))?;
         Ok(ws)
     };
     tokio::time::timeout(SETUP_TIMEOUT, connect)

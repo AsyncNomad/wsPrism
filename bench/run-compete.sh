@@ -16,6 +16,7 @@
 # COMPETE_HISTORY=1: every room keeps history (200 messages, 600 s) on both
 # wsPrism (tenants[].history) and Centrifugo (history_size/ttl, recovery),
 # the configuration a chat product ships with (ADR 0011 A14).
+# PAYLOAD: message size in bytes (default 64; recorded in the label).
 # WSPRISM_LG_EXTRA: extra loadgen flags for the wsPrism targets, e.g.
 # "--distinct-users" (one user per connection, like the other servers'
 # anonymous connections).
@@ -59,10 +60,10 @@ scenario() {
   case "$kind" in
     # 100 game rooms of 10, everyone publishes (state sync on WebSocket).
     # Deliveries to others/s = 9000 x RATE (default 20 Hz -> 180k/s).
-    rooms) echo "--conns 1000 --rooms 100 --publishers 1000 --rate ${rate:-20} --payload 64 --duration 20" ;;
+    rooms) echo "--conns 1000 --rooms 100 --publishers 1000 --rate ${rate:-20} --payload ${PAYLOAD:-64} --duration 20" ;;
     # 10 rooms of 1000 listeners, 1 publisher per room (live feed).
     # Deliveries/s = 9990 x RATE (default 10 Hz -> 100k/s).
-    broadcast) echo "--conns 10000 --rooms 10 --publishers 10 --rate ${rate:-10} --payload 64 --duration 20 --connect-concurrency 500" ;;
+    broadcast) echo "--conns 10000 --rooms 10 --publishers 10 --rate ${rate:-10} --payload ${PAYLOAD:-64} --duration 20 --connect-concurrency 500" ;;
     *) echo "unknown scenario: $1" >&2; exit 2 ;;
   esac
 }
@@ -83,6 +84,7 @@ total=0
 for run in $(seq "$RUNS"); do for sc in $SCENARIOS; do for t in $TARGETS; do
   total=$((total + 1))
   label="scenario=$sc target=$t run=$run"
+  [[ ${PAYLOAD:-64} != 64 ]] && label="scenario=$sc payload=$PAYLOAD target=$t run=$run"
   if [[ -f "$OUT" ]] && grep -qF "\"label\":\"$label\"" "$OUT"; then
     echo "[$total] skip (done): $label" >&2
     continue

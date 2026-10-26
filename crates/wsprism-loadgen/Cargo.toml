@@ -15,7 +15,7 @@ serde_json = { workspace = true }
 bytes = { workspace = true }
 hdrhistogram = { workspace = true }
 clap = { workspace = true }
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
 # statesync: WSS and WebTransport clients (benchmark only; certs not verified)
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
