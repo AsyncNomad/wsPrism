@@ -27,13 +27,21 @@ test("a node killed with -9: its clients resume on the other node, nothing lost 
   t.after(() => recs.forEach((r) => r.client.close()));
   await joinAll(recs);
   const total = 600;
-  const publishing = publish(nodes, 1, total, 5);
+  // The backend publishes through node 1, the one that survives. A publish
+  // node 0 had accepted (200 = queued on that node) but not yet handed to
+  // Redis when it is killed is lost: documented (docs/CLUSTER.md, delivery
+  // semantics) and judged by the soak test's queue-loss windows. Here it
+  // would only leave the final offset short of `total` — on a slow CI
+  // runner it did (offsets stopped at 561 of 600 with a 100 ms Redis delay
+  // in front of node 0). What this test checks is the killed node's
+  // clients resuming on the other node, nothing lost or repeated.
+  const publishing = publish([nodes[1], nodes[0]], 1, total, 5);
   // Mid-stream, node 0 dies without a goodbye.
-  await until(() => recs.every((r) => (lastOffset(r) ?? 0) >= 150), 20000, "first 150");
+  await until(() => recs.every((r) => (lastOffset(r) ?? 0) >= 150), 20000, "first 150", recs);
   nodes[0].proc.kill("SIGKILL");
   nodes[0].alive = false;
   await publishing;
-  await until(() => recs.every((r) => lastOffset(r) === total), 30000, "everyone at the last offset");
+  await until(() => recs.every((r) => lastOffset(r) === total), 30000, "everyone at the last offset", recs);
   for (const r of recs) {
     const stretches = check(r);
     assert.equal(stretches.length, 1, `${r.name}: no gap announced`);
