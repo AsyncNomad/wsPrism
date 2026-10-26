@@ -92,6 +92,36 @@ On the same Redis, wsPrism sustains about 1.5 to 1.7 times Centrifugo's history 
 
 Beyond a node's capacity the two behave differently by design. Centrifugo queues and delivers late (94–97% delivered, p50 around a second). wsPrism refuses publishes that waited more than a second (89–90% delivered, p50 12–80 ms) and tells the publisher, who can retry. Which is preferable depends on the application.
 
+## Message size
+
+The comparisons above use 64-byte messages. With larger messages the cost moves to copying and the kernel, and the gap narrows. Same scenarios, three runs each:
+
+| Scenario | Server | CPU µs per delivery | KB per connection |
+|---|---|---|---|
+| rooms, 1 KB | wsPrism | 6.5–6.8 | 23–24 |
+| | Centrifugo | 8.2–8.8 | 82–83 |
+| broadcast, 1 KB | wsPrism | 8.2–9.2 | 19.5 |
+| | Centrifugo | 9.9–10.5 | 30–31 |
+| rooms, 8 KB | wsPrism | 16.5–17.4 | 51–54 |
+| | Centrifugo | 17.5–18.7 | 83–85 |
+| broadcast, 8 KB | wsPrism | 19.8–21.0 | 26.5–26.8 |
+| | Centrifugo | 19.3–20.7 | 40–44 |
+
+At 8 KB, CPU per delivery is the same for both; wsPrism still holds a connection in about two thirds of the memory. This test found a defect, now fixed: the WebSocket write buffer grew with batches of large frames and never shrank, which had put wsPrism at 66–93 KB per connection with 8 KB messages.
+
+## TLS
+
+wsPrism does not terminate TLS itself. Where TLS ends at a load balancer in front of the servers, the plain WebSocket comparisons above describe the server cost. Where it has to end on the same host, wsPrism runs behind a proxy, and that changes the picture. nginx terminating TLS in front of wsPrism, against Centrifugo's built-in TLS, 64-byte messages:
+
+| Scenario | Server | CPU µs per delivery | KB per connection |
+|---|---|---|---|
+| rooms | wsPrism + nginx | 14.5–15.7 | 93.2–93.5 |
+| | Centrifugo (TLS) | 7.2–8.7 | 94–99 |
+| broadcast | wsPrism + nginx | 17.6–18.9 | 65.1 |
+| | Centrifugo (TLS) | 10.8–12.0 | 44–48 |
+
+With TLS on the same host, Centrifugo uses 1.6 to 1.9 times less CPU and the same or less memory. Most of the cost is the extra hop through the proxy rather than encryption: Centrifugo's own TLS adds only about 15 KB and 1 µs per delivery over plain WebSocket. Terminating TLS inside the gateway would remove that hop; it is under consideration and has not been measured.
+
 ## Connection storms
 
 Each worker connects, authenticates, joins rooms, and disconnects, in a loop; every session is a different user. One node in a cluster:
