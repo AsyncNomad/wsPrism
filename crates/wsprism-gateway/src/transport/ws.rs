@@ -9,6 +9,14 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Bytes tungstenite collects before writing to the socket. Its default,
+/// 128 KiB, let a batch of large frames grow each connection's write buffer
+/// toward it, and the buffer never shrinks: 8 KB messages in busy rooms cost
+/// 69-86 KB per connection, 51-52 KB at 16 KiB, with the same CPU and
+/// latency. Small frames are unaffected (a 64-frame batch of 64 B is 4 KB).
+/// BENCHMARKS "메시지 크기".
+const WRITE_BUFFER_SIZE: usize = 16 * 1024;
+
 use axum::{
     extract::{connect_info::ConnectInfo, ws::WebSocketUpgrade, Query, State},
     http::HeaderMap,
@@ -79,6 +87,7 @@ pub async fn ws_upgrade(
     // payloads are rejected before they are buffered in full or decoded.
     ws.max_message_size(admitted.max_frame_bytes)
         .max_frame_size(admitted.max_frame_bytes)
+        .write_buffer_size(WRITE_BUFFER_SIZE)
         .on_upgrade(move |socket| {
             let sid = q.sid.clone().unwrap_or_else(gen_sid);
             let trace_id = gen_trace();
